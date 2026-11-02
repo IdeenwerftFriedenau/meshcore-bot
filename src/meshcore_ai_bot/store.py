@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -88,11 +89,19 @@ class Store:
                 c.execute("UPDATE messages SET status='processing' WHERE id=?", (row["id"],))
             return dict(row) if row else None
 
-    def recover(self):
+    def recover(self, now: float | None = None):
         # Model/tool reads may be repeated; an uncertain radio transmission must not be.
         with self.transaction() as c:
             c.execute("UPDATE messages SET status='pending' WHERE status='processing'")
-            c.execute("UPDATE packets SET state='uncertain' WHERE state='sending'")
+            changed = c.execute("UPDATE packets SET state='uncertain' WHERE state='sending'").rowcount
+            if changed:
+                # The process may have died after handing bytes to USB. Start a fresh
+                # quiet interval instead of sending the next fragment immediately.
+                recovered_at = time.time() if now is None else now
+                c.execute(
+                    "INSERT INTO meta VALUES('last_tx',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(recovered_at),),
+                )
 
     def history(self, channel: str, sender: str, since: float, turns: int) -> list[dict]:
         if not turns:
