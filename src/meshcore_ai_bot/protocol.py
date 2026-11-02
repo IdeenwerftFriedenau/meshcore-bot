@@ -1,0 +1,123 @@
+"""Pure channel policy and UTF-8 framing. No network or hardware side effects."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import dataclass
+
+from .config import PUBLIC_CHANNELS, Config
+
+
+@dataclass(frozen=True)
+class Incoming:
+    channel: str
+    sender: str
+    text: str
+    timestamp: int
+
+    @property
+    def identity(self) -> str:
+        raw = f"{self.channel}\0{self.sender}\0{self.timestamp}\0{self.text}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    @classmethod
+    def from_radio(cls, channel: str, text: str, timestamp: int) -> Incoming:
+        sender, body = text.split(": ", 1) if ": " in text else ("unknown", text)
+        return cls(channel, sender.strip(), body, timestamp)
+
+
+def _mention_pattern(names: list[str]) -> re.Pattern:
+    alternatives = [
+        re.escape(name).replace(r"\ ", r"[\s-]+") for name in sorted(names, key=len, reverse=True)
+    ]
+    # Accept @[Node Name], @Node Name and @shortname; do not match a longer word.
+    return re.compile(
+        r"(?<![\w@])@(?:\[(?:"
+        + "|".join(alternatives)
+        + r")\]|(?:"
+        + "|".join(alternatives)
+        + r")(?![\w-]))",
+        re.I,
+    )
+
+
+def radio_check(text: str) -> str | None:
+    body = re.sub(r"[?!.,:;]+$", "", " ".join(text.casefold().split())).strip()
+    if re.fullmatch(r"ping(?: ping){0,2}(?: ?(?:[0-9]{1,3}|1 2 3))?", body):
+        return "Pong! Deine Nachricht ist hier angekommen."
+    if re.fullmatch(
+        r"test(?: test){0,2}(?: ?(?:[0-9]{1,3}|1 2 3))?|123|1 2 3|funk[ -]?(?:check|test)|"
+        r"radio[ -]?check|check(?: check)?|hört mich jemand|hoert mich jemand|"
+        r"ist jemand da|bist du da|bist du noch da|noch da",
+        body,
+    ):
+        return "Test angekommen – deine Textnachricht ist hier."
+    return None
+
+
+def question_for(message: Incoming, config: Config, now: float) -> str | None:
+    channel = config.channel(message.channel)
+    own = {name.strip().casefold() for name in [config.station.name, *config.station.own_names]}
+    if not channel or channel.mode == "off" or message.channel in PUBLIC_CHANNELS:
+        return None
+    if message.sender.strip().casefold() in own:
+        return None
+    if (
+        type(message.timestamp) is not int
+        or not now - config.storage.message_max_age_seconds <= message.timestamp <= now + 120
+    ):
+        return None
+    if not isinstance(message.text, str) or len(message.text.encode()) > 600 or not message.text.strip():
+        return None
+    body = message.text.strip()
+    if channel.mode == "keyword":
+        pattern = r"(?<!\w)" + re.escape(channel.keyword) + r"(?!\w)"
+        if not re.search(pattern, body, re.I):
+            return None
+        # Strip an invocation, not semantic occurrences such as 'Was ist KI?'.
+        body = re.sub(r"^\s*@?" + re.escape(channel.keyword) + r"\b[\s,:!?-]*", "", body, flags=re.I)
+    elif channel.mode == "mention":
+        pattern = _mention_pattern(channel.mentions or [config.station.name])
+        if not pattern.search(body) and not (channel.respond_to_checks and radio_check(body)):
+            return None
+        body = pattern.sub("", body, count=1).strip(" ,:")
+    return body.strip() or "Hallo"
+
+
+def allows_send(config: Config, channel_name: str, stream: str) -> bool:
+    channel = config.channel(channel_name)
+    if not channel or channel_name in PUBLIC_CHANNELS:
+        return False
+    if stream == "reply":
+        return channel.mode != "off"
+    enabled = {"warnings": config.broadcasts.warnings_enabled, "news": config.broadcasts.news_enabled}
+    return enabled.get(stream, False) and stream in channel.broadcasts
+
+
+def split_text(text: str, limit: int = 110, label: str = "") -> list[str]:
+    """Preserve every character; reserve all labels and part numbers in byte budget."""
+    if not text or limit < 24:
+        return []
+    prefix = label.strip() + " " if label.strip() else ""
+    if len((prefix + text).encode()) <= limit:
+        return [prefix + text]
+    count = 1
+    while True:
+        budget = limit - len(f"{prefix}[{count}/{count}] ".encode())
+        if budget < 4:
+            raise ValueError("Packet prefix leaves no room for UTF-8 text")
+        chunks, rest = [], text
+        while rest:
+            if len(rest.encode()) <= budget:
+                chunks.append(rest)
+                break
+            end = len(rest.encode()[:budget].decode("utf-8", "ignore"))
+            separator = rest.rfind(" | ", 0, end)
+            space = rest.rfind(" ", 0, end)
+            cut = separator + 3 if separator > 0 else space + 1 if space > 0 else end
+            chunks.append(rest[:cut])
+            rest = rest[cut:]
+        if len(chunks) == count:
+            return [f"{prefix}[{i}/{count}] " + part for i, part in enumerate(chunks, 1)]
+        count = len(chunks)
