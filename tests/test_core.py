@@ -98,7 +98,8 @@ def test_store_dedup_recovery_and_history():
         assert not s.history("#bot", "Alice", 0, 4)
         p = s.claim(1003, lambda *_: True)
         assert p["text"] == "part1"
-        s.recover()
+        s.recover(now=1004)
+        assert s.last_tx() == 1004
         assert s.counts()["uncertain"] == 1
         p2 = s.claim(1004, lambda *_: True)
         assert p2["text"] == "part2"
