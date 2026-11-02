@@ -75,3 +75,12 @@ Einstellungen: [Konfigurationsvorlage](config.example.toml). Details: [Betrieb u
 Die SQLite-Datenbank liegt beim Dienst unter `/var/lib/meshcore-ai-bot`. Nachrichten werden standardmäßig nach 24 Stunden bereinigt. Dieses Projekt erzeugt und speichert keine Audiodateien und benötigt kein WordPress. Eine bestehende DAB-/WordPress-Pipeline wird nicht übernommen; Nachrichten kommen optional aus ausdrücklich eingetragenen RSS-Feeds.
 
 Das Repository enthält keine privaten Stationsschlüssel oder vorgetäuschten Repeater-Livedaten. Der öffentliche Analyzer wird nicht automatisiert ausgelesen. Funkbedingungen, Firmware und externe Dienste können Zustellungen verhindern; es gibt keine Garantie vollständiger Funkzustellung. Vor dem Dauerbetrieb auf der eigenen Hardware prüfen. Lizenz: MIT.
+
+## Geräteanbindung ohne Hardware testen
+
+```sh
+pip install -e '.[dev,radio]'
+pytest -q tests/test_hardware_simulation.py
+```
+
+20 zusätzliche Szenarien prüfen den echten MeshCore-SDK-Transport an einem virtuellen seriellen Companion, einschließlich verzögerter Bestätigungen, Verbindungsabbrüchen und Neustarts. Dabei wird kein Funkgerät geöffnet. Ablauf und Grenzen stehen in der [Anleitung zur Hardware-Simulation](docs/hardware-simulation.md).
