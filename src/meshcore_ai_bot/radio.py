@@ -64,6 +64,7 @@ class RadioTransport:
         self.mc = None
         self.indices: dict[int, str] = {}
         self.EventType = None
+        self.needs_reconnect = False
 
     async def connect(self, *, provision: bool = False):
         try:
@@ -115,6 +116,7 @@ class RadioTransport:
             self.mc.subscribe(EventType.ADVERTISEMENT, advert)
             await self.mc.start_auto_message_fetching()
         await self.refresh_contacts()
+        self.needs_reconnect = False
 
     async def load_channels(self, create: bool) -> dict[int, str]:
         indices, empty = {}, []
@@ -168,8 +170,22 @@ class RadioTransport:
         index = next((i for i, name in self.indices.items() if name == channel), None)
         if index is None or len(text.encode()) > self.config.radio.packet_bytes:
             raise ValueError("Unconfigured channel or oversized packet")
-        response = await self.mc.commands.send_chan_msg(index, text)
-        return response.type == self.EventType.OK  # local acceptance, not recipient delivery
+        if self.needs_reconnect:
+            raise ConnectionError("Radio session must reconnect before sending")
+        try:
+            response = await self.mc.commands.send_chan_msg(index, text)
+        except BaseException:
+            # Cancellation can leave a late, uncorrelated OK in the old session too.
+            self.needs_reconnect = True
+            raise
+        if response.type == self.EventType.OK:
+            return True  # local acceptance, not recipient delivery
+        if response.type == self.EventType.ERROR and type(response.payload.get("error_code")) is int:
+            return False  # an explicit error frame from the device
+        # The SDK represents timeout/disconnect as ERROR with reason/error, rather
+        # than raising. No response does not prove that the device did not send.
+        self.needs_reconnect = True
+        raise ConnectionError("Device acknowledgement missing; reconnect required")
 
     async def disconnect(self):
         if self.mc:
@@ -204,7 +220,10 @@ async def run_radio(config: Config):
 
                         async def transmit(engine=engine, transport=transport):
                             while True:
-                                if not await engine.deliver_one(transport):
+                                delivered = await engine.deliver_one(transport)
+                                if transport.needs_reconnect:
+                                    raise ConnectionError("Radio session acknowledgement is uncertain")
+                                if not delivered:
                                     await asyncio.sleep(0.5)
 
                         async def maintain(transport=transport):
