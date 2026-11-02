@@ -1,0 +1,93 @@
+[station]
+name = "MeshCore AI Bot"
+location = "Berlin-Friedenau" # configured QTH, not a live GPS reading
+own_names = ["MeshCore AI Bot"]
+timezone = "Europe/Berlin"
+
+[station.scopes]
+de-bebb = "Berlin und Brandenburg"
+de-be = "Berlin"
+de-bb = "Brandenburg"
+
+[radio]
+port = "/dev/serial/by-id/REPLACE_WITH_YOUR_DEVICE"
+# Creates only missing configured channels in empty slots. Never overwrites a slot.
+create_channels = false
+send_interval_seconds = 30
+receive_quiet_seconds = 4
+max_rx_wait_seconds = 60
+packet_bytes = 110
+
+[ai]
+base_url = "https://openrouter.ai/api/v1"
+model = "google/gemini-2.5-flash"
+api_key_env = "MESHCORE_AI_API_KEY"
+timeout_seconds = 45
+requests_per_minute = 6
+requests_per_day = 250
+max_tokens = 600
+# For a local OpenAI-compatible server, e.g. Ollama, use:
+# base_url = "http://127.0.0.1:11434/v1"
+# model = "YOUR_INSTALLED_MODEL"
+# allow_local_http = true
+
+[storage]
+path = "data/bot.sqlite3"
+retention_hours = 24
+message_max_age_seconds = 300
+reply_ttl_seconds = 1800
+history_turns = 4
+
+[weather]
+enabled = true
+location = "Berlin-Friedenau"
+latitude = 52.472
+longitude = 13.331
+
+[broadcasts]
+# Disabled until deliberately enabled. Never allowed in #bot or #fragdenbot by default.
+warnings_enabled = false
+warning_regions = ["BER", "BB"]
+warning_poll_seconds = 300
+include_instructions = false
+news_enabled = false
+news_poll_seconds = 3600
+rss_feeds = []
+
+[[channels]]
+name = "#fragdenbot"
+mode = "all"
+broadcasts = []
+
+[[channels]]
+name = "#bot"
+mode = "keyword"
+keyword = "KI"
+broadcasts = []
+
+[[channels]]
+name = "#ideenwerft"
+mode = "mention"
+mentions = ["ideenwerft", "ideenwerft friedenau", "meshcore ai bot"]
+respond_to_checks = true
+broadcasts = ["warnings"]
+
+[[channels]]
+name = "Public"
+mode = "off"
+broadcasts = []
+
+[[channels]]
+name = "#public"
+mode = "off"
+broadcasts = []
+
+[[channels]]
+name = "#warnings"
+mode = "off"
+broadcasts = ["warnings"]
+
+[[channels]]
+name = "#news"
+mode = "off"
+broadcasts = ["news"]
