@@ -1,0 +1,15 @@
+[
+  {"text":"ping","expected_reply":true},
+  {"text":"QTH?","expected_reply":true},
+  {"text":"wx friedenau","expected_reply":true},
+  {"text":"Was ist ein Repeater?","expected_reply":true},
+  {"text":"Was bedeutet de-bebb?","expected_reply":true},
+  {"text":"2 + 3 * 4","expected_reply":true},
+  {"text":"Horoskop für Löwe bitte","expected_reply":true},
+  {"channel":"Public","text":"KI ping","expected_reply":false},
+  {"channel":"#public","text":"KI ping","expected_reply":false},
+  {"channel":"#bot","text":"ping","expected_reply":false},
+  {"channel":"#bot","text":"Kiste","expected_reply":false},
+  {"channel":"#bot","text":"KI ping","expected_reply":true},
+  {"channel":"#bot","text":"Was ist KI?","expected_reply":true}
+]
