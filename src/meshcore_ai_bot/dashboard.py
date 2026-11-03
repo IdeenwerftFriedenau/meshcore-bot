@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from collections import deque
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -17,8 +18,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import load_config
+from .preview import run_preview, validate_request
 from .regions import STATES
-from .settings import read_settings, save_settings
+from .settings import read_settings, refresh_secrets, save_settings
 
 
 def runtime(config):
@@ -81,6 +83,8 @@ def make_server(path, host=None, port=None):
         raise ValueError("LAN access requires a dashboard token of at least 24 characters")
     csrf = secrets.token_urlsafe(32)
     lock = threading.Lock()
+    preview_lock = threading.Lock()
+    online_tests = deque()
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -155,7 +159,7 @@ def make_server(path, host=None, port=None):
         def do_POST(self):
             if not self.allowed():
                 return
-            if self.path != "/api/settings":
+            if self.path not in {"/api/settings", "/api/preview"}:
                 self.respond(404, {"error": "Nicht gefunden"})
                 return
             if self.headers.get("Origin") != "http://" + self.headers.get(
@@ -171,9 +175,40 @@ def make_server(path, host=None, port=None):
                 ):
                     raise ValueError("JSON-Anfrage bis 128 KB erforderlich")
                 payload = json.loads(self.rfile.read(length))
-                with lock:
-                    result = save_settings(path, payload)
+                if self.path == "/api/preview":
+                    with lock:
+                        current = load_config(path)
+                        refresh_secrets(current, path)
+                        _, _, _, offline = validate_request(payload, current)
+                    if not preview_lock.acquire(blocking=False):
+                        self.respond(429, {"error": "Ein Texttest läuft bereits. Bitte kurz warten."})
+                        return
+                    try:
+                        if not offline:
+                            now = time.time()
+                            while online_tests and online_tests[0] < now - 86400:
+                                online_tests.popleft()
+                            if (
+                                len(online_tests) >= current.ai.requests_per_day
+                                or sum(t > now - 60 for t in online_tests) >= current.ai.requests_per_minute
+                            ):
+                                self.respond(
+                                    429,
+                                    {
+                                        "error": "Testlimit erreicht. Offline testen oder später erneut versuchen."
+                                    },
+                                )
+                                return
+                            online_tests.append(now)
+                        result = run_preview(current, payload)
+                    finally:
+                        preview_lock.release()
+                else:
+                    with lock:
+                        result = save_settings(path, payload)
                 self.respond(200, result)
+            except TimeoutError:
+                self.respond(504, {"error": "Der Texttest hat zu lange gedauert. Bitte erneut versuchen."})
             except FileExistsError:
                 self.respond(409, {"error": "Konfiguration wurde geändert. Bitte neu laden."})
             except (ValueError, TypeError, KeyError, AttributeError):
