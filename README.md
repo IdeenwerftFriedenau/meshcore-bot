@@ -1,6 +1,6 @@
 # MeshCore AI Bot
 
-Ein eigenständiger deutschsprachiger MeshCore-Bot für Raspberry Pi. Kein Hetzner-Server und kein WordPress erforderlich. Ein USB-Gerät mit MeshCore-Companion-Firmware übernimmt den Funk; der Pi übernimmt Fragen, Datenquellen und die dauerhafte Sendewarteschlange.
+Ein eigenständiger deutschsprachiger MeshCore-Bot für Raspberry Pi. Die Konfiguration läuft lokal auf dem Pi. Ein USB-Gerät mit MeshCore-Companion-Firmware übernimmt den Funk; der Pi übernimmt Fragen, Datenquellen und die dauerhafte Sendewarteschlange.
 
 ## Funktionen
 
@@ -10,7 +10,7 @@ Ein eigenständiger deutschsprachiger MeshCore-Bot für Raspberry Pi. Kein Hetzn
 - Funkabkürzungen, WX, Repeater/Node/Companion, Rechenaufgaben und auf Wunsch spielerische Horoskope.
 - Wetter über Open-Meteo; Repeaterwissen aus passiv empfangenen Kontakten und Adverts. Ein altes Advert gilt ausdrücklich nicht als Beweis für einen Ausfall.
 - Konfigurierbare Scope-Bezeichnungen `de-be`, `de-bb`, `de-bebb`.
-- Optionale DWD-/BBK-Warnungen für Berlin und Brandenburg mit Zeitangaben und gemeinsamer Kennung BER/BB. Handlungsempfehlungen standardmäßig aus. Optionale RSS-Schlagzeilen.
+- Optionale DWD-/BBK-Warnungen für alle 16 Bundesländer mit Zeitangaben und gemeinsamer Kennung BER/BB. Handlungsempfehlungen standardmäßig aus. Optionale RSS-Schlagzeilen.
 - KI über einen kompatiblen Chat-Completions-Anbieter oder einen lokalen Ollama-Dienst. API-Schlüssel bleiben außerhalb des Repositorys.
 
 **Zustellung:** Ein OK vom USB-Gerät bestätigt die lokale Annahme, keinen Empfang durch alle Funkteilnehmer. Unklare Sendungen werden deshalb nicht blind wiederholt. Mehrteilige Texte bleiben vollständig erhalten; KI-Antworten über acht Pakete werden durch eine Bitte um eine engere Frage ersetzt.
@@ -72,7 +72,7 @@ Ollama und das Modell separat installieren. Ohne verfügbaren KI-Dienst funktion
 
 Einstellungen: [Konfigurationsvorlage](config.example.toml). Details: [Betrieb und Datenschutz](docs/operation.md), [Architektur](docs/architecture.md).
 
-Die SQLite-Datenbank liegt beim Dienst unter `/var/lib/meshcore-ai-bot`. Nachrichten werden standardmäßig nach 24 Stunden bereinigt. Dieses Projekt erzeugt und speichert keine Audiodateien und benötigt kein WordPress. Eine bestehende DAB-/WordPress-Pipeline wird nicht übernommen; Nachrichten kommen optional aus ausdrücklich eingetragenen RSS-Feeds.
+Die SQLite-Datenbank liegt beim Dienst unter `/var/lib/meshcore-ai-bot`. Nachrichten werden standardmäßig nach 24 Stunden bereinigt. Dieses Projekt erzeugt und speichert keine Audiodateien. Nachrichten kommen optional aus ausdrücklich eingetragenen RSS-Feeds.
 
 Das Repository enthält keine privaten Stationsschlüssel oder vorgetäuschten Repeater-Livedaten. Der öffentliche Analyzer wird nicht automatisiert ausgelesen. Funkbedingungen, Firmware und externe Dienste können Zustellungen verhindern; es gibt keine Garantie vollständiger Funkzustellung. Vor dem Dauerbetrieb auf der eigenen Hardware prüfen. Lizenz: MIT.
 
@@ -84,3 +84,19 @@ pytest -q tests/test_hardware_simulation.py
 ```
 
 20 zusätzliche Szenarien prüfen den echten MeshCore-SDK-Transport an einem virtuellen seriellen Companion, einschließlich verzögerter Bestätigungen, Verbindungsabbrüchen und Neustarts. Dabei wird kein Funkgerät geöffnet. Ablauf und Grenzen stehen in der [Anleitung zur Hardware-Simulation](docs/hardware-simulation.md).
+
+## Pi Console: lokales Konfigurationsdashboard
+
+Eine responsive Oberfläche für Station, Funk, KI, Kanalregeln, alle 16 Bundesländer und Datenaufbewahrung. Keine externen Assets. Public bleibt geschützt. Einstellungen werden geprüft und atomar gespeichert; der laufende Bot übernimmt gültige Änderungen mit einem Verbindungsneustart. API-Schlüssel sind nur schreibbar, nicht auslesbar.
+
+```sh
+sudo systemctl enable --now meshcore-dashboard
+# Auf dem eigenen Rechner:
+ssh -L 8765:127.0.0.1:8765 pi@raspberrypi.local
+```
+
+Browser: `http://127.0.0.1:8765`. Das Dashboard startet den Funkdienst nicht. [Einrichtung und Zugriffsschutz](docs/dashboard.md).
+
+## DAB+ ASA ohne Internet
+
+Profil für **Nooelec RTL-SDR V5**, optionale RTL-SDR-Treiber und eine lokale Offline-Warnschnittstelle mit Zeitprüfung, Zielregionen, Aktualisierungen und Duplikatschutz. **Für echten ASA-Empfang ist zusätzlich ein separat eingerichteter ASA-fähiger Decoderadapter erforderlich.** Ein Stick oder gewöhnlicher DAB-Decoder allein bestätigt keinen ASA-Empfang. [Empfang, Voraussetzungen und Adapterformat](docs/dab-asa.md).
