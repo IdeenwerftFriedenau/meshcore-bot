@@ -24,11 +24,23 @@ python3 -m venv /opt/meshcore-ai-bot/.venv
 if [[ ! -e /etc/meshcore-ai-bot/config.toml ]]; then
   install -o meshcore-ai -g meshcore-ai -m 600 "$SOURCE_DIR/config.example.toml" /etc/meshcore-ai-bot/config.toml
   sed -i 's|path = "data/bot.sqlite3"|path = "/var/lib/meshcore-ai-bot/bot.sqlite3"|' /etc/meshcore-ai-bot/config.toml
+  sed -i 's|inbox = "data/asa"|inbox = "/var/lib/meshcore-ai-bot/asa"|' /etc/meshcore-ai-bot/config.toml
 fi
 if [[ ! -e /etc/meshcore-ai-bot/.env ]]; then
   install -o meshcore-ai -g meshcore-ai -m 600 "$SOURCE_DIR/.env.example" /etc/meshcore-ai-bot/.env
 fi
 install -m 644 "$SOURCE_DIR/deploy/meshcore-ai-bot.service" /etc/systemd/system/meshcore-ai-bot.service
+# Add an inbox to older configurations without changing any existing ASA profile.
+python3 - <<'PYCONFIG'
+import tomllib
+from pathlib import Path
+path = Path('/etc/meshcore-ai-bot/config.toml')
+with path.open('rb') as stream:
+    config = tomllib.load(stream)
+if 'asa' not in config:
+    with path.open('a') as stream:
+        stream.write('\n[asa]\nenabled = false\ninbox = "/var/lib/meshcore-ai-bot/asa"\n')
+PYCONFIG
 chown meshcore-ai:meshcore-ai /etc/meshcore-ai-bot/config.toml /etc/meshcore-ai-bot/.env
 chmod 600 /etc/meshcore-ai-bot/config.toml /etc/meshcore-ai-bot/.env
 install -d -o meshcore-ai -g meshcore-ai -m 700 /var/lib/meshcore-ai-bot/asa
