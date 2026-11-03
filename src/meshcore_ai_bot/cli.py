@@ -29,9 +29,11 @@ def parser():
     )
     root.add_argument("--version", action="version", version=__version__)
     sub = root.add_subparsers(dest="command", required=True)
-    for name in ["check", "demo", "replay", "run", "provision", "status", "prune"]:
+    for name in ["check", "demo", "replay", "run", "provision", "status", "prune", "dashboard", "asa-ingest"]:
         command = sub.add_parser(name)
         command.add_argument("--config", default="config.toml")
+        if name == "asa-ingest":
+            command.add_argument("event", type=Path)
         if name == "demo":
             command.add_argument("text")
             command.add_argument("--channel", default="#fragdenbot")
@@ -111,7 +113,7 @@ async def async_main(args, config):
         if hasattr(signal, "SIGTERM"):
             loop.add_signal_handler(signal.SIGTERM, task.cancel)
         try:
-            await run_radio(config)
+            await run_radio(config, config_path=args.config)
         except asyncio.CancelledError:
             pass
     elif args.command == "provision":
@@ -177,6 +179,17 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         config = load_config(path)
+        if args.command == "dashboard":
+            from .dashboard import serve
+
+            serve(path)
+            return 0
+        if args.command == "asa-ingest":
+            from .asa import ingest
+
+            with args.event.open("rb") as stream:
+                print(ingest(config, stream.read(65537)))
+            return 0
         return asyncio.run(async_main(args, config))
     except KeyboardInterrupt:
         return 130

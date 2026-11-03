@@ -13,11 +13,13 @@ from pathlib import Path
 
 import httpx
 
+from . import asa
 from .assistant import Assistant
 from .broadcasts import Broadcasts
-from .config import Config
+from .config import Config, load_config
 from .engine import Engine
 from .protocol import Incoming
+from .settings import digest, refresh_secrets
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -196,7 +198,42 @@ class RadioTransport:
             self.mc = None
 
 
-async def run_radio(config: Config):
+class ConfigurationReloaded(Exception):
+    pass
+
+
+def cancel_changed_sources(store, old, new):
+    from .broadcasts import selected_regions
+
+    sources = []
+    for source in ["dwd", "bbk"]:
+        a, b = old.broadcasts, new.broadcasts
+        if (a.warnings_enabled, getattr(a, source + "_enabled"), selected_regions(old, source)) != (
+            b.warnings_enabled,
+            getattr(b, source + "_enabled"),
+            selected_regions(new, source),
+        ):
+            sources.append(source)
+    if (old.broadcasts.warnings_enabled, old.asa.enabled, old.asa.regions) != (
+        new.broadcasts.warnings_enabled,
+        new.asa.enabled,
+        new.asa.regions,
+    ):
+        sources.append("asa")
+    if (
+        old.broadcasts.news_enabled != new.broadcasts.news_enabled
+        or old.broadcasts.rss_feeds != new.broadcasts.rss_feeds
+    ):
+        sources.append("rss")
+    with store.transaction() as c:
+        for source in sources:
+            c.execute(
+                "UPDATE packets SET state='cancelled',updated=? WHERE batch LIKE ? AND state='queued'",
+                (time.time(), source + ":%"),
+            )
+
+
+async def run_radio(config: Config, config_path=None):
     with instance_lock(config.storage.path):
         store = Store(config.storage.path)
         try:
@@ -205,12 +242,26 @@ async def run_radio(config: Config):
             ) as client:
                 assistant = Assistant(config, store, client)
                 broadcasts = Broadcasts(config, store, client)
+                revision = digest(config_path) if config_path else None
                 while True:
+                    if config_path:
+                        try:
+                            new = load_config(config_path)
+                            if new.storage.path != config.storage.path:
+                                raise ValueError("Changing the database path requires a service restart")
+                            refresh_secrets(new, config_path)
+                            cancel_changed_sources(store, config, new)
+                            config.__dict__.update(new.__dict__)
+                            revision = digest(config_path)
+                        except (ValueError, OSError):
+                            log.warning("New settings invalid; keeping last working configuration")
                     store.recover()
                     engine = Engine(config, store, assistant)
                     transport = RadioTransport(config, store, engine)
                     try:
                         await transport.connect()
+                        store.meta_set("bot:connected", 1)
+                        store.meta_set("bot:heartbeat", time.time())
                         log.info("Connected. Listening channels: %s", ", ".join(transport.indices.values()))
 
                         async def process(engine=engine):
@@ -228,6 +279,7 @@ async def run_radio(config: Config):
 
                         async def maintain(transport=transport):
                             while True:
+                                store.meta_set("bot:heartbeat", time.time())
                                 await transport.refresh_contacts()
                                 store.prune(time.time(), config.storage.retention_hours)
                                 await asyncio.sleep(60)
@@ -244,14 +296,39 @@ async def run_radio(config: Config):
                                 await broadcasts.poll_news()
                                 await asyncio.sleep(config.broadcasts.news_poll_seconds)
 
+                        async def asa_poll():
+                            while True:
+                                await asyncio.to_thread(asa.poll, config, store)
+                                await asyncio.sleep(2)
+
+                        async def watch_settings(revision=revision):
+                            while True:
+                                await asyncio.sleep(2)
+                                try:
+                                    changed = digest(config_path)
+                                    if changed != revision:
+                                        new = load_config(config_path)
+                                        if new.storage.path != config.storage.path:
+                                            raise ValueError("Database path requires restart")
+                                        raise ConfigurationReloaded()
+                                except (OSError, ValueError):
+                                    log.warning(
+                                        "Invalid updated configuration; keeping last working settings"
+                                    )
+
                         async with asyncio.TaskGroup() as group:
                             for worker in [process, transmit, maintain, warning_poll, news_poll]:
                                 group.create_task(worker())
+                            if config.asa.enabled:
+                                group.create_task(asa_poll())
+                            if config_path:
+                                group.create_task(watch_settings())
                     except asyncio.CancelledError:
                         raise
                     except Exception:
                         log.exception("Connection/worker stopped; reconnecting in 10 seconds")
                     finally:
+                        store.meta_set("bot:connected", 0)
                         await transport.disconnect()
                     await asyncio.sleep(10)
         finally:

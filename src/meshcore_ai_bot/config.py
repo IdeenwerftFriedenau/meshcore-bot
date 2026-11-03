@@ -9,8 +9,11 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import get_args, get_origin, get_type_hints
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
+
+from .regions import STATES, canonical
 
 PUBLIC_CHANNELS = frozenset({"Public", "#public"})
 
@@ -70,12 +73,34 @@ class Weather:
 @dataclass
 class Broadcasts:
     warnings_enabled: bool = False
+    dwd_enabled: bool = True
+    bbk_enabled: bool = True
+    dwd_regions: list[str] = field(default_factory=list)
+    bbk_regions: list[str] = field(default_factory=list)
     warning_regions: list[str] = field(default_factory=lambda: ["BER", "BB"])
     warning_poll_seconds: int = 300
     include_instructions: bool = False
     news_enabled: bool = False
     news_poll_seconds: int = 3600
     rss_feeds: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ASA:
+    enabled: bool = False
+    inbox: str = "data/asa"
+    regions: list[str] = field(default_factory=lambda: ["BER", "BB"])
+    max_age_seconds: int = 300
+    receiver: str = "Nooelec RTL-SDR V5"
+    dab_channel: str = "5C"
+    device_index: int = 0
+
+
+@dataclass
+class Dashboard:
+    host: str = "127.0.0.1"
+    port: int = 8765
+    token_env: str = "MESHCORE_DASHBOARD_TOKEN"
 
 
 @dataclass
@@ -91,6 +116,8 @@ class Channel:
 
 @dataclass
 class Config:
+    asa: ASA = field(default_factory=ASA)
+    dashboard: Dashboard = field(default_factory=Dashboard)
     station: Station = field(default_factory=Station)
     radio: Radio = field(default_factory=Radio)
     ai: AI = field(default_factory=AI)
@@ -110,13 +137,17 @@ class Config:
             (self.radio, ["create_channels"]),
             (self.ai, ["allow_local_http"]),
             (self.weather, ["enabled"]),
-            (self.broadcasts, ["warnings_enabled", "news_enabled", "include_instructions"]),
+            (
+                self.broadcasts,
+                ["warnings_enabled", "news_enabled", "include_instructions", "dwd_enabled", "bbk_enabled"],
+            ),
+            (self.asa, ["enabled"]),
         ]:
             for name in fields:
                 if type(getattr(section, name)) is not bool:
                     raise ValueError(f"{name} must be true or false")
         ranges = [
-            (self.radio.send_interval_seconds, 5, 3600, "send_interval_seconds"),
+            (self.radio.send_interval_seconds, 30, 3600, "send_interval_seconds"),
             (self.radio.receive_quiet_seconds, 0, 30, "receive_quiet_seconds"),
             (self.radio.max_rx_wait_seconds, 0, 300, "max_rx_wait_seconds"),
             (self.radio.packet_bytes, 50, 110, "packet_bytes"),
@@ -144,8 +175,31 @@ class Config:
             raise ValueError("ai.api_key_env must be an environment variable name")
         if not -90 <= self.weather.latitude <= 90 or not -180 <= self.weather.longitude <= 180:
             raise ValueError("Invalid weather coordinates")
-        if not set(self.broadcasts.warning_regions) <= {"BER", "BB"}:
-            raise ValueError("Only BER and BB warning regions are supported")
+        for section, key in [
+            (self.broadcasts, "warning_regions"),
+            (self.broadcasts, "dwd_regions"),
+            (self.broadcasts, "bbk_regions"),
+            (self.asa, "regions"),
+        ]:
+            values = getattr(section, key)
+            if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
+                raise ValueError("Regions must be a list of state codes")
+            values = list(dict.fromkeys(canonical(v) for v in values))
+            if not set(values) <= set(STATES):
+                raise ValueError("Unknown federal state")
+            setattr(section, key, values)
+        if self.dashboard.host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
+            raise ValueError("Unsupported dashboard bind address")
+        if type(self.dashboard.port) is not int or not 1024 <= self.dashboard.port <= 65535:
+            raise ValueError("Invalid dashboard port")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.dashboard.token_env):
+            raise ValueError("Invalid dashboard token environment name")
+        if not re.fullmatch(r"(?:[5-9]|1[0-3])[A-F]", self.asa.dab_channel):
+            raise ValueError("Invalid DAB channel")
+        if type(self.asa.device_index) is not int or not 0 <= self.asa.device_index <= 15:
+            raise ValueError("Invalid SDR device index")
+        if type(self.asa.max_age_seconds) is not int or not 30 <= self.asa.max_age_seconds <= 3600:
+            raise ValueError("Invalid ASA freshness limit")
         if len({ch.name for ch in self.channels}) != len(self.channels):
             raise ValueError("Duplicate channel names")
         if not self.channels:
@@ -161,6 +215,10 @@ class Config:
                 raise ValueError("Unknown broadcast stream")
             if ch.name in PUBLIC_CHANNELS and (ch.mode != "off" or ch.broadcasts):
                 raise ValueError("Public and #public are protected: replies and broadcasts must stay off")
+            if ch.name in {"#bot", "#fragdenbot"} and ch.broadcasts:
+                raise ValueError("Question channels cannot broadcast warnings or news")
+            if ch.name == "#bot" and (ch.mode not in {"off", "keyword"} or ch.keyword != "KI"):
+                raise ValueError("#bot requires keyword KI or off")
             if ch.name.startswith("#") and ch.secret_env:
                 raise ValueError(
                     "Hashtag keys are derived from the name; use a non-hashtag private channel with secret_env"
@@ -192,6 +250,22 @@ def _section(cls, values):
     unknown = set(values) - valid
     if unknown:
         raise ValueError(f"Unknown {cls.__name__} settings: {', '.join(sorted(unknown))}")
+    hints = get_type_hints(cls)
+    for name, value in values.items():
+        kind = hints[name]
+        origin = get_origin(kind)
+        if origin is list:
+            valid_type = isinstance(value, list) and all(type(v) is get_args(kind)[0] for v in value)
+        elif origin is dict:
+            valid_type = isinstance(value, dict) and all(
+                type(k) is str and type(v) is str for k, v in value.items()
+            )
+        elif kind is float:
+            valid_type = type(value) in {int, float}
+        else:
+            valid_type = type(value) is kind
+        if not valid_type:
+            raise ValueError(f"Invalid type for {cls.__name__}.{name}")
     return cls(**values)
 
 
@@ -199,10 +273,12 @@ def load_config(path: str | Path) -> Config:
     path = Path(path).expanduser().resolve()
     with path.open("rb") as stream:
         raw = tomllib.load(stream)
-    known = {"station", "radio", "ai", "storage", "weather", "broadcasts", "channels"}
+    known = {"station", "radio", "ai", "storage", "weather", "broadcasts", "channels", "asa", "dashboard"}
     if set(raw) - known:
         raise ValueError("Unknown configuration section")
     config = Config(
+        asa=_section(ASA, raw.get("asa", {})),
+        dashboard=_section(Dashboard, raw.get("dashboard", {})),
         station=_section(Station, raw.get("station", {})),
         radio=_section(Radio, raw.get("radio", {})),
         ai=_section(AI, raw.get("ai", {})),
@@ -219,5 +295,8 @@ def load_config(path: str | Path) -> Config:
     config.radio.port = os.environ.get("MESHCORE_AI_RADIO_PORT", config.radio.port)
     config.storage.path = str(
         (path.parent / os.environ.get("MESHCORE_AI_DB_PATH", config.storage.path)).resolve()
+    )
+    config.asa.inbox = str(
+        (path.parent / os.environ.get("MESHCORE_AI_ASA_INBOX", config.asa.inbox)).resolve()
     )
     return config.validate()

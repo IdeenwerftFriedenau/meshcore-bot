@@ -18,6 +18,7 @@ import httpx
 from .config import Config
 from .http import read_bytes, read_json
 from .protocol import allows_send, split_text
+from .regions import STATES, bbk_states, canonical, ordered
 from .store import Store
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -57,11 +58,9 @@ def dwd_warnings(data: dict, now: float, regions: list[str]) -> list[dict]:
     grouped = {}
     for values in data["warnings"].values():
         for row in values:
-            code = (
-                "BER"
-                if row.get("stateShort") == "BL" or row.get("state") == "Berlin"
-                else ("BB" if row.get("stateShort") == "BB" or row.get("state") == "Brandenburg" else None)
-            )
+            code = canonical(row.get("stateShort", ""))
+            if code not in STATES:
+                code = next((k for k, (name, _) in STATES.items() if name == row.get("state")), None)
             if code not in regions or float(row.get("end", 0)) / 1000 <= now:
                 continue
             key = tuple(
@@ -86,7 +85,7 @@ def dwd_warnings(data: dict, now: float, regions: list[str]) -> list[dict]:
     result = []
     for row in grouped.values():
         row["area"] = "; ".join(sorted(row.pop("areas")))
-        row["codes"] = sorted(row["codes"], key=lambda c: c != "BER")
+        row["codes"] = ordered(row["codes"])
         # Start+title distinguish a new event; content revision handles updates.
         row["identity"] = (
             "dwd:"
@@ -98,10 +97,16 @@ def dwd_warnings(data: dict, now: float, regions: list[str]) -> list[dict]:
     return result
 
 
+def selected_regions(config, source):
+    return getattr(config.broadcasts, source + "_regions", []) or config.broadcasts.warning_regions
+
+
 class Broadcasts:
     def __init__(self, config: Config, store: Store, client: httpx.AsyncClient):
         self.config, self.store, self.client = config, store, client
         self._semaphore = asyncio.Semaphore(4)
+        self._bbk_cache = {}
+        self._unassigned_bbk = set()
 
     async def _json(self, url):
         async with self._semaphore:
@@ -116,37 +121,53 @@ class Broadcasts:
         )
         text = raw.decode()
         data = json.loads(text[text.index("{") : text.rindex("}") + 1])
-        return dwd_warnings(data, time.time(), self.config.broadcasts.warning_regions)
+        return dwd_warnings(data, time.time(), selected_regions(self.config, "dwd"))
 
     async def fetch_bbk(self) -> list[dict]:
-        regions = self.config.broadcasts.warning_regions
-        areas = ([] if "BER" not in regions else [("110000000000", "BER")]) + (
-            []
-            if "BB" not in regions
-            else [(f"120{i:02d}0000000", "BB") for i in [51, 52, 53, 54, *range(60, 74)]]
+        regions = selected_regions(self.config, "bbk")
+        indexes = await asyncio.gather(
+            *(
+                self._json("https://warnung.bund.de/api31/" + source + "/mapData.json")
+                for source in ["mowas", "katwarn", "biwapp", "lhp"]
+            )
         )
-        rows = await asyncio.gather(
-            *(self._json("https://warnung.bund.de/api31/dashboard/" + ars + ".json") for ars, _ in areas)
-        )
-        codes: dict[str, set] = {}
-        for (_, code), alerts in zip(areas, rows, strict=True):
+        versions = {}
+        for alerts in indexes:
             if not isinstance(alerts, list):
-                raise ValueError("Invalid BBK dashboard")
+                raise ValueError("Invalid BBK index")
             for alert in alerts:
                 identity = alert.get("id", "")
                 if not re.fullmatch(r"[A-Za-z0-9_.-]{1,250}", identity):
                     raise ValueError("Invalid warning identifier")
-                codes.setdefault(identity, set()).add(code)
-        details = await asyncio.gather(
-            *(self._json("https://warnung.bund.de/api31/warnings/" + key + ".json") for key in codes)
-        )
+                versions[identity] = str(alert.get("version", ""))
+        if len(versions) > 1500:
+            raise ValueError("Oversized warning index")
+
+        async def detail(key):
+            cached = self._bbk_cache.get(key)
+            if cached and cached[0] == versions[key] and time.time() - cached[1] < 600:
+                return cached[2]
+            value = await self._json("https://warnung.bund.de/api31/warnings/" + key + ".json")
+            self._bbk_cache[key] = (versions[key], time.time(), value)
+            return value
+
+        details = await asyncio.gather(*(detail(key) for key in versions))
+        self._bbk_cache = {key: value for key, value in self._bbk_cache.items() if key in versions}
+        self._unassigned_bbk = set()
         result = []
-        for key, detail in zip(codes, details, strict=True):
+        for key, detail in zip(versions, details, strict=True):
             if detail.get("status") != "Actual" or detail.get("msgType") == "Cancel":
                 continue
             info = next((i for i in detail.get("info", []) if i.get("language", "de").startswith("de")), None)
             if info is None:
                 raise ValueError("Missing German warning details")
+            targets = bbk_states(info)
+            if not targets:
+                self._unassigned_bbk.add("bbk:" + key)
+                continue
+            codes = ordered(targets.intersection(regions))
+            if not codes:
+                continue
             expires = date_value(info.get("expires"))
             if expires and expires <= time.time():
                 continue
@@ -160,7 +181,7 @@ class Broadcasts:
                     "instruction": plain(info.get("instruction")),
                     "onset": date_value(info.get("onset") or info.get("effective")),
                     "expires": expires,
-                    "codes": sorted(codes[key], key=lambda c: c != "BER"),
+                    "codes": codes,
                     "area": "; ".join(plain(a.get("areaDesc")) for a in info.get("area", [])),
                     "url": "https://warnung.bund.de/meldungen/" + key,
                 }
@@ -168,7 +189,12 @@ class Broadcasts:
         return result
 
     def queue_warnings(self, source: str, warnings: list[dict], now: float) -> int:
-        key = "source_initialized:" + source
+        key = (
+            "source_initialized:"
+            + source
+            + ":"
+            + hashlib.sha256(json.dumps(sorted(selected_regions(self.config, source))).encode()).hexdigest()
+        )
         baseline = self.store.meta_get(key) is None
         queued = 0
         identities = set()
@@ -200,7 +226,7 @@ class Broadcasts:
                 "SELECT identity,revision FROM broadcasts WHERE identity LIKE ?", (source + ":%",)
             ).fetchall()
             for row in previous:
-                if row["identity"] not in identities:
+                if row["identity"] not in identities and row["identity"] not in self._unassigned_bbk:
                     batch = row["identity"] + ":" + row["revision"]
                     c.execute(
                         "UPDATE packets SET expires=MIN(expires,?) WHERE batch=? AND state IN ('queued','sending')",
@@ -218,12 +244,19 @@ class Broadcasts:
             return {}
         results = {}
         for source, fetch in [("dwd", self.fetch_dwd), ("bbk", self.fetch_bbk)]:
+            if not getattr(self.config.broadcasts, source + "_enabled") or not selected_regions(
+                self.config, source
+            ):
+                results[source] = "disabled"
+                continue
             try:
                 warnings = await fetch()
-                results[source] = self.queue_warnings(source, warnings, time.time())
+                count = self.queue_warnings(source, warnings, time.time())
+                results[source] = "partial" if source == "bbk" and self._unassigned_bbk else count
             except (httpx.HTTPError, ValueError, KeyError, TypeError, UnicodeError):
                 # Preserve state; do not turn a broken source into an all-clear.
                 results[source] = "unavailable"
+        self.store.meta_set("warnings:status", json.dumps(results))
         return results
 
     async def poll_news(self) -> int:
