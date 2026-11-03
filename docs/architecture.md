@@ -9,3 +9,6 @@
 Die Datenbank enthält keine Modelldateien. Ein Pi kann daher als Funkgateway und Anwendung ohne Serverbetrieb außerhalb des eigenen Netzes arbeiten. Ob die KI selbst lokal oder bei einem API-Anbieter läuft, entscheidet die Konfiguration.
 
 Datenquellen: Open-Meteo Wetter/Geocoding, DWD WarnWetter-Daten, BBK NINA-Meldungen und individuell konfigurierte RSS-Feeds. Quellenbedingungen und Nutzungsgrenzen sind beim eigenen Betrieb zu beachten. Der Analyzer meshcorenetz.de wird nicht automatisiert abgefragt. Verlässliche Repeater-Aussagen beziehen sich auf Zeit und Quelle der tatsächlich lokal erfassten Daten.
+
+
+Dashboard: [Pi Console](dashboard.md). Lokaler Warnpfad: [DAB+ ASA](dab-asa.md). DWD und BBK können getrennte Bundesländer verwenden. Die ASA-Inbox wird unabhängig von Online-Abfragen verarbeitet.

@@ -26,3 +26,6 @@ Bei Online-KI werden Frage, begrenzter Verlauf, Stationskontext und gegebenenfal
 Für Backups den Dienst stoppen und `/var/lib/meshcore-ai-bot` sowie die geschützten Einstellungen sichern. Datenbank nicht gleichzeitig durch eine ältere Programmversion öffnen. Schlüssel niemals in Git einchecken. Journald folgt der Aufbewahrung des Betriebssystems; diese ist getrennt von der Bot-Datenbank zu konfigurieren. Es werden keine Audioarchive erzeugt.
 
 Updates: Repository aktualisieren, Installer erneut ausführen, Dienst neu starten. Vorher Datenbank sichern. Bestehende Konfigurationsdateien werden vom Installer nicht überschrieben.
+
+
+Dashboard: [Pi Console](dashboard.md). Lokaler Warnpfad: [DAB+ ASA](dab-asa.md). DWD und BBK können getrennte Bundesländer verwenden. Die ASA-Inbox wird unabhängig von Online-Abfragen verarbeitet.

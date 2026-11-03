@@ -13,7 +13,7 @@ pip install -e '.[dev,radio]'
 pytest -q tests/test_hardware_simulation.py
 ```
 
-Kein API-Schlüssel, kein Hetzner, kein Modell und kein Internet während der Tests erforderlich. Zum erstmaligen Installieren der Abhängigkeiten wird Internet benötigt. `pytest -q` führt zusätzlich die übrigen Tests aus. Die GitHub-Prüfung installiert das Radio-Extra und führt dieselbe Simulation auf Python 3.11, 3.12 und 3.13 aus. Bei einer reinen Core-Installation ohne Radio-Extra meldet pytest diese Datei als übersprungen.
+Kein API-Schlüssel, kein Cloud-Server, kein Modell und kein Internet während der Tests erforderlich. Zum erstmaligen Installieren der Abhängigkeiten wird Internet benötigt. `pytest -q` führt zusätzlich die übrigen Tests aus. Die GitHub-Prüfung installiert das Radio-Extra und führt dieselbe Simulation auf Python 3.11, 3.12 und 3.13 aus. Bei einer reinen Core-Installation ohne Radio-Extra meldet pytest diese Datei als übersprungen.
 
 ## Was geprüft wird
 
