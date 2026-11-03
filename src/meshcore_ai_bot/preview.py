@@ -6,14 +6,33 @@ import asyncio
 import sqlite3
 import time
 from contextlib import closing
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
+from dotenv import dotenv_values
 
 from .assistant import Assistant
+from .config import AI, load_config
 from .engine import Engine
 from .protocol import Incoming
 from .store import Store
+
+
+class PreviewAI(AI):
+    @property
+    def api_key(self):
+        return self._preview_key
+
+
+def load_preview_config(path):
+    """Keep provider and credential together throughout a test, without global env writes."""
+    config = load_config(path)
+    value = dotenv_values(Path(path).parent / ".env").get(config.ai.api_key_env)
+    key = config.ai.api_key if value is None else value
+    config.ai = PreviewAI(**asdict(config.ai))
+    config.ai._preview_key = key
+    return config
 
 
 def validate_request(payload, config):

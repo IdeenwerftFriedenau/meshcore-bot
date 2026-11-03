@@ -18,9 +18,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import load_config
-from .preview import run_preview, validate_request
+from .preview import load_preview_config, run_preview, validate_request
 from .regions import STATES
-from .settings import read_settings, refresh_secrets, save_settings
+from .settings import read_settings, save_settings
 
 
 def runtime(config):
@@ -177,8 +177,7 @@ def make_server(path, host=None, port=None):
                 payload = json.loads(self.rfile.read(length))
                 if self.path == "/api/preview":
                     with lock:
-                        current = load_config(path)
-                        refresh_secrets(current, path)
+                        current = load_preview_config(path)
                         _, _, _, offline = validate_request(payload, current)
                     if not preview_lock.acquire(blocking=False):
                         self.respond(429, {"error": "Ein Texttest läuft bereits. Bitte kurz warten."})
