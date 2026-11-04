@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable
 
 from .assistant import Assistant
 from .config import Config
-from .protocol import Incoming, allows_send, question_for, split_text
+from .protocol import Incoming, allows_send, fit_reply, may_remember, question_for
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class Pacer:
 class Engine:
     def __init__(self, config: Config, store: Store, assistant: Assistant, *, pacer: Pacer | None = None):
         self.config, self.store, self.assistant = config, store, assistant
+        self.store.limits = config.radio
+        self.store.enforce_limits(time.time())
         self.pacer = pacer or Pacer(config, store.last_tx())
         self.own_names: set[str] = set()
 
@@ -74,10 +77,12 @@ class Engine:
         self.pacer.received()
         if message.sender.casefold() in self.own_names:
             return "ignored"
+        if may_remember(message, self.config, now):
+            self.store.observe(message, now)
         question = question_for(message, self.config, now)
         if question is None:
             return "ignored"
-        return "queued" if self.store.remember(message, question, now) else "duplicate"
+        return self.store.admit(message, question, now)
 
     async def process_one(self, now: float | None = None) -> bool:
         now = time.time() if now is None else now
@@ -94,6 +99,7 @@ class Engine:
             row["sender"],
             now - self.config.storage.retention_hours * 3600,
             self.config.storage.history_turns,
+            exclude=row["id"],
         )
         try:
             answer = await self.assistant.answer(question, history)
@@ -102,14 +108,15 @@ class Engine:
             # A plugin bug must not kill the daemon or expose a traceback on air.
             log.exception("Answer generation failed for message %s", row["id"][:12])
             text = "Bei der Antwort ist etwas schiefgegangen. Versuch es bitte später nochmal."
-        history_text = text
         recipient = row["sender"].replace("[", "").replace("]", "").encode()[:32].decode("utf-8", "ignore")
-        text = f"@[{recipient}] " + text
-        parts = split_text(text, self.config.radio.packet_bytes)
-        if len(parts) > 8:
-            history_text = "Die Antwort ist für Funk zu lang. Bitte grenze die Frage ein."
-            text = f"@[{recipient}] " + history_text
-            parts = split_text(text, self.config.radio.packet_bytes)
+        drawing = bool(re.search(r"ascii|zeichenbild", question, re.I))
+        prefix = f"@[{recipient}] " + ("\n\n" if drawing else "")
+        # Historical injected punctuation must not become a permanent decoration.
+        if not drawing:
+            text = re.sub(r"[!?:;]{4,}", ".", text)
+        history_text, parts = fit_reply(
+            prefix, text, self.config.radio.packet_bytes, self.config.radio.reply_max_packets
+        )
         self.store.answer(
             row["id"], row["channel"], history_text, parts, now, now + self.config.storage.reply_ttl_seconds
         )

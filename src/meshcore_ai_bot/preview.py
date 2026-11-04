@@ -10,12 +10,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 import httpx
-from dotenv import dotenv_values
 
 from .assistant import Assistant
 from .config import AI, load_config
 from .engine import Engine
 from .protocol import Incoming
+from .snapshot import read as read_snapshot
+from .snapshot import snapshot_path
 from .store import Store
 
 
@@ -28,8 +29,7 @@ class PreviewAI(AI):
 def load_preview_config(path):
     """Keep provider and credential together throughout a test, without global env writes."""
     config = load_config(path)
-    value = dotenv_values(Path(path).parent / ".env").get(config.ai.api_key_env)
-    key = config.ai.api_key if value is None else value
+    key = config.ai.api_key
     config.ai = PreviewAI(**asdict(config.ai))
     config.ai._preview_key = key
     return config
@@ -61,12 +61,18 @@ def load_contacts(config, store):
     if not path.is_file():
         return False
     try:
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)) as source:
-            rows = source.execute("SELECT id,name,aliases,advert,checked FROM repeaters").fetchall()
+        if snapshot_path(path).is_file():
+            rows = [
+                tuple(row[key] for key in ("id", "name", "aliases", "advert", "checked"))
+                for row in read_snapshot(path)["repeaters"]
+            ]
+        else:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)) as source:
+                rows = source.execute("SELECT id,name,aliases,advert,checked FROM repeaters").fetchall()
         with store.transaction() as db:
             db.executemany("INSERT INTO repeaters VALUES(?,?,?,?,?)", rows)
         return True
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError):
         return False
 
 

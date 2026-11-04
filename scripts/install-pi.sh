@@ -5,6 +5,12 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 SOURCE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+for SERVICE in meshcore-ai-bot meshcore-dashboard; do
+  if systemctl is-active --quiet "$SERVICE"; then
+    echo "Vor dem Update bitte $SERVICE stoppen: sudo systemctl stop $SERVICE" >&2
+    exit 1
+  fi
+done
 apt-get update
 apt-get install -y python3 python3-venv python3-pip ca-certificates
 python3 -c 'import sys; assert sys.version_info >= (3,11), "Python 3.11+ erforderlich"'
@@ -15,7 +21,11 @@ install -d -o meshcore-ai -g meshcore-ai -m 700 /etc/meshcore-ai-bot
 install -d -o meshcore-ai -g meshcore-ai -m 700 /var/lib/meshcore-ai-bot
 # Only package files are copied. Never copy a developer's .env, database or virtual environment.
 if [[ "$SOURCE_DIR" != /opt/meshcore-ai-bot ]]; then
-  cp -r "$SOURCE_DIR/src" /opt/meshcore-ai-bot/
+  # Stage a clean tree first, so deleted modules cannot survive an upgrade.
+  STAGED_SRC=$(mktemp -d /opt/meshcore-ai-bot/.src-XXXXXX)
+  cp -r "$SOURCE_DIR/src/." "$STAGED_SRC/"
+  rm -rf /opt/meshcore-ai-bot/src
+  mv "$STAGED_SRC" /opt/meshcore-ai-bot/src
   install -m 644 "$SOURCE_DIR/pyproject.toml" "$SOURCE_DIR/README.md" /opt/meshcore-ai-bot/
 fi
 python3 -m venv /opt/meshcore-ai-bot/.venv
@@ -45,6 +55,8 @@ chown meshcore-ai:meshcore-ai /etc/meshcore-ai-bot/config.toml /etc/meshcore-ai-
 chmod 600 /etc/meshcore-ai-bot/config.toml /etc/meshcore-ai-bot/.env
 install -d -o meshcore-ai -g meshcore-ai -m 700 /var/lib/meshcore-ai-bot/asa
 install -m 644 "$SOURCE_DIR/deploy/meshcore-dashboard.service" /etc/systemd/system/meshcore-dashboard.service
+# Initialize the read-only dashboard snapshot without touching radio hardware.
+runuser -u meshcore-ai -- /opt/meshcore-ai-bot/.venv/bin/meshcore-ai snapshot --config /etc/meshcore-ai-bot/config.toml
 systemctl daemon-reload
 printf '%s\n' 'Installiert. Bitte /etc/meshcore-ai-bot/config.toml und .env anpassen.' 'Danach: sudo systemctl enable --now meshcore-ai-bot' 'Der Funkdienst wurde nicht gestartet.'
 

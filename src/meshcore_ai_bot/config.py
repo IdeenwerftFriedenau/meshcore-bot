@@ -13,6 +13,8 @@ from typing import get_args, get_origin, get_type_hints
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from dotenv import dotenv_values
+
 from .regions import STATES, canonical
 
 PUBLIC_CHANNELS = frozenset({"Public", "#public"})
@@ -31,10 +33,16 @@ class Station:
 class Radio:
     port: str = "/dev/ttyUSB0"
     create_channels: bool = False
-    send_interval_seconds: float = 30
-    receive_quiet_seconds: float = 4
+    send_interval_seconds: float = 10
+    receive_quiet_seconds: float = 2
     max_rx_wait_seconds: float = 60
     packet_bytes: int = 110
+    reply_max_packets: int = 5
+    broadcast_max_packets: int = 12
+    max_pending_packets: int = 128
+    max_pending_messages: int = 32
+    incoming_per_minute: int = 6
+    incoming_per_sender_per_minute: int = 2
 
 
 @dataclass
@@ -50,7 +58,7 @@ class AI:
 
     @property
     def api_key(self) -> str:
-        return os.environ.get(self.api_key_env, "")
+        return getattr(self, "_api_key", os.environ.get(self.api_key_env, ""))
 
 
 @dataclass
@@ -59,7 +67,7 @@ class Storage:
     retention_hours: int = 24
     message_max_age_seconds: int = 300
     reply_ttl_seconds: int = 1800
-    history_turns: int = 4
+    history_turns: int = 12
 
 
 @dataclass
@@ -147,7 +155,7 @@ class Config:
                 if type(getattr(section, name)) is not bool:
                     raise ValueError(f"{name} must be true or false")
         ranges = [
-            (self.radio.send_interval_seconds, 30, 3600, "send_interval_seconds"),
+            (self.radio.send_interval_seconds, 10, 3600, "send_interval_seconds"),
             (self.radio.receive_quiet_seconds, 0, 30, "receive_quiet_seconds"),
             (self.radio.max_rx_wait_seconds, 0, 300, "max_rx_wait_seconds"),
             (self.radio.packet_bytes, 50, 110, "packet_bytes"),
@@ -161,6 +169,12 @@ class Config:
             (self.ai.timeout_seconds, 1, 180, "timeout_seconds"),
             (self.broadcasts.warning_poll_seconds, 300, 86400, "warning_poll_seconds"),
             (self.broadcasts.news_poll_seconds, 300, 86400, "news_poll_seconds"),
+            (self.radio.reply_max_packets, 1, 5, "reply_max_packets"),
+            (self.radio.broadcast_max_packets, 1, 24, "broadcast_max_packets"),
+            (self.radio.max_pending_packets, 12, 512, "max_pending_packets"),
+            (self.radio.max_pending_messages, 1, 128, "max_pending_messages"),
+            (self.radio.incoming_per_minute, 1, 60, "incoming_per_minute"),
+            (self.radio.incoming_per_sender_per_minute, 1, 10, "incoming_per_sender_per_minute"),
         ]
         for value, low, high, name in ranges:
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
@@ -168,6 +182,16 @@ class Config:
         for value in [self.radio.packet_bytes, self.storage.history_turns, self.ai.max_tokens]:
             if type(value) is not int:
                 raise ValueError("packet_bytes, history_turns and max_tokens must be integers")
+        for name in (
+            "reply_max_packets",
+            "broadcast_max_packets",
+            "max_pending_packets",
+            "max_pending_messages",
+            "incoming_per_minute",
+            "incoming_per_sender_per_minute",
+        ):
+            if type(getattr(self.radio, name)) is not int:
+                raise ValueError(f"{name} must be an integer")
         validate_url(self.ai.base_url, self.ai.allow_local_http)
         if not self.ai.model.strip():
             raise ValueError("ai.model is required")
@@ -217,8 +241,10 @@ class Config:
                 raise ValueError("Public and #public are protected: replies and broadcasts must stay off")
             if ch.name in {"#bot", "#fragdenbot"} and ch.broadcasts:
                 raise ValueError("Question channels cannot broadcast warnings or news")
-            if ch.name == "#bot" and (ch.mode not in {"off", "keyword"} or ch.keyword != "KI"):
-                raise ValueError("#bot requires keyword KI or off")
+            if ch.name == "#bot" and ch.mode not in {"off", "mention"}:
+                raise ValueError("#bot requires mention or off to avoid collisions with other bots")
+            if ch.secret_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", ch.secret_env):
+                raise ValueError("Invalid channel secret environment name")
             if ch.name.startswith("#") and ch.secret_env:
                 raise ValueError(
                     "Hashtag keys are derived from the name; use a non-hashtag private channel with secret_env"
@@ -289,14 +315,28 @@ def load_config(path: str | Path) -> Config:
             _section(Channel, ch) for ch in raw.get("channels", [{"name": "#fragdenbot", "mode": "all"}])
         ],
     )
+    # Upgrade the former shared KI trigger to explicit station addressing.
+    for channel in config.channels:
+        if channel.name == "#bot" and channel.mode == "keyword" and channel.keyword == "KI":
+            channel.mode = "mention"
+            channel.mentions = channel.mentions or [config.station.name, "Ideenwerft", "Ideenwerft Friedenau"]
+    env = {**dotenv_values(path.parent / ".env"), **os.environ}
     for name, key in [("base_url", "MESHCORE_AI_BASE_URL"), ("model", "MESHCORE_AI_MODEL")]:
-        if os.environ.get(key):
-            setattr(config.ai, name, os.environ[key])
-    config.radio.port = os.environ.get("MESHCORE_AI_RADIO_PORT", config.radio.port)
+        if env.get(key):
+            setattr(config.ai, name, env[key])
+    config.radio.port = env.get("MESHCORE_AI_RADIO_PORT") or config.radio.port
     config.storage.path = str(
-        (path.parent / os.environ.get("MESHCORE_AI_DB_PATH", config.storage.path)).resolve()
+        (path.parent / (env.get("MESHCORE_AI_DB_PATH") or config.storage.path)).resolve()
     )
-    config.asa.inbox = str(
-        (path.parent / os.environ.get("MESHCORE_AI_ASA_INBOX", config.asa.inbox)).resolve()
-    )
+    config.asa.inbox = str((path.parent / (env.get("MESHCORE_AI_ASA_INBOX") or config.asa.inbox)).resolve())
+    bind_secrets(config, path)
     return config.validate()
+
+
+def bind_secrets(config, path):
+    """Replace file-backed secrets without mutating process-wide environment state."""
+    env = {**os.environ, **dotenv_values(Path(path).parent / ".env")}
+    config.ai._api_key = env.get(config.ai.api_key_env) or ""
+    config._dashboard_token = env.get(config.dashboard.token_env) or ""
+    for channel in config.channels:
+        channel._secret = env.get(channel.secret_env) or ""

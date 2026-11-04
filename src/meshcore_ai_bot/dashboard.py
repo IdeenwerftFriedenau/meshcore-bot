@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import os
 import secrets
 import shutil
 import sqlite3
@@ -21,6 +20,9 @@ from .config import load_config
 from .preview import load_preview_config, run_preview, validate_request
 from .regions import STATES
 from .settings import read_settings, save_settings
+from .snapshot import read as read_snapshot
+from .snapshot import snapshot_path
+from .store import Store
 
 
 def runtime(config):
@@ -37,6 +39,23 @@ def runtime(config):
     if not path.is_file():
         return result
     try:
+        if snapshot_path(path).is_file():
+            snapshot = read_snapshot(path)
+            meta = snapshot["meta"]
+            result.update(
+                database=True,
+                packets=snapshot["packets"],
+                repeaters=len(snapshot["repeaters"]),
+                heartbeat=meta.get("bot:heartbeat"),
+                asa_last_received=meta.get("asa:last_received"),
+                warning_sources=json.loads(meta.get("warnings:status", "{}")),
+                dropped_batches=int(meta.get("queue:dropped", "0")),
+            )
+            result["connected"] = (
+                meta.get("bot:connected") == "1"
+                and 0 <= time.time() - float(meta.get("bot:heartbeat", 0)) < 120
+            )
+            return result
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
             meta = dict(db.execute("SELECT key,value FROM meta"))
             result.update(
@@ -50,7 +69,7 @@ def runtime(config):
                 meta.get("bot:connected") == "1" and time.time() - float(meta.get("bot:heartbeat", 0)) < 120
             )
             result["warning_sources"] = json.loads(meta.get("warnings:status", "{}"))
-    except (sqlite3.Error, ValueError, OSError):
+    except (sqlite3.Error, ValueError, OSError, KeyError, TypeError):
         result["error"] = "Status zurzeit nicht lesbar"
     return result
 
@@ -78,13 +97,14 @@ def make_server(path, host=None, port=None):
     path = Path(path).resolve()
     config = load_config(path)
     host, port = host or config.dashboard.host, config.dashboard.port if port is None else port
-    token = os.environ.get(config.dashboard.token_env, "")
+    token = config._dashboard_token
     if host not in {"127.0.0.1", "localhost"} and len(token) < 24:
         raise ValueError("LAN access requires a dashboard token of at least 24 characters")
     csrf = secrets.token_urlsafe(32)
     lock = threading.Lock()
     preview_lock = threading.Lock()
     online_tests = deque()
+    quota_store = Store(":memory:")
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -178,6 +198,7 @@ def make_server(path, host=None, port=None):
                 if self.path == "/api/preview":
                     with lock:
                         current = load_preview_config(path)
+                        current.ai._reserve_request = quota_store.reserve_model_request
                         _, _, _, offline = validate_request(payload, current)
                     if not preview_lock.acquire(blocking=False):
                         self.respond(429, {"error": "Ein Texttest läuft bereits. Bitte kurz warten."})
@@ -215,7 +236,18 @@ def make_server(path, host=None, port=None):
             except OSError:
                 self.respond(500, {"error": "Speichern nicht möglich. Dateirechte prüfen."})
 
-    return ThreadingHTTPServer((host, port), Handler)
+    class Server(ThreadingHTTPServer):
+        def server_close(self):
+            try:
+                super().server_close()
+            finally:
+                quota_store.close()
+
+    try:
+        return Server((host, port), Handler)
+    except BaseException:
+        quota_store.close()
+        raise
 
 
 def serve(path):

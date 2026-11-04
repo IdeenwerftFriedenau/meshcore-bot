@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import html
 import json
+import logging
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -22,6 +23,55 @@ from .regions import STATES, bbk_states, canonical, ordered
 from .store import Store
 
 BERLIN = ZoneInfo("Europe/Berlin")
+log = logging.getLogger(__name__)
+
+
+def object_value(value):
+    if not isinstance(value, dict):
+        raise ValueError("Expected a source object")
+    return value
+
+
+def warning_priority(warning):
+    value = warning.get("severity", "")
+    return {
+        "Extreme": 4,
+        "Severe": 3,
+        "Moderate": 2,
+        "Minor": 1,
+        "Stufe 4": 4,
+        "Stufe 3": 3,
+        "Stufe 2": 2,
+        "Stufe 1": 1,
+    }.get(value, 0)
+
+
+def warning_parts(warning, config):
+    """Use short labels and an explicit source-linked summary for oversized alerts."""
+    codes = warning["codes"]
+    label = "/".join(codes) if len(codes) <= 2 else "DE"
+    full = warning_text(warning, config.broadcasts.include_instructions)
+    if len(codes) > 2:
+        full += " | Bundesländer: " + "/".join(codes)
+    parts = split_text(full, config.radio.packet_bytes, label)
+    if len(parts) <= config.radio.broadcast_max_packets:
+        return parts
+    # Never disguise omissions as a complete official warning. Instructions are
+    # referenced, not paraphrased; the source remains available for the full text.
+    for size in (160, 100, 60, 30):
+        title = warning["title"][:size]
+        area = warning["area"][:size]
+        summary = (
+            f"WARNUNG {warning['source']} {warning['severity']}: {title}"
+            f" | Gebiet: {area} | Bundesländer: {'/'.join(codes)}"
+            f" | Gültig von {label_date(warning.get('onset'))} bis {label_date(warning.get('expires'))}"
+            f" | Kurzfassung; Volltext und Handlungsempfehlungen: {warning['url']}"
+        )
+        parts = split_text(summary, config.radio.packet_bytes, label)
+        if len(parts) <= config.radio.broadcast_max_packets:
+            return parts
+    # The store records the rejection and retries next poll without marking it sent.
+    return parts
 
 
 def plain(value) -> str:
@@ -53,11 +103,15 @@ def warning_text(warning: dict, instructions: bool = False) -> str:
 
 
 def dwd_warnings(data: dict, now: float, regions: list[str]) -> list[dict]:
+    data = object_value(data)
     if abs(now - float(data["time"]) / 1000) > 3600:
         raise ValueError("Stale DWD feed")
     grouped = {}
-    for values in data["warnings"].values():
+    for values in object_value(data["warnings"]).values():
+        if not isinstance(values, list):
+            raise ValueError("Invalid DWD warning list")
         for row in values:
+            row = object_value(row)
             code = canonical(row.get("stateShort", ""))
             if code not in STATES:
                 code = next((k for k, (name, _) in STATES.items() if name == row.get("state")), None)
@@ -104,6 +158,7 @@ def selected_regions(config, source):
 class Broadcasts:
     def __init__(self, config: Config, store: Store, client: httpx.AsyncClient):
         self.config, self.store, self.client = config, store, client
+        self.store.limits = config.radio
         self._semaphore = asyncio.Semaphore(4)
         self._bbk_cache = {}
         self._unassigned_bbk = set()
@@ -136,6 +191,7 @@ class Broadcasts:
             if not isinstance(alerts, list):
                 raise ValueError("Invalid BBK index")
             for alert in alerts:
+                alert = object_value(alert)
                 identity = alert.get("id", "")
                 if not re.fullmatch(r"[A-Za-z0-9_.-]{1,250}", identity):
                     raise ValueError("Invalid warning identifier")
@@ -156,9 +212,15 @@ class Broadcasts:
         self._unassigned_bbk = set()
         result = []
         for key, detail in zip(versions, details, strict=True):
+            detail = object_value(detail)
             if detail.get("status") != "Actual" or detail.get("msgType") == "Cancel":
                 continue
-            info = next((i for i in detail.get("info", []) if i.get("language", "de").startswith("de")), None)
+            infos = detail.get("info", [])
+            if not isinstance(infos, list):
+                raise ValueError("Invalid BBK information list")
+            info = next(
+                (i for i in infos if str(object_value(i).get("language", "de")).startswith("de")), None
+            )
             if info is None:
                 raise ValueError("Missing German warning details")
             targets = bbk_states(info)
@@ -204,10 +266,8 @@ class Broadcasts:
             revision = hashlib.sha256(
                 json.dumps(warning, sort_keys=True, ensure_ascii=False).encode()
             ).hexdigest()
-            text = warning_text(warning, self.config.broadcasts.include_instructions)
-            label = "/".join(warning["codes"])
             batches = {
-                channel.name: split_text(text, self.config.radio.packet_bytes, label)
+                channel.name: warning_parts(warning, self.config)
                 for channel in self.config.channels
                 if allows_send(self.config, channel.name, "warnings")
             }
@@ -219,6 +279,7 @@ class Broadcasts:
                 "warnings",
                 now,
                 baseline=baseline,
+                priority=warning_priority(warning),
             )
         # A healthy complete source can withdraw alerts; a fetch exception never comes here.
         with self.store.transaction() as c:
@@ -253,8 +314,9 @@ class Broadcasts:
                 warnings = await fetch()
                 count = self.queue_warnings(source, warnings, time.time())
                 results[source] = "partial" if source == "bbk" and self._unassigned_bbk else count
-            except (httpx.HTTPError, ValueError, KeyError, TypeError, UnicodeError):
+            except Exception:
                 # Preserve state; do not turn a broken source into an all-clear.
+                log.warning("Warning source %s unavailable", source, exc_info=True)
                 results[source] = "unavailable"
         self.store.meta_set("warnings:status", json.dumps(results))
         return results
@@ -299,6 +361,7 @@ class Broadcasts:
                         baseline=baseline,
                     )
                 self.store.meta_set(initialized, now)
-            except (httpx.HTTPError, ValueError, TypeError, ET.ParseError):
+            except Exception:
+                log.warning("RSS source unavailable", exc_info=True)
                 continue
         return queued

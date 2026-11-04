@@ -31,7 +31,8 @@ def config(tmp_path):
     [
         ("#fragdenbot", "Was bedeutet QTH?", True),
         ("#bot", "Was bedeutet QTH?", False),
-        ("#bot", "KI, was bedeutet QTH?", True),
+        ("#bot", "KI, was bedeutet QTH?", False),
+        ("#bot", "@Ideenwerft, was bedeutet QTH?", True),
         ("Public", "KI, was bedeutet QTH?", False),
         ("#public", "ping", False),
         ("#ideenwerft", "ping", True),

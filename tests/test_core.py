@@ -28,8 +28,10 @@ def config():
         ("#bot", "ping", None),
         ("#bot", "Kiste", None),
         ("#bot", "Skifahren", None),
-        ("#bot", "ki ping", "ping"),
-        ("#bot", "Was ist KI?", "Was ist KI?"),
+        ("#bot", "ki ping", None),
+        ("#bot", "@Ideenwerft ping", "ping"),
+        ("#bot", "#ideenwerft-friedenau ping", "ping"),
+        ("#bot", "Was ist KI?", None),
         ("#fragdenbot", "wx friedenau", "wx friedenau"),
         ("unknown", "KI ping", None),
         ("#fragdenbot", "", None),
@@ -95,7 +97,7 @@ def test_store_dedup_recovery_and_history():
         s.answer(msg.identity, msg.channel, "Pong", ["part1", "part2"], 1002, 2000)
         assert len(s.history(msg.channel, "Alice", 0, 4)) == 2
         assert not s.history(msg.channel, "Bob", 0, 4)
-        assert not s.history("#bot", "Alice", 0, 4)
+        assert s.history("#bot", "Alice", 0, 4) == s.history(msg.channel, "Alice", 0, 4)
         p = s.claim(1003, lambda *_: True)
         assert p["text"] == "part1"
         s.recover(now=1004)
@@ -154,6 +156,7 @@ def test_repeater_aliases_and_no_false_live_data():
 
 
 async def test_pacing_includes_device_response_and_restart(config):
+    config.radio.send_interval_seconds = 30
     now = [1000.0]
 
     async def sleep(seconds):
