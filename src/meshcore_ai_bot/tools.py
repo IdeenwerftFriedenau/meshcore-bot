@@ -125,8 +125,9 @@ class Tools:
                     "longitude": lon,
                     "timezone": self.config.station.timezone,
                     "forecast_days": 7,
-                    "current": "temperature_2m,weather_code",
-                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max",
+                    "wind_speed_unit": "kmh",
+                    "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_gusts_10m",
+                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max",
                 },
             )
             forecast["_name"] = name
@@ -136,6 +137,12 @@ class Tools:
         if period == "now":
             current = forecast["current"]
             text = f"{name} jetzt: {current['temperature_2m']:g} °C, {weather_description(current['weather_code'])}."
+            text += (
+                f" Gefühlt {measurement(current, 'apparent_temperature', ' °C')}."
+                f" Wind {measurement(current, 'wind_speed_10m', ' km/h')},"
+                f" Böen {measurement(current, 'wind_gusts_10m', ' km/h')}."
+                f" Luftfeuchte {measurement(current, 'relative_humidity_2m', ' %')}."
+            )
         else:
             today = datetime.now(ZoneInfo(self.config.station.timezone)).date()
             offset = {"today": 0, "tomorrow": 1, "day_after_tomorrow": 2}.get(period)
@@ -153,8 +160,11 @@ class Tools:
             i = daily["time"].index(target)
             text = (
                 f"{name} {target}: {daily['temperature_2m_min'][i]:g}–{daily['temperature_2m_max'][i]:g} °C, "
-                f"{weather_description(daily['weather_code'][i])}, Regenwahrscheinlichkeit "
-                f"{daily['precipitation_probability_max'][i]} %."
+                f"{weather_description(daily['weather_code'][i])}. Niederschlagsrisiko max. "
+                f"{measurement(daily, 'precipitation_probability_max', ' %', i)}, "
+                f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag. "
+                f"Wind bis {measurement(daily, 'wind_speed_10m_max', ' km/h', i)}, "
+                f"Böen bis {measurement(daily, 'wind_gusts_10m_max', ' km/h', i)}."
             )
         return {"text": text, "sources": ["https://open-meteo.com/"], "checked_at": now}
 
@@ -220,6 +230,13 @@ class Tools:
             "catalogue_checked_at": row["checked"],
             "outage_confirmed": False,
         }
+
+
+def measurement(data, key, unit, index=None):
+    value = data.get(key)
+    if index is not None:
+        value = value[index] if isinstance(value, list) and index < len(value) else None
+    return f"{value:g}{unit}" if type(value) in {int, float} else "k. A."
 
 
 def weather_description(code: int) -> str:

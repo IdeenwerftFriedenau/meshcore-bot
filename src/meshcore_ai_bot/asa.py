@@ -8,8 +8,8 @@ import os
 import time
 from pathlib import Path
 
-from .broadcasts import date_value, plain, warning_text
-from .protocol import allows_send, split_text
+from .broadcasts import date_value, plain, warning_parts, warning_priority
+from .protocol import allows_send
 from .regions import STATES, canonical, ordered
 
 
@@ -71,6 +71,7 @@ def ingest(config, raw):
 
 
 def poll(config, store):
+    store.limits = config.radio
     if not config.asa.enabled or not config.broadcasts.warnings_enabled:
         return 0
     root = Path(config.asa.inbox)
@@ -93,15 +94,12 @@ def poll(config, store):
             warning["codes"] = ordered(set(warning["codes"]).intersection(config.asa.regions))
             if warning["codes"]:
                 batches = {
-                    ch.name: split_text(
-                        warning_text(warning, config.broadcasts.include_instructions),
-                        config.radio.packet_bytes,
-                        "/".join(warning["codes"]),
-                    )
+                    ch.name: warning_parts(warning, config)
                     for ch in config.channels
                     if allows_send(config, ch.name, "warnings")
                 }
                 revision = hashlib.sha256(json.dumps(warning, sort_keys=True).encode()).hexdigest()
+                dropped_before = store.meta_get("queue:dropped")
                 queued += store.broadcast(
                     warning["identity"],
                     revision,
@@ -109,7 +107,11 @@ def poll(config, store):
                     batches,
                     "warnings",
                     now,
+                    priority=warning_priority(warning),
                 )
+                if store.meta_get("queue:dropped") != dropped_before:
+                    # Keep a valid event in the inbox for a later capacity retry.
+                    continue
                 store.meta_set("asa:last_received", event["received_at"])
             destination = "processed"
         except (ValueError, KeyError, TypeError, UnicodeError):

@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 import httpx
-from dotenv import load_dotenv
 
 from . import __version__
 from .assistant import Assistant
@@ -29,7 +28,18 @@ def parser():
     )
     root.add_argument("--version", action="version", version=__version__)
     sub = root.add_subparsers(dest="command", required=True)
-    for name in ["check", "demo", "replay", "run", "provision", "status", "prune", "dashboard", "asa-ingest"]:
+    for name in [
+        "check",
+        "demo",
+        "replay",
+        "run",
+        "provision",
+        "status",
+        "prune",
+        "snapshot",
+        "dashboard",
+        "asa-ingest",
+    ]:
         command = sub.add_parser(name)
         command.add_argument("--config", default="config.toml")
         if name == "asa-ingest":
@@ -81,6 +91,8 @@ async def simulate(config, cases, *, offline: bool):
                 )
                 with store.transaction() as c:
                     c.execute("UPDATE packets SET state='cancelled' WHERE state='queued'")
+                    # Replay fixtures are independent examples, not a traffic load test.
+                    c.execute("DELETE FROM incoming_requests")
             return results
     finally:
         store.close()
@@ -128,7 +140,7 @@ async def async_main(args, config):
             finally:
                 await transport.disconnect()
                 store.close()
-    elif args.command in {"status", "prune"}:
+    elif args.command in {"status", "prune", "snapshot"}:
         store = Store(config.storage.path)
         try:
             if args.command == "prune":
@@ -173,9 +185,6 @@ def main(argv=None):
     os.umask(0o077)
     args = parser().parse_args(argv)
     path = Path(args.config).expanduser().resolve()
-    env = path.parent / ".env"
-    if env.exists() and os.access(env, os.R_OK):
-        load_dotenv(env, override=False)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         config = load_config(path)

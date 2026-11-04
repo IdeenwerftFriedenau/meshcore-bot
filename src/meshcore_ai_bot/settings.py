@@ -12,7 +12,7 @@ from pathlib import Path
 import tomli_w
 from dotenv import dotenv_values
 
-from .config import load_config
+from .config import bind_secrets, load_config
 
 EDITABLE = {
     "station": {"name", "location", "own_names", "timezone"},
@@ -23,6 +23,12 @@ EDITABLE = {
         "receive_quiet_seconds",
         "max_rx_wait_seconds",
         "packet_bytes",
+        "reply_max_packets",
+        "broadcast_max_packets",
+        "max_pending_packets",
+        "max_pending_messages",
+        "incoming_per_minute",
+        "incoming_per_sender_per_minute",
     },
     "ai": {
         "base_url",
@@ -146,11 +152,4 @@ def save_settings(path, payload):
 
 
 def refresh_secrets(config, path):
-    values = dotenv_values(Path(path).parent / ".env")
-    for key in [
-        config.ai.api_key_env,
-        config.dashboard.token_env,
-        *[ch.secret_env for ch in config.channels],
-    ]:
-        if key and key in values and values[key] is not None:
-            os.environ[key] = values[key]
+    bind_secrets(config, path)

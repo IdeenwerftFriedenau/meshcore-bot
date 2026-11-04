@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import logging
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .config import Config, load_config
 from .engine import Engine
 from .protocol import Incoming
 from .settings import digest, refresh_secrets
+from .snapshot import publish
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ PUBLIC_KEY = bytes.fromhex("8b3387e9c5cdea6ac9e5edbaa115cd72")  # public standar
 def channel_key(channel) -> bytes:
     if channel.secret_env:
         try:
-            result = bytes.fromhex(os.environ.get(channel.secret_env, ""))
+            result = bytes.fromhex(getattr(channel, "_secret", os.environ.get(channel.secret_env, "")))
         except ValueError as exc:
             raise ValueError(f"Invalid channel key in environment variable {channel.secret_env}") from exc
         if len(result) != 16:
@@ -233,12 +235,24 @@ def cancel_changed_sources(store, old, new):
             )
 
 
+async def housekeeping(config, store):
+    """Retention and status publication continue even while USB is unavailable."""
+    while True:
+        try:
+            store.prune(time.time(), config.storage.retention_hours)
+            publish(store)
+        except (OSError, sqlite3.Error):
+            log.exception("State maintenance failed")
+        await asyncio.sleep(30)
+
+
 async def run_radio(config: Config, config_path=None):
     with instance_lock(config.storage.path):
         store = Store(config.storage.path)
+        maintenance = asyncio.create_task(housekeeping(config, store))
         try:
             async with httpx.AsyncClient(
-                timeout=15, follow_redirects=False, headers={"User-Agent": "MeshCore-AI-Bot/0.1"}
+                timeout=15, follow_redirects=False, headers={"User-Agent": "MeshCore-AI-Bot/0.3"}
             ) as client:
                 assistant = Assistant(config, store, client)
                 broadcasts = Broadcasts(config, store, client)
@@ -281,7 +295,6 @@ async def run_radio(config: Config, config_path=None):
                             while True:
                                 store.meta_set("bot:heartbeat", time.time())
                                 await transport.refresh_contacts()
-                                store.prune(time.time(), config.storage.retention_hours)
                                 await asyncio.sleep(60)
 
                         async def warning_poll():
@@ -298,7 +311,10 @@ async def run_radio(config: Config, config_path=None):
 
                         async def asa_poll():
                             while True:
-                                await asyncio.to_thread(asa.poll, config, store)
+                                try:
+                                    await asyncio.to_thread(asa.poll, config, store)
+                                except Exception:
+                                    log.exception("ASA inbox unavailable; keeping radio session")
                                 await asyncio.sleep(2)
 
                         async def watch_settings(revision=revision):
@@ -332,4 +348,7 @@ async def run_radio(config: Config, config_path=None):
                         await transport.disconnect()
                     await asyncio.sleep(10)
         finally:
+            maintenance.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await maintenance
             store.close()
