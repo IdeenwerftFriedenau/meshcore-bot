@@ -10,6 +10,6 @@
   {"channel":"#public","text":"KI ping","expected_reply":false},
   {"channel":"#bot","text":"ping","expected_reply":false},
   {"channel":"#bot","text":"Kiste","expected_reply":false},
-  {"channel":"#bot","text":"KI ping","expected_reply":true},
-  {"channel":"#bot","text":"Was ist KI?","expected_reply":true}
+  {"channel":"#bot","text":"@Ideenwerft ping","expected_reply":true},
+  {"channel":"#bot","text":"Was ist KI?","expected_reply":false}
 ]
