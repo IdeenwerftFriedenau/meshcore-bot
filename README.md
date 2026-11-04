@@ -4,16 +4,16 @@ Ein eigenständiger deutschsprachiger MeshCore-Bot für Raspberry Pi. Die Konfig
 
 ## Funktionen
 
-- `#fragdenbot`: Fragen ohne Anrede. `#bot`: nur mit dem eigenständigen Wort **KI** im Nachrichtentext.
+- `#fragdenbot`: Fragen ohne Anrede. `#bot`: nur bei **@Ideenwerft**, **#ideenwerft** oder **#ideenwerft-friedenau**. KI/AI lösen dort keine Antwort aus.
 - Public und `#public` bleiben gesperrt, auch für automatische Warnungen und Nachrichten.
-- Mindestens 30 Sekunden Abstand in der Beispielkonfiguration, Empfangsruhe und dauerhaft gespeicherte Warteschlange.
+- 10 Sekunden Mindestabstand in der Beispielkonfiguration und zwei Sekunden Empfangsfenster, Empfangsruhe und dauerhaft gespeicherte Warteschlange.
 - Funkabkürzungen, WX, Repeater/Node/Companion, Rechenaufgaben und auf Wunsch spielerische Horoskope.
 - Wetter über Open-Meteo; Repeaterwissen aus passiv empfangenen Kontakten und Adverts. Ein altes Advert gilt ausdrücklich nicht als Beweis für einen Ausfall.
 - Konfigurierbare Scope-Bezeichnungen `de-be`, `de-bb`, `de-bebb`.
-- Optionale DWD-/BBK-Warnungen für alle 16 Bundesländer mit Zeitangaben und gemeinsamer Kennung BER/BB. Handlungsempfehlungen standardmäßig aus. Optionale RSS-Schlagzeilen.
+- Optionale DWD-/BBK-Warnungen mit Zeitangaben für frei wählbare Bundesländer. Voreinstellung: Berlin und Brandenburg (BER/BB). Handlungsempfehlungen standardmäßig aus. Optionale RSS-Schlagzeilen.
 - KI über einen kompatiblen Chat-Completions-Anbieter oder einen lokalen Ollama-Dienst. API-Schlüssel bleiben außerhalb des Repositorys.
 
-**Zustellung:** Ein OK vom USB-Gerät bestätigt die lokale Annahme, keinen Empfang durch alle Funkteilnehmer. Unklare Sendungen werden deshalb nicht blind wiederholt. Mehrteilige Texte bleiben vollständig erhalten; KI-Antworten über acht Pakete werden durch eine Bitte um eine engere Frage ersetzt.
+**Zustellung:** Ein OK vom USB-Gerät bestätigt die lokale Annahme, keinen Empfang durch alle Funkteilnehmer. Unklare Sendungen werden deshalb nicht blind wiederholt. Antworten umfassen höchstens fünf Pakete und rund 420 Zeichen; gekürzte Antworten laden zur Nachfrage ein. ASCII-Art behält ihre Zeilenumbrüche. Überlange Warnungen werden ausdrücklich als Kurzfassung mit Verweis auf den Volltext gekennzeichnet.
 
 ## Auf dem Raspberry Pi installieren
 
@@ -97,9 +97,22 @@ ssh -L 8765:127.0.0.1:8765 pi@raspberrypi.local
 
 Browser: `http://127.0.0.1:8765`. Das Dashboard startet den Funkdienst nicht. [Einrichtung und Zugriffsschutz](docs/dashboard.md).
 
+### Text testen
+
+Unter **Text testen** eine Nachricht, einen vorhandenen Kanal und einen Testabsender wählen. Die Vorschau verwendet die gespeicherten Kanalregeln, denselben Antwortprozess und dieselbe Paketaufteilung wie der Bot. Public bleibt auch im Test stumm, #bot benötigt eine Erwähnung. Standardmäßig läuft der Test offline. Für freie KI-Fragen oder Wetterdaten Offline ausschalten; dabei werden die konfigurierten Dienste abgefragt und es können Anbietergebühren entstehen. Jeder Test startet ohne Gesprächsverlauf; vorhandene Repeaterkontakte werden ausschließlich gelesen. Die Testdatenbank liegt nur im Arbeitsspeicher, die echte Sendewarteschlange bleibt unverändert. Es wird keine Funkhardware geöffnet und nichts ausgesendet. Die Vorschau prüft keine Funkzustellung. Ein Test dauert höchstens 60 Sekunden, nur ein Test läuft gleichzeitig. Verbundene Tests haben eigene Limits pro Dashboard-Prozess, getrennt vom Funkdienst. Jeder tatsächliche Modellaufruf einschließlich Wiederholungen zählt gegen diese Limits.
+
 ## DAB+ ASA ohne Internet
 
 Profil für **Nooelec RTL-SDR V5**, optionale RTL-SDR-Treiber und eine lokale Offline-Warnschnittstelle mit Zeitprüfung, Zielregionen, Aktualisierungen und Duplikatschutz. **Für echten ASA-Empfang ist zusätzlich ein separat eingerichteter ASA-fähiger Decoderadapter erforderlich.** Ein Stick oder gewöhnlicher DAB-Decoder allein bestätigt keinen ASA-Empfang. [Empfang, Voraussetzungen und Adapterformat](docs/dab-asa.md).
 
+## Private Kanäle und Erinnerung
 
-Text-Testbereich: Unter **Text testen** eine Nachricht, einen vorhandenen Kanal und einen Testabsender wählen. Die Vorschau verwendet die gespeicherten Kanalregeln, denselben Antwortprozess und dieselbe Paketaufteilung wie der Bot. Public bleibt auch im Test stumm, #bot benötigt KI. Standardmäßig läuft der Test offline. Für freie KI-Fragen oder Wetterdaten Offline ausschalten; dabei werden die konfigurierten Dienste abgefragt und es können Anbietergebühren entstehen. Jeder Test startet ohne Gesprächsverlauf; vorhandene Repeaterkontakte werden ausschließlich gelesen. Die Testdatenbank liegt nur im Arbeitsspeicher, die echte Sendewarteschlange bleibt unverändert. Es wird keine Funkhardware geöffnet und nichts ausgesendet. Die Vorschau prüft keine Funkzustellung. Ein Test dauert höchstens 60 Sekunden, nur ein Test läuft gleichzeitig. Verbundene Tests haben eigene Limits gemäß KI-Konfiguration; diese gelten pro Dashboard-Prozess und getrennt vom Funkdienst.
+Hashtag-Kanäle erhalten ihren Schlüssel aus dem Namen. Für einen privaten Kanal einen Namen ohne `#` und `secret_env = "MESHCORE_CHANNEL_IDEENWERFT"` eintragen. Die entsprechende Variable in `.env` enthält genau 32 Hex-Zeichen. Bestehende Geräteschlüssel werden niemals überschrieben.
+
+Das persönliche Memory berücksichtigt bis zu zwölf vorherige Nachrichten desselben sichtbaren Funknamens über konfigurierte Kanäle hinweg, auch ohne direkte Anrede. Public und eigene Nachrichten bleiben ausgeschlossen. Die Aufbewahrung beträgt standardmäßig 24 Stunden; `history_turns = 0` deaktiviert die Kontextnutzung. Anzeigenamen sind nicht authentifiziert: gleiche Namen teilen Erinnerung. Keine Geheimnisse über Funk mitteilen. Dauerhafte Rollen- und Regelanweisungen werden aus dem Kontext gefiltert; der Filter ist kein vollständiger Schutz gegen beliebige Prompt-Injections.
+
+## Aktualisierung auf 0.3
+
+Vor einem Update laufenden Bot und Dashboard stoppen und Daten/Einstellungen sichern. Danach den Installer ausführen und die gewünschten Dienste wieder starten. Die Datenbank wird auf Schema 2 erweitert; ein Downgrade benötigt die Sicherung. Alte `#bot`-Konfigurationen mit Stichwort KI werden beim Laden auf Erwähnungen umgestellt. Bereits konfigurierte Sendeabstände bleiben bestehen; für das Echtbetrieb-Profil `send_interval_seconds = 10` und `receive_quiet_seconds = 2` einstellen.
+
+Der Installer erzeugt ohne Funkzugriff eine schreibgeschützt lesbare Dashboard-Statusdatei. Im Betrieb wird sie alle 30 Sekunden erneuert. Manuell: `meshcore-ai snapshot --config /etc/meshcore-ai-bot/config.toml` als Dienstbenutzer ausführen.

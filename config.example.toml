@@ -13,10 +13,16 @@ de-bb = "Brandenburg"
 port = "/dev/serial/by-id/REPLACE_WITH_YOUR_DEVICE"
 # Creates only missing configured channels in empty slots. Never overwrites a slot.
 create_channels = false
-send_interval_seconds = 30
-receive_quiet_seconds = 4
+send_interval_seconds = 10
+receive_quiet_seconds = 2
 max_rx_wait_seconds = 60
 packet_bytes = 110
+reply_max_packets = 5
+broadcast_max_packets = 12
+max_pending_packets = 128
+max_pending_messages = 32
+incoming_per_minute = 6
+incoming_per_sender_per_minute = 2
 
 [ai]
 base_url = "https://openrouter.ai/api/v1"
@@ -36,7 +42,7 @@ path = "data/bot.sqlite3"
 retention_hours = 24
 message_max_age_seconds = 300
 reply_ttl_seconds = 1800
-history_turns = 4
+history_turns = 12
 
 [weather]
 enabled = true
@@ -66,8 +72,9 @@ broadcasts = []
 
 [[channels]]
 name = "#bot"
-mode = "keyword"
-keyword = "KI"
+mode = "mention"
+mentions = ["Ideenwerft", "Ideenwerft Friedenau", "MeshCore AI Bot"]
+# Also accepts #ideenwerft and #ideenwerft-friedenau. KI/AI do not trigger replies.
 broadcasts = []
 
 [[channels]]
@@ -111,3 +118,10 @@ max_age_seconds = 300
 host = "127.0.0.1"
 port = 8765
 token_env = "MESHCORE_DASHBOARD_TOKEN"
+
+# Example private channel (uncomment the complete block to use it):
+# [[channels]]
+# name = "Ideenwerft Privat"
+# secret_env = "MESHCORE_CHANNEL_IDEENWERFT" # 32 hex characters in .env
+# mode = "mention"
+# mentions = ["Ideenwerft"]
