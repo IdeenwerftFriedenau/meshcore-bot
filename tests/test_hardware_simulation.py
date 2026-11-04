@@ -37,7 +37,13 @@ async def rig(monkeypatch, tmp_path):
     monkeypatch.setattr(serial.Serial, "_update_rts_state", lambda self: None)
     clock = Clock()
     device = await Companion(clock).start()
-    config = Config(channels=[Channel("Public"), Channel("#fragdenbot", "all"), Channel("#bot", "keyword")])
+    config = Config(
+        channels=[
+            Channel("Public"),
+            Channel("#fragdenbot", "all"),
+            Channel("#bot", "mention", mentions=["Ideenwerft"]),
+        ]
+    )
     config.radio.port = device.port
     config.storage.path = str(tmp_path / "state.sqlite3")
     for index, ch in enumerate(config.channels):
@@ -151,7 +157,7 @@ async def test_delayed_local_ack_and_complete_utf8_parts(rig):
     rebuilt = "".join(re.sub(r"^\[\d+/\d+\] ", "", tx["text"]) for tx in transmissions)
     assert rebuilt == "@[Tester] " + answer
     for first, second in zip(transmissions, transmissions[1:], strict=False):
-        assert second["started"] - first["acknowledged"] >= 29.99
+        assert second["started"] - first["acknowledged"] >= rig.config.radio.send_interval_seconds - 0.01
     assert rig.store.counts() == {"accepted": count}
 
 
@@ -222,7 +228,7 @@ async def test_received_advert_updates_only_known_repeater(rig):
 
 async def test_keyword_on_wire_accepts_only_explicit_invocation(rig):
     await rig.transport.connect()
-    await rig.device.incoming(2, "Tester", "KI ping")
+    await rig.device.incoming(2, "Tester", "@Ideenwerft ping")
     await eventually(lambda: rig.store.db.execute("SELECT count(*) FROM messages").fetchone()[0] == 1)
     assert await rig.engine.process_one()
     assert await rig.engine.deliver_one(rig.transport)
@@ -310,6 +316,7 @@ async def test_daemon_reconnects_after_missing_ack_without_replaying(rig, monkey
         radio_module,
         "asyncio",
         SimpleNamespace(
+            create_task=asyncio.create_task,
             Lock=asyncio.Lock,
             CancelledError=asyncio.CancelledError,
             TaskGroup=asyncio.TaskGroup,
