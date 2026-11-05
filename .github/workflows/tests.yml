@@ -18,4 +18,6 @@ jobs:
       - run: pytest
       - run: python -m build
       - run: bash -n scripts/install-pi.sh
+      - run: bash -n scripts/rollback-pi.sh
+      - run: python scripts/soak-test.py --cycles 2 --output /tmp/meshcore-soak-report.json
       - run: meshcore-ai replay --config config.example.toml --offline examples/radio-cases.json
