@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline-first status dashboard for the local MeshCore and DAB+ services."""
 
+import contextlib
 import json
 import os
 import re
@@ -17,9 +18,25 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 try:
-    from meshcore_ai_bot.dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, save_settings
+    from meshcore_ai_bot.dab_control import (
+        CONTROL_PATH,
+        PRESETS,
+        fresh_signal,
+        load_settings,
+        news_window,
+        save_settings,
+        scan_allowed,
+    )
 except ModuleNotFoundError:
-    from dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, save_settings
+    from dab_control import (
+        CONTROL_PATH,
+        PRESETS,
+        fresh_signal,
+        load_settings,
+        news_window,
+        save_settings,
+        scan_allowed,
+    )
 
 try:
     from meshcore_ai_bot.dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
@@ -121,7 +138,7 @@ def bot_state():
         meta = data.get("meta", {})
         heartbeat = float(meta.get("bot:heartbeat", 0))
         return {
-            "version": meta.get("bot:version", "0.4.3"),
+            "version": meta.get("bot:version", "0.4.4"),
             "connected": str(meta.get("bot:connected")) == "1" and time.time() - heartbeat < 90,
             "age": round(time.time() - heartbeat),
             "packets": data.get("packets", {}),
@@ -134,7 +151,7 @@ def bot_state():
         }
     except (OSError, ValueError, TypeError):
         return {
-            "version": "0.4.3",
+            "version": "0.4.4",
             "connected": False,
             "age": None,
             "packets": {},
@@ -276,11 +293,14 @@ def snapshot():
                 {
                     "sid": str(s.get("sid", ""))[:16],
                     "name": str(s.get("label", {}).get("label", ""))[:80].strip(),
+                    "audio": any(c.get("transportmode") == "audio" for c in s.get("components", [])),
                 }
                 for s in mux.get("services", [])[:64]
             ],
             "inventory": read_json(INVENTORY, {"ensembles": [], "complete": False}),
             "scan": scan_status(),
+            "news_window": news_window(),
+            "scan_allowed": scan_allowed(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
         "recordings": recordings(),
@@ -288,6 +308,9 @@ def snapshot():
         "outbox": local_outbox(),
         "channels": CHANNELS,
     }
+
+
+STREAM_SLOTS = threading.BoundedSemaphore(8)
 
 
 ASSETS = Path(os.environ.get("DASHBOARD_ASSETS", str(Path(__file__).with_name("local-console"))))
@@ -310,7 +333,43 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def stream_radio(self, sid):
+        if not STREAM_SLOTS.acquire(blocking=False):
+            return self.reply(503, b"Zu viele Radiohoerer", "text/plain")
+        try:
+            data = local_json("mux.json") or {}
+            valid = fresh_signal(data, time.time()) and any(
+                str(s.get("sid", "")).lower() == sid
+                and any(c.get("transportmode") == "audio" for c in s.get("components", []))
+                for s in data.get("services", [])
+            )
+            if not valid or scan_status().get("running"):
+                return self.reply(
+                    409, b"Programm nicht empfangsbereit. Bitte Sender aktualisieren.", "text/plain"
+                )
+            try:
+                response = urlopen("http://127.0.0.1:7979/mp3/" + sid, timeout=5)
+            except OSError:
+                return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
+            with response:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                with contextlib.suppress(OSError):
+                    while chunk := response.read(4096):
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+        finally:
+            STREAM_SLOTS.release()
+
     def do_GET(self):
+        match = re.fullmatch(r"/radio/(0x[0-9a-f]{1,8})", self.path)
+        if match:
+            return self.stream_radio(match.group(1))
         parsed = urlsplit(self.path)
         if parsed.path == "/api/inbox":
             values = parse_qs(parsed.query, keep_blank_values=True).get("channel", [""])
@@ -362,6 +421,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path in {"/api/dab/settings", "/api/dab/scan"} and scan_status().get("running"):
                 raise ValueError("DAB-Suchlauf läuft; bitte bis zur Wiederherstellung warten.")
             if self.path == "/api/dab/scan":
+                if not scan_allowed():
+                    raise ValueError(
+                        "DLF-Nachrichten haben Vorrang. Suchlauf zwischen Minute 06 und 49 starten."
+                    )
                 if data:
                     raise ValueError("Suchlauf erwartet keine Parameter")
                 write_json(
