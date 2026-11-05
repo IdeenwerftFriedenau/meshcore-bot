@@ -124,3 +124,43 @@ def test_offline_assets_and_manual_send_stay_local(console, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_live_radio_streams_only_current_audio_service(console, monkeypatch):
+    import io
+
+    monkeypatch.setattr(console, "scan_status", lambda: {"running": False})
+    monkeypatch.setattr(
+        console,
+        "local_json",
+        lambda path: {
+            "demodulator": {"time_last_fct0_frame": time.time() * 1000},
+            "services": [{"sid": "0xd210", "components": [{"transportmode": "audio"}]}],
+        },
+    )
+    requested = []
+
+    def stream(url, timeout):
+        requested.append(url)
+        return io.BytesIO(b"local-radio-audio")
+
+    monkeypatch.setattr(console, "urlopen", stream)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), console.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urllib.request.urlopen(base + "/radio/0xd210", timeout=3) as response:
+            assert response.headers["Content-Type"] == "audio/mpeg"
+            assert response.read() == b"local-radio-audio"
+        for path, status in [("/radio/0xdead", 409), ("/radio/http://external", 404)]:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(base + path, timeout=3)
+            assert error.value.code == status
+        monkeypatch.setattr(console, "scan_status", lambda: {"running": True})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base + "/radio/0xd210", timeout=3)
+        assert error.value.code == 409
+        assert requested == ["http://127.0.0.1:7979/mp3/0xd210"]
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -132,3 +132,19 @@ Der neue Installer legt eine eigene Programmversion unter `/opt/meshcore-ai-bot/
 Manuelle Rückkehr bei gestoppten Diensten: `sudo bash /opt/meshcore-ai-bot/rollback-pi.sh`. Dabei werden auch Datenbank und Einstellungen auf den Sicherungsstand zurückgesetzt; spätere Änderungen gehen verloren. Schema 3 benötigt beim Downgrade die passende Sicherung. Sicherungen unter `/var/backups/meshcore-ai-bot` enthalten Zugangsdaten und bleiben nur für root zugänglich.
 
 Offline prüfen: `sudo -u meshcore-ai /opt/meshcore-ai-bot/current/.venv/bin/meshcore-ai doctor --config /etc/meshcore-ai-bot/config.toml`. USB wird dabei nur auf Existenz geprüft und niemals geöffnet. Den wiederholbaren Fehlertest und den Ablauf für einen echten Pi-Dauerlauf beschreibt [Dauertest](docs/pi-soak-test.md).
+
+
+### Live-Radio und stündlicher Deutschlandfunk
+
+Unter „Radio & Aufnahmen“ kann der Browser Radioprogramme des empfangenen Ensembles
+lokal abspielen. Die Wiedergabe startet nur auf Klick; der Stream bleibt auf dem Pi
+und nutzt keinen Internet-Radiodienst. Bis zu acht lokale Hörer teilen sich denselben
+DAB-Empfänger. Ein Ensemblewechsel unterbricht andere Programme.
+
+Der Empfänger wechselt unabhängig von Internet-Uploads jede Stunde ab Minute 59:30
+auf 5C (Deutschlandfunk). Bis Minute 05:50 hat die bestehende fünfminütige
+Nachrichtenaufzeichnung Vorrang. Danach wird die gespeicherte Auswahl wieder
+empfangen. Unterbrochene Live-Wiedergabe anschließend erneut starten. Die Auswahl
+wird durch die Reservierung nicht überschrieben. Suchläufe lassen sich nur zwischen
+Minute 06 und 49 starten und werden bei einer laufenden Nachrichtenreservierung
+abgebrochen; Kanal und ASA-Schalter werden wiederhergestellt.
