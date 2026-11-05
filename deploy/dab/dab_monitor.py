@@ -139,10 +139,13 @@ async def main():
                     await asyncio.sleep(3)
                 desired = load_settings()["channel"]
                 if desired != CHANNEL:
-                    async with session.post(f"http://127.0.0.1:{PORT}/channel", data=desired) as response:
-                        if response.status != 200:
-                            raise RuntimeError("DAB retune rejected")
-                        await response.read()
+                    async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
+                        current = (await response.text()).strip()
+                    if current != desired:
+                        async with session.post(f"http://127.0.0.1:{PORT}/channel", data=desired) as response:
+                            if response.status != 200:
+                                raise RuntimeError("DAB retune rejected")
+                            await response.read()
                     async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
                         if (await response.text()).strip() != desired:
                             raise RuntimeError("DAB retune not confirmed")

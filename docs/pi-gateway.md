@@ -90,7 +90,7 @@ alle Kanäle. Die Auswahl bleibt in der aktuellen Browsersitzung erhalten.
 ASA-Anzeige: Empfang, vorhandene Signalisierung, aktives Warnsignal und
 Funkweiterleitung werden getrennt dargestellt. Empfangsdaten ohne gültigen oder
 frischen Decoder-Zeitpunkt gelten als unbestätigt. Der vorhandene passive
-ASA-Monitor erfasst die Signalisierung; ab Version 0.4.2 kann die Gateway-Bridge
+ASA-Monitor erfasst die Signalisierung; ab Version 0.4.3 kann die Gateway-Bridge
 reale Signale automatisch nach `#warnings` weiterleiten. Dafür müssen die lokale
 DAB-Einstellung `forward_asa`, `asa.enabled`, die Warnweiterleitung und die
 Kanalberechtigung für `#warnings` eingeschaltet sein. Testsignale, unbestätigte
@@ -121,8 +121,51 @@ Für diese Erweiterung `deploy/dab/dab_monitor.py` am bisherigen Monitor-Pfad
 installieren und `src/meshcore_ai_bot/dab_control.py` als `dab_control.py` daneben
 ablegen. Der vorhandene Monitor behält seinen SDR-Prozess und übernimmt die
 Auswahl über dessen ausschließlich lokale Kanal-Schnittstelle. Der Gateway
-verwendet das installierte Python-Paket ab Version 0.4.2. Das lokale Dashboard
+verwendet das installierte Python-Paket ab Version 0.4.3. Das lokale Dashboard
 benötigt ebenfalls `dab_control.py` neben seinem Skript, wenn sein System-Python
 das Paket nicht installiert hat. Einstellungen und Empfänger bleiben ohne
 Internet bedienbar. Vor der Auslieferung nach GitHub synchronisieren und den
 veröffentlichten Commit auf dem Pi dokumentieren.
+
+## Verifizierte Rohsignalisierung ab 0.4.3
+
+Die frühere reine Prüfung des Decoder-JSON reichte nicht aus: Ein real empfangenes
+regional begrenztes Signal war nicht für Friedenau bestimmt. Deshalb werden rohe
+FIBs aus dem ausschließlich lokalen `/fic`-Strom ausgewertet. Jede FIB benötigt
+eine gültige CRC; FIG 0/15 wird einschließlich P/D, OE, Phase, Stage, vollständiger
+mehrteiliger Location-Sets und Subcodes nach ETSI TS 104 089 Annex E/F gelesen.
+Ein warmer Neuanschluss verwirft zunächst den begrenzten Decoder-Puffer.
+
+Nur vollständig bestätigte Trigger für den konfigurierten Empfängerstandort
+werden weitergeleitet. `asa.location_latitude` und `asa.location_longitude` sind
+dafür ausdrücklich zu setzen (Voreinstellung Friedenau). Andere Ensembles ohne
+Lokalisierung werden nicht als lokal relevant behauptet. Testsignale, Discard-
+Signalisierung, beschädigte FIBs und unvollständige Location-Sets bleiben gesperrt.
+Heartbeat und End beenden nur den technischen Signalzustand; es wird keine
+amtliche Entwarnung daraus erzeugt. Ohne frische Rohbestätigung gilt die ASA-
+Anzeige als unbestätigt. Die alte Decoder-Zusammenfassung autorisiert keine Sendung.
+
+Primärquelle: https://www.etsi.org/deliver/etsi_ts/104000_104099/104089/01.01.01_60/ts_104089v010101p.pdf
+
+## Alle empfangbaren Ensembles und Programme
+
+Der lokale Suchlauf prüft alle 38 DAB+-Band-III-Blöcke (5A bis 13F), wartet auf
+einen frischen Ensemble-Lock und sammelt auf belegten Blöcken zusätzlich den
+langsameren Programmnamen-Zyklus. Ergebnisse unter
+`/var/lib/meshcore-gateway/dab-ensembles.json` bleiben ausschließlich auf dem Pi;
+sie sind keine Repository-Dateien. Der Suchlauf zeigt seinen Fortschritt und
+stellt danach Kanal sowie den vorherigen ASA-Schalter wieder her. Bei einer
+fehlgeschlagenen Kanal-Wiederherstellung bleibt ASA ausgeschaltet. Während des
+Suchlaufs besteht kein kontinuierlicher Warnempfang und keine neue DLF-Aufzeichnung.
+
+Pro Ensemble werden Block, Frequenz, Signalwert, Radioprogramme und Datum
+angezeigt. Eine empfangene FIG-0/15-/EWS-Signalisierung wird als ASA nachgewiesen
+ausgewiesen. Fehlende Signalisierung während des begrenzten Suchlaufs heißt
+„unbestätigt“, nicht „unterstützt ASA nicht“. Empfangbarkeit ist der Stand des
+letzten Suchlaufs und kann sich mit Signalbedingungen ändern. Dieselbe
+Ensemble-Signalisierung gilt für dessen Programme.
+
+Das System-Python des lokalen Dashboards benötigt neben `dab_control.py` auch
+`dab_scan.py`, wenn das Paket nur in der privaten Programmumgebung installiert
+ist. Der Suchlauf startet ausschließlich das fest vorgegebene installierte Modul
+`meshcore_ai_bot.dab_scan`, ohne Shell und ohne frei übergebbare Befehle.

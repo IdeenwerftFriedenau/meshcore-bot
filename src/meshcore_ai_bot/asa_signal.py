@@ -3,6 +3,7 @@
 import hashlib
 import json
 
+from .asa_fic import matches_location
 from .dab_control import PRESETS, fresh_signal
 from .protocol import allows_send, split_text
 
@@ -13,6 +14,8 @@ def forward_signal(config, store, mux, channel, settings, now):
     if channel not in PRESETS or not fresh_signal(mux, now):
         return "stale"
     asa = mux.get("asa", {})
+    if asa.get("validation_version") != 1 or not -5 <= now - asa.get("validated_at", 0) < 10:
+        return "unverified_decoder"
     if type(asa.get("active")) is not bool:
         return "missing"
     if asa.get("is_test") is not False or str(asa.get("status", "")).casefold() != "actual":
@@ -23,10 +26,18 @@ def forward_signal(config, store, mux, channel, settings, now):
     if not ensemble:
         return "missing"
     # Track episodes per ensemble, so tuning elsewhere cannot terminate a signal.
-    scope = hashlib.sha256(f"{channel}:{ensemble}".encode()).hexdigest()
+    scope = hashlib.sha256(
+        f"{channel}:{ensemble}:{asa.get('target_id')}:{asa.get('iid')}".encode()
+    ).hexdigest()
     key = "asa:signal:" + scope
     prior = json.loads(store.meta_get(key) or '{"active":false,"episode":0}')
     active = asa["active"] or asa.get("emergency_warning") is True
+    if active and asa.get("other_ensemble") and not asa.get("locations"):
+        return "other_ensemble_unlocated"
+    if active and not matches_location(
+        asa.get("locations", []), config.asa.location_latitude, config.asa.location_longitude
+    ):
+        return "outside_area"
     if not active:
         if prior["active"]:
             prior["active"] = False
@@ -40,7 +51,7 @@ def forward_signal(config, store, mux, channel, settings, now):
     identity = f"asa-signal:{scope}:{episode}"
     text = (
         f"DAB+ ASA: {'Aktualisiertes Warnsignal' if prior['active'] else 'Warnsignal empfangen'} "
-        f"auf {channel} ({ensemble}). Kein amtlicher Warntext im Decoder vorhanden. "
+        f"auf {channel} ({ensemble}). Zielgebiet umfasst den Standort. Kein amtlicher Warntext im Decoder vorhanden. "
         "Amtliche Hinweise prüfen."
     )
     dropped = store.meta_get("queue:dropped")
@@ -57,7 +68,7 @@ def forward_signal(config, store, mux, channel, settings, now):
         return "queue_full"
     # A crash before this update repeats the same identity/revision, which the
     # durable broadcast table deduplicates, including after uncertain radio ACKs.
-    store.meta_set(key, json.dumps({"active": True, "episode": episode}))
+    store.meta_set(key, json.dumps({"active": True, "episode": episode, "channel": channel}))
     if queued:
         store.meta_set("asa:signal_queued_at", now)
     return "queued" if queued else "duplicate"

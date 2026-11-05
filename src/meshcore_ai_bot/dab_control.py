@@ -12,6 +12,15 @@ PRESETS = {
     "7D": {"name": "RBB Berlin", "frequency_mhz": 194.064},
     "10B": {"name": "RBB Brandenburg / Berlin", "frequency_mhz": 211.648},
 }
+# DAB Band III block frequencies, as used by the installed receiver.
+_BLOCKS = "5A 174928 5B 176640 5C 178352 5D 180064 6A 181936 6B 183648 6C 185360 6D 187072 7A 188928 7B 190640 7C 192352 7D 194064 8A 195936 8B 197648 8C 199360 8D 201072 9A 202928 9B 204640 9C 206352 9D 208064 10A 209936 10B 211648 10C 213360 10D 215072 11A 216928 11B 218640 11C 220352 11D 222064 12A 223936 12B 225648 12C 227360 12D 229072 13A 230784 13B 232496 13C 234208 13D 235776 13E 237488 13F 239200".split()
+PRESETS = {
+    name: {
+        "name": PRESETS.get(name, {}).get("name", "DAB+ Block " + name),
+        "frequency_mhz": int(frequency) / 1000,
+    }
+    for name, frequency in zip(_BLOCKS[::2], _BLOCKS[1::2], strict=True)
+}
 
 
 def load_settings(path=CONTROL_PATH):

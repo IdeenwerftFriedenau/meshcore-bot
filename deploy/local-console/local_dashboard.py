@@ -21,6 +21,11 @@ try:
 except ModuleNotFoundError:
     from dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, save_settings
 
+try:
+    from meshcore_ai_bot.dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
+except ModuleNotFoundError:
+    from dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
+
 HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("DASHBOARD_PORT", "8088"))
 RECORDINGS = Path(os.environ.get("DAB_RECORDINGS_DIR", "/home/marc/dab-warnings-meshcore/recordings"))
@@ -116,7 +121,7 @@ def bot_state():
         meta = data.get("meta", {})
         heartbeat = float(meta.get("bot:heartbeat", 0))
         return {
-            "version": meta.get("bot:version", "0.4.2"),
+            "version": meta.get("bot:version", "0.4.3"),
             "connected": str(meta.get("bot:connected")) == "1" and time.time() - heartbeat < 90,
             "age": round(time.time() - heartbeat),
             "packets": data.get("packets", {}),
@@ -125,10 +130,11 @@ def bot_state():
             "reception": data.get("reception", [])[:40],
             "asa_forward_status": meta.get("asa:forward_status", "starting"),
             "asa_watch_age": time.time() - float(meta.get("asa:watch_heartbeat", 0)),
+            "asa_validated": json.loads(meta.get("asa:validated", "{}")),
         }
     except (OSError, ValueError, TypeError):
         return {
-            "version": "0.4.2",
+            "version": "0.4.3",
             "connected": False,
             "age": None,
             "packets": {},
@@ -227,12 +233,18 @@ def asa_diagnostics(mux, now):
 def snapshot():
     mux = local_json("mux.json") or {}
     journaline = local_json("journaline.json") or {}
-    asa = mux.get("asa", {}) if isinstance(mux, dict) else {}
     demod = mux.get("demodulator", {}) if isinstance(mux, dict) else {}
     ensemble = mux.get("ensemble", {}).get("label", {}) if isinstance(mux, dict) else {}
     settings = load_settings(CONTROL_PATH)
     actual_channel = current_dab_channel()
     bot = bot_state()
+    checked = bot.get("asa_validated", {})
+    verified = (
+        checked.get("validated") is True
+        and -5 <= time.time() - checked.get("validated_at", 0) < 15
+        and checked.get("channel") == actual_channel
+    )
+    checked_signals = [s for s in checked.get("signals", []) if s.get("active")]
     return {
         "now": time.time(),
         "services": {name: service(name) for name in SERVICES},
@@ -242,11 +254,15 @@ def snapshot():
             "reachable": bool(mux),
             "snr": demod.get("snr"),
             "ensemble": ensemble.get("label", ""),
-            "asa_active": asa.get("active") is True,
-            "asa_test": asa.get("is_test") is True,
-            "asa_status": asa.get("status", ""),
-            "asa_level": asa.get("level", 0),
             **asa_diagnostics(mux, time.time()),
+            "asa_data_present": verified,
+            "asa_active": verified and checked.get("active") is True,
+            "emergency_warning": verified and checked.get("active") is True and not checked.get("is_test"),
+            "asa_test": verified and checked.get("is_test") is True,
+            "asa_outside_area": verified and checked.get("outside_area") is True,
+            "asa_status": ("test" if checked.get("is_test") else "actual") if verified else "unverified",
+            "asa_level": checked_signals[0].get("level", 0) if verified and checked_signals else 0,
+            "ews_ensemble": verified and checked.get("ews_ensemble") is True,
             "dab_channel": actual_channel,
             "desired_channel": settings["channel"],
             "presets": [{"channel": key, **value} for key, value in PRESETS.items()],
@@ -254,7 +270,8 @@ def snapshot():
             "asa_forwarding": settings["forward_asa"]
             and bot.get("asa_watch_age", 999) > -5
             and bot.get("asa_watch_age", 999) < 30
-            and bot.get("asa_forward_status") in {"idle", "queued", "duplicate"},
+            and bot.get("asa_forward_status")
+            in {"idle", "queued", "duplicate", "test_suppressed", "outside_area"},
             "services": [
                 {
                     "sid": str(s.get("sid", ""))[:16],
@@ -262,6 +279,8 @@ def snapshot():
                 }
                 for s in mux.get("services", [])[:64]
             ],
+            "inventory": read_json(INVENTORY, {"ensembles": [], "complete": False}),
+            "scan": scan_status(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
         "recordings": recordings(),
@@ -326,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, b"Nicht gefunden", "text/plain")
 
     def do_POST(self):
-        if self.path not in {"/api/send", "/api/dab/settings"}:
+        if self.path not in {"/api/send", "/api/dab/settings", "/api/dab/scan"}:
             return self.reply(404, b"Nicht gefunden", "text/plain")
         try:
             origin = self.headers.get("Origin")
@@ -340,6 +359,28 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError("JSON-Objekt erforderlich")
+            if self.path in {"/api/dab/settings", "/api/dab/scan"} and scan_status().get("running"):
+                raise ValueError("DAB-Suchlauf läuft; bitte bis zur Wiederherstellung warten.")
+            if self.path == "/api/dab/scan":
+                if data:
+                    raise ValueError("Suchlauf erwartet keine Parameter")
+                write_json(
+                    SCAN_STATE,
+                    {"running": True, "index": 0, "total": len(PRESETS), "updated_at": time.time()},
+                )
+                try:
+                    subprocess.Popen(
+                        ["/opt/meshcore-ai-bot/current/.venv/bin/python", "-m", "meshcore_ai_bot.dab_scan"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except OSError:
+                    write_json(
+                        SCAN_STATE, {"running": False, "error": "Suchlauf konnte nicht gestartet werden."}
+                    )
+                    return self.reply(503, b'{"error":"Scan unavailable"}', "application/json")
+                return self.reply(202, b'{"status":"started"}', "application/json")
             if self.path == "/api/dab/settings":
                 settings = save_settings(data, CONTROL_PATH)
                 return self.reply(

@@ -101,6 +101,8 @@ class ASA:
     inbox: str = "data/asa"
     regions: list[str] = field(default_factory=lambda: ["BER", "BB"])
     max_age_seconds: int = 300
+    location_latitude: float = 52.472
+    location_longitude: float = 13.331
     receiver: str = "Nooelec RTL-SDR V5"
     dab_channel: str = "5C"
     device_index: int = 0
@@ -218,6 +220,8 @@ class Config:
             raise ValueError("ai.api_key_env must be an environment variable name")
         if not -90 <= self.weather.latitude <= 90 or not -180 <= self.weather.longitude <= 180:
             raise ValueError("Invalid weather coordinates")
+        if not -90 <= self.asa.location_latitude <= 90 or not -180 <= self.asa.location_longitude <= 180:
+            raise ValueError("Invalid ASA receiver coordinates")
         for section, key in [
             (self.broadcasts, "warning_regions"),
             (self.broadcasts, "dwd_regions"),
