@@ -4,12 +4,15 @@
 import contextlib
 import json
 import os
+import queue
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -43,6 +46,9 @@ try:
     from meshcore_ai_bot.dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
 except ModuleNotFoundError:
     from dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
+
+sys.path.insert(0, str(Path(__file__).parent))
+from radio_features import RadioFeatures  # noqa: E402
 
 HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("DASHBOARD_PORT", "8088"))
@@ -264,6 +270,15 @@ def asa_diagnostics(mux, now):
     }
 
 
+def song_info(service, mux, now):
+    dls = service.get("dls", {})
+    stamp = dls.get("time", 0)
+    changed = mux.get("receiver", {}).get("software", {}).get("lastchannelchange", 0)
+    fresh = type(stamp) in (int, float) and -5 <= now - stamp < 300 and stamp * 1000 >= changed
+    text = str(dls.get("label", "")).strip()[:500] if fresh and fresh_signal(mux, now) else ""
+    return {"text": text, "received": stamp if text else None, "source": "DAB-Senderinfo"}
+
+
 def snapshot():
     mux = local_json("mux.json") or {}
     journaline = local_json("journaline.json") or {}
@@ -311,6 +326,7 @@ def snapshot():
                     "sid": str(s.get("sid", ""))[:16],
                     "name": str(s.get("label", {}).get("label", ""))[:80].strip(),
                     "audio": any(c.get("transportmode") == "audio" for c in s.get("components", [])),
+                    "song": song_info(s, mux, time.time()),
                 }
                 for s in mux.get("services", [])[:64]
             ],
@@ -320,6 +336,7 @@ def snapshot():
             "scan_allowed": scan_allowed(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
+        "radio": {**RADIO_HUB.status(), "jobs": RADIO_FEATURES.list()},
         "recordings": recordings(),
         "inbox": inbox_state(),
         "outbox": local_outbox(),
@@ -327,7 +344,164 @@ def snapshot():
     }
 
 
-STREAM_SLOTS = threading.BoundedSemaphore(8)
+MAX_RADIO_LISTENERS = 16
+STREAM_SLOTS = threading.BoundedSemaphore(MAX_RADIO_LISTENERS)
+
+
+class RadioListener:
+    def __init__(self, stream, capacity=32):
+        self.stream = stream
+        self.chunks = queue.Queue(maxsize=capacity)
+        self.ended = threading.Event()
+        self.dropped = threading.Event()
+
+    def read(self):
+        while not self.dropped.is_set():
+            try:
+                return self.chunks.get(timeout=0.5)
+            except queue.Empty:
+                if self.ended.is_set():
+                    return b""
+        return b""
+
+    def close(self):
+        self.dropped.set()
+        self.ended.set()
+        self.stream.remove(self)
+
+
+class RadioStream:
+    def __init__(self, hub, key, opener):
+        self.hub, self.key, self.opener = hub, key, opener
+        self.lock = threading.Lock()
+        self.listeners = set()
+        self.active = True
+        self.ready = threading.Event()
+        self.opened = False
+        self.buffered = threading.Event()
+        self.history = deque(maxlen=16)
+        self.started = time.monotonic()
+
+    def add(self):
+        with self.lock:
+            if not self.active:
+                return None
+            listener = RadioListener(self)
+            for chunk in self.history:
+                listener.chunks.put_nowait(chunk)
+            self.listeners.add(listener)
+            return listener
+
+    def remove(self, listener):
+        with self.lock:
+            self.listeners.discard(listener)
+            if self.listeners:
+                return
+            self.active = False
+        self.hub.finished(self)
+
+    def publish(self, chunk):
+        with self.lock:
+            self.history.append(chunk)
+            if len(self.history) >= 16 or time.monotonic() - self.started >= 5:
+                self.buffered.set()
+            for listener in list(self.listeners):
+                try:
+                    listener.chunks.put_nowait(chunk)
+                except queue.Full:
+                    # A slow device must never stall the other listeners.
+                    listener.dropped.set()
+                    listener.ended.set()
+                    self.listeners.discard(listener)
+            self.active = bool(self.listeners)
+            return self.active
+
+    def run(self):
+        try:
+            with self.opener() as response:
+                self.opened = True
+                self.ready.set()
+                while self.active:
+                    chunk = response.read(4096)
+                    if not chunk or not self.publish(chunk):
+                        break
+        except OSError:
+            pass
+        finally:
+            with self.lock:
+                self.active = False
+                for listener in self.listeners:
+                    listener.ended.set()
+                self.listeners.clear()
+            self.ready.set()
+            self.buffered.set()
+            self.hub.finished(self)
+
+
+class RadioHub:
+    """One receiver stream per programme, with independent bounded listener queues."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.streams = {}
+
+    def subscribe(self, key, opener):
+        with self.lock:
+            stream = self.streams.get(key)
+            listener = stream.add() if stream else None
+            if listener is None:
+                stream = RadioStream(self, key, opener)
+                listener = stream.add()
+                self.streams[key] = stream
+                threading.Thread(target=stream.run, daemon=True).start()
+            return listener
+
+    def finished(self, stream):
+        with self.lock:
+            if self.streams.get(stream.key) is stream:
+                del self.streams[stream.key]
+
+    def status(self):
+        with self.lock:
+            streams = list(self.streams.values())
+        stations = []
+        for stream in streams:
+            with stream.lock:
+                count = len(stream.listeners)
+            if count:
+                stations.append({"sid": stream.key[-1], "listeners": count})
+        return {
+            "listeners": sum(s["listeners"] for s in stations),
+            "stations": stations,
+            "limit": MAX_RADIO_LISTENERS,
+        }
+
+
+RADIO_HUB = RadioHub()
+
+
+def subscribe_radio(sid):
+    mux = local_json("mux.json") or {}
+    channel = current_dab_channel()
+    service = next(
+        (
+            s
+            for s in mux.get("services", [])
+            if s.get("sid") == sid and any(c.get("transportmode") == "audio" for c in s.get("components", []))
+        ),
+        None,
+    )
+    if not channel or not service or not fresh_signal(mux, time.time()) or scan_status().get("running"):
+        raise ValueError("Gewählten Sender zuerst empfangen; Aufnahme/Erkennung benötigt aktuellen Empfang")
+    generation = mux.get("receiver", {}).get("software", {}).get("lastchannelchange", 0)
+    listener = RADIO_HUB.subscribe((channel, generation, sid), lambda: open_radio(sid))
+    return listener, {
+        "station": str(service.get("label", {}).get("label", sid)).strip()[:100],
+        "channel": channel,
+    }
+
+
+RADIO_FEATURES = RadioFeatures(OUTBOX.parent / "radio-recordings", subscribe_radio)
 
 
 ASSETS = Path(os.environ.get("DASHBOARD_ASSETS", str(Path(__file__).with_name("local-console"))))
@@ -364,11 +538,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(
                     409, b"Programm nicht empfangsbereit. Bitte Sender aktualisieren.", "text/plain"
                 )
+            channel = current_dab_channel()
+            if channel is None:
+                return self.reply(503, b"Empfaenger nicht bereit", "text/plain")
+            generation = data.get("receiver", {}).get("software", {}).get("lastchannelchange", 0)
+            listener = RADIO_HUB.subscribe((channel, generation, sid), lambda: open_radio(sid))
             try:
-                response = open_radio(sid)
-            except OSError:
-                return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
-            with response:
+                stream = listener.stream
+                if not stream.ready.wait(timeout=8) or not stream.opened:
+                    return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
+                if not stream.buffered.wait(timeout=10):
+                    return self.reply(503, b"Audiopuffer noch nicht bereit", "text/plain")
+                self.connection.settimeout(5)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Cache-Control", "no-store")
@@ -377,13 +558,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.close_connection = True
                 with contextlib.suppress(OSError):
-                    while chunk := response.read(4096):
+                    while chunk := listener.read():
                         self.wfile.write(chunk)
                         self.wfile.flush()
+            finally:
+                listener.close()
         finally:
             STREAM_SLOTS.release()
 
     def do_GET(self):
+        recording = re.fullmatch(r"/radio-recordings/([0-9a-f]{32}\.mp3)", self.path)
+        if recording:
+            path = RADIO_FEATURES.root / recording.group(1)
+            if not path.is_file() or time.time() - path.stat().st_mtime > 86400:
+                return self.reply(404, b"Aufnahme nicht gefunden", "text/plain")
+            return self.reply(200, path.read_bytes(), "audio/mpeg")
         match = re.fullmatch(r"/radio/(0x[0-9a-f]{1,8})", self.path)
         if match:
             return self.stream_radio(match.group(1))
@@ -421,7 +610,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, b"Nicht gefunden", "text/plain")
 
     def do_POST(self):
-        if self.path not in {"/api/send", "/api/dab/settings", "/api/dab/scan"}:
+        if self.path not in {
+            "/api/send",
+            "/api/dab/settings",
+            "/api/dab/scan",
+            "/api/radio/record",
+            "/api/radio/stop",
+            "/api/radio/identify",
+        }:
             return self.reply(404, b"Nicht gefunden", "text/plain")
         try:
             origin = self.headers.get("Origin")
@@ -435,6 +631,13 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError("JSON-Objekt erforderlich")
+            if self.path in {"/api/radio/record", "/api/radio/identify", "/api/radio/stop"}:
+                if self.path.endswith("stop"):
+                    result = RADIO_FEATURES.stop(data.get("id"))
+                else:
+                    kind = "record" if self.path.endswith("record") else "identify"
+                    result = RADIO_FEATURES.start(kind, data.get("sid"), data.get("seconds", 300))
+                return self.reply(202, json.dumps(result).encode(), "application/json")
             if self.path in {"/api/dab/settings", "/api/dab/scan"} and scan_status().get("running"):
                 raise ValueError("DAB-Suchlauf läuft; bitte bis zur Wiederherstellung warten.")
             if self.path == "/api/dab/scan":
