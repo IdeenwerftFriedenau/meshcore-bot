@@ -115,6 +115,9 @@ broadcasts = ["news"]
 enabled = false
 inbox = "data/asa"
 regions = ["BER", "BB"]
+# Fixed receiver position for raw ASA location-code matching.
+location_latitude = 52.472
+location_longitude = 13.331
 receiver = "Nooelec RTL-SDR V5"
 dab_channel = "5C"
 device_index = 0
