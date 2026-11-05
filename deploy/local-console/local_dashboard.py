@@ -21,6 +21,11 @@ try:
 except ModuleNotFoundError:
     from dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, save_settings
 
+try:
+    from meshcore_ai_bot.dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
+except ModuleNotFoundError:
+    from dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
+
 HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("DASHBOARD_PORT", "8088"))
 RECORDINGS = Path(os.environ.get("DAB_RECORDINGS_DIR", "/home/marc/dab-warnings-meshcore/recordings"))
@@ -274,6 +279,8 @@ def snapshot():
                 }
                 for s in mux.get("services", [])[:64]
             ],
+            "inventory": read_json(INVENTORY, {"ensembles": [], "complete": False}),
+            "scan": scan_status(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
         "recordings": recordings(),
@@ -338,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, b"Nicht gefunden", "text/plain")
 
     def do_POST(self):
-        if self.path not in {"/api/send", "/api/dab/settings"}:
+        if self.path not in {"/api/send", "/api/dab/settings", "/api/dab/scan"}:
             return self.reply(404, b"Nicht gefunden", "text/plain")
         try:
             origin = self.headers.get("Origin")
@@ -352,6 +359,28 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError("JSON-Objekt erforderlich")
+            if self.path in {"/api/dab/settings", "/api/dab/scan"} and scan_status().get("running"):
+                raise ValueError("DAB-Suchlauf läuft; bitte bis zur Wiederherstellung warten.")
+            if self.path == "/api/dab/scan":
+                if data:
+                    raise ValueError("Suchlauf erwartet keine Parameter")
+                write_json(
+                    SCAN_STATE,
+                    {"running": True, "index": 0, "total": len(PRESETS), "updated_at": time.time()},
+                )
+                try:
+                    subprocess.Popen(
+                        ["/opt/meshcore-ai-bot/current/.venv/bin/python", "-m", "meshcore_ai_bot.dab_scan"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except OSError:
+                    write_json(
+                        SCAN_STATE, {"running": False, "error": "Suchlauf konnte nicht gestartet werden."}
+                    )
+                    return self.reply(503, b'{"error":"Scan unavailable"}', "application/json")
+                return self.reply(202, b'{"status":"started"}', "application/json")
             if self.path == "/api/dab/settings":
                 settings = save_settings(data, CONTROL_PATH)
                 return self.reply(
