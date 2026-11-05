@@ -4,6 +4,7 @@
 import contextlib
 import json
 import os
+import queue
 import re
 import sqlite3
 import subprocess
@@ -320,6 +321,7 @@ def snapshot():
             "scan_allowed": scan_allowed(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
+        "radio": RADIO_HUB.status(),
         "recordings": recordings(),
         "inbox": inbox_state(),
         "outbox": local_outbox(),
@@ -327,7 +329,131 @@ def snapshot():
     }
 
 
-STREAM_SLOTS = threading.BoundedSemaphore(8)
+MAX_RADIO_LISTENERS = 16
+STREAM_SLOTS = threading.BoundedSemaphore(MAX_RADIO_LISTENERS)
+
+
+class RadioListener:
+    def __init__(self, stream, capacity=32):
+        self.stream = stream
+        self.chunks = queue.Queue(maxsize=capacity)
+        self.ended = threading.Event()
+        self.dropped = threading.Event()
+
+    def read(self):
+        while not self.dropped.is_set():
+            try:
+                return self.chunks.get(timeout=0.5)
+            except queue.Empty:
+                if self.ended.is_set():
+                    return b""
+        return b""
+
+    def close(self):
+        self.dropped.set()
+        self.ended.set()
+        self.stream.remove(self)
+
+
+class RadioStream:
+    def __init__(self, hub, key, opener):
+        self.hub, self.key, self.opener = hub, key, opener
+        self.lock = threading.Lock()
+        self.listeners = set()
+        self.active = True
+        self.ready = threading.Event()
+        self.opened = False
+
+    def add(self):
+        with self.lock:
+            if not self.active:
+                return None
+            listener = RadioListener(self)
+            self.listeners.add(listener)
+            return listener
+
+    def remove(self, listener):
+        with self.lock:
+            self.listeners.discard(listener)
+            if self.listeners:
+                return
+            self.active = False
+        self.hub.finished(self)
+
+    def publish(self, chunk):
+        with self.lock:
+            for listener in list(self.listeners):
+                try:
+                    listener.chunks.put_nowait(chunk)
+                except queue.Full:
+                    # A slow device must never stall the other listeners.
+                    listener.dropped.set()
+                    listener.ended.set()
+                    self.listeners.discard(listener)
+            self.active = bool(self.listeners)
+            return self.active
+
+    def run(self):
+        try:
+            with self.opener() as response:
+                self.opened = True
+                self.ready.set()
+                while self.active:
+                    chunk = response.read(4096)
+                    if not chunk or not self.publish(chunk):
+                        break
+        except OSError:
+            pass
+        finally:
+            with self.lock:
+                self.active = False
+                for listener in self.listeners:
+                    listener.ended.set()
+                self.listeners.clear()
+            self.ready.set()
+            self.hub.finished(self)
+
+
+class RadioHub:
+    """One receiver stream per programme, with independent bounded listener queues."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.streams = {}
+
+    def subscribe(self, key, opener):
+        with self.lock:
+            stream = self.streams.get(key)
+            listener = stream.add() if stream else None
+            if listener is None:
+                stream = RadioStream(self, key, opener)
+                listener = stream.add()
+                self.streams[key] = stream
+                threading.Thread(target=stream.run, daemon=True).start()
+            return listener
+
+    def finished(self, stream):
+        with self.lock:
+            if self.streams.get(stream.key) is stream:
+                del self.streams[stream.key]
+
+    def status(self):
+        with self.lock:
+            streams = list(self.streams.values())
+        stations = []
+        for stream in streams:
+            with stream.lock:
+                count = len(stream.listeners)
+            if count:
+                stations.append({"sid": stream.key[-1], "listeners": count})
+        return {
+            "listeners": sum(s["listeners"] for s in stations),
+            "stations": stations,
+            "limit": MAX_RADIO_LISTENERS,
+        }
+
+
+RADIO_HUB = RadioHub()
 
 
 ASSETS = Path(os.environ.get("DASHBOARD_ASSETS", str(Path(__file__).with_name("local-console"))))
@@ -364,11 +490,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(
                     409, b"Programm nicht empfangsbereit. Bitte Sender aktualisieren.", "text/plain"
                 )
+            channel = current_dab_channel()
+            if channel is None:
+                return self.reply(503, b"Empfaenger nicht bereit", "text/plain")
+            generation = data.get("receiver", {}).get("software", {}).get("lastchannelchange", 0)
+            listener = RADIO_HUB.subscribe((channel, generation, sid), lambda: open_radio(sid))
             try:
-                response = open_radio(sid)
-            except OSError:
-                return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
-            with response:
+                stream = listener.stream
+                if not stream.ready.wait(timeout=8) or not stream.opened:
+                    return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
+                self.connection.settimeout(5)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Cache-Control", "no-store")
@@ -377,9 +508,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.close_connection = True
                 with contextlib.suppress(OSError):
-                    while chunk := response.read(4096):
+                    while chunk := listener.read():
                         self.wfile.write(chunk)
                         self.wfile.flush()
+            finally:
+                listener.close()
         finally:
             STREAM_SLOTS.release()
 
