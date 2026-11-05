@@ -210,3 +210,180 @@ def test_radio_retry_stops_if_another_listener_retunes(console, monkeypatch):
     with pytest.raises(OSError, match="Receiver changed"):
         console.open_radio("0xd321")
     assert len(calls) == 1
+
+
+def test_radio_hub_shares_source_and_one_disconnect_keeps_other_listener(console):
+    import queue
+
+    pieces = queue.Queue()
+    closed = threading.Event()
+    opens = []
+
+    class Source:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            closed.set()
+
+        def read(self, size):
+            return pieces.get(timeout=2)
+
+    def opener():
+        opens.append(True)
+        return Source()
+
+    hub = console.RadioHub()
+    first = hub.subscribe(("5C", 1, "0x15dc"), opener)
+    second = hub.subscribe(("5C", 1, "0x15dc"), opener)
+    assert first.stream.ready.wait(1)
+    assert len(opens) == 1
+    assert hub.status()["listeners"] == 2
+    pieces.put(b"shared audio")
+    assert first.read() == second.read() == b"shared audio"
+    first.close()
+    pieces.put(b"still playing")
+    assert second.read() == b"still playing"
+    assert hub.status()["listeners"] == 1
+    second.close()
+    pieces.put(b"")
+    assert closed.wait(1)
+    assert hub.status()["listeners"] == 0
+
+
+def test_slow_radio_listener_is_dropped_without_stalling_others(console):
+    hub = console.RadioHub()
+    stream = console.RadioStream(hub, ("5C", 1, "0x15dc"), lambda: None)
+    slow, fast = stream.add(), stream.add()
+    for i in range(32):
+        chunk = str(i).encode()
+        assert stream.publish(chunk)
+        assert fast.read() == chunk
+    assert stream.publish(b"newest")
+    assert slow.dropped.is_set()
+    assert slow.read() == b""
+    assert fast.read() == b"newest"
+    assert not fast.dropped.is_set()
+    fast.close()
+
+
+def test_radio_generation_change_never_reuses_old_receiver_stream(console):
+    import queue
+
+    pieces = queue.Queue()
+    opened = threading.Event()
+
+    class Source:
+        def __enter__(self):
+            opened.set()
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            return pieces.get(timeout=2)
+
+    hub = console.RadioHub()
+    old = hub.subscribe(("5C", 1, "0x15dc"), Source)
+    new = hub.subscribe(("5C", 2, "0x15dc"), Source)
+    assert opened.wait(1)
+    assert old.stream is not new.stream
+    old.close()
+    new.close()
+    pieces.put(b"")
+    pieces.put(b"")
+
+
+def test_radio_source_failure_wakes_all_waiters_and_removes_stream(console):
+    hub = console.RadioHub()
+
+    def unavailable():
+        raise OSError("Receiver offline")
+
+    listener = hub.subscribe(("5C", 1, "0x15dc"), unavailable)
+    assert listener.stream.ready.wait(1)
+    assert not listener.stream.opened
+    assert listener.read() == b""
+    listener.close()
+    assert hub.status()["listeners"] == 0
+
+
+def test_song_info_rejects_metadata_cached_before_retuning(console):
+    mux = {
+        "demodulator": {"time_last_fct0_frame": 1000000},
+        "receiver": {"software": {"lastchannelchange": 990000}},
+    }
+    song = {"dls": {"time": 999, "label": "Artist - Song"}}
+    assert console.song_info(song, mux, 1000)["text"] == "Artist - Song"
+    song["dls"]["time"] = 989
+    assert console.song_info(song, mux, 1000)["text"] == ""
+
+
+def test_local_recording_is_saved_and_online_recognition_is_explicit(console, tmp_path):
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Listener:
+        def __init__(self):
+            ready = threading.Event()
+            ready.set()
+            self.stream = SimpleNamespace(ready=ready, buffered=ready, opened=True)
+            self.remaining = 8
+
+        def read(self):
+            self.remaining -= 1
+            return b"a" * 4096 if self.remaining >= 0 else b""
+
+        def close(self):
+            pass
+
+    def subscribe(sid):
+        return Listener(), {"station": "Radio", "channel": "5C"}
+
+    def recognize(path):
+        calls.append(path.read_bytes())
+        return {"title": "Song", "artist": "Artist"}
+
+    features = console.RadioFeatures(tmp_path, subscribe, recognize)
+    record = features.start("record", "0xd210", 60)
+    deadline = time.time() + 3
+    while features.jobs[record["id"]]["status"] not in ("ready", "failed") and time.time() < deadline:
+        time.sleep(0.01)
+    job = features.jobs[record["id"]]
+    assert job["status"] == "ready"
+    assert (tmp_path / job["file"]).stat().st_size >= 16000
+    assert not calls
+    recognition = features.start("identify", "0xd210")
+    deadline = time.time() + 3
+    while features.jobs[recognition["id"]]["status"] not in ("matched", "failed") and time.time() < deadline:
+        time.sleep(0.01)
+    assert features.jobs[recognition["id"]]["result"]["title"] == "Song"
+    assert len(calls) == 1
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_recording_inputs_and_concurrency_are_bounded(console, tmp_path):
+    features = console.RadioFeatures(tmp_path, lambda sid: None)
+    for sid, duration in [("http://external", 60), ("0xd210", 999999), ("0xd210", True)]:
+        with pytest.raises(ValueError):
+            features.start("record", sid, duration)
+    features.jobs = {str(i): {"status": "capturing", "kind": "record"} for i in range(4)}
+    with pytest.raises(ValueError):
+        features.start("record", "0xd210", 60)
+
+
+def test_late_listener_gets_prefill_without_reopening_source(console):
+    hub = console.RadioHub()
+    stream = console.RadioStream(hub, ("5C", 1, "0xd210"), lambda: None)
+    first = stream.add()
+    for index in range(16):
+        stream.publish(bytes([index]) * 4096)
+        first.read()
+    assert stream.buffered.is_set()
+    second = stream.add()
+    assert second.read() == bytes([0]) * 4096
+    first.close()
+    assert second.read() == bytes([1]) * 4096
+    second.close()
