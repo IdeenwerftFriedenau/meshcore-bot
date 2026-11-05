@@ -61,7 +61,16 @@ EDITABLE = {
         "news_poll_seconds",
         "rss_feeds",
     },
-    "asa": {"enabled", "regions", "max_age_seconds", "receiver", "dab_channel", "device_index"},
+    "asa": {
+        "enabled",
+        "regions",
+        "max_age_seconds",
+        "receiver",
+        "dab_channel",
+        "device_index",
+        "location_latitude",
+        "location_longitude",
+    },
 }
 CHANNEL_FIELDS = {"name", "mode", "keyword", "mentions", "respond_to_checks", "broadcasts", "memory_scope"}
 
