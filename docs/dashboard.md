@@ -26,3 +26,9 @@ Optional kann `dashboard.host = "0.0.0.0"` gesetzt werden. Dafür ist ein mindes
 
 
 Text-Testbereich: Unter **Text testen** eine Nachricht, einen vorhandenen Kanal und einen Testabsender wählen. Die Vorschau verwendet die gespeicherten Kanalregeln, denselben Antwortprozess und dieselbe Paketaufteilung wie der Bot. Public bleibt auch im Test stumm, #bot benötigt eine Erwähnung. Standardmäßig läuft der Test offline. Für freie KI-Fragen oder Wetterdaten Offline ausschalten; dabei werden die konfigurierten Dienste abgefragt und es können Anbietergebühren entstehen. Jeder Test startet ohne Gesprächsverlauf; vorhandene Repeaterkontakte werden ausschließlich gelesen. Die Testdatenbank liegt nur im Arbeitsspeicher, die echte Sendewarteschlange bleibt unverändert. Es wird keine Funkhardware geöffnet und nichts ausgesendet. Die Vorschau prüft keine Funkzustellung. Ein Test dauert höchstens 60 Sekunden, nur ein Test läuft gleichzeitig. Verbundene Tests haben eigene Limits gemäß KI-Konfiguration; diese gelten pro Dashboard-Prozess und getrennt vom Funkdienst. Auch zusätzliche Modellrunden und Wiederholungen zählen als tatsächliche Modellaufrufe.
+
+## Empfang & Versand
+
+Die neue Ansicht zeigt Gründe für ignorierte oder begrenzte Anfragen, Antwort-Erstellungszeit sowie Status und Zeit jedes Pakets. „Alle Teile vom Funkgerät akzeptiert“ ist ausschließlich lokale Annahme; eine garantierte Empfängerzustellung gibt es dadurch nicht. Abgebrochene Paketfolgen bleiben erkennbar. Die Ansicht enthält keine Nachrichtentexte. Statusalter, letzte Warnquellenprüfung und geschätzte Warteschlangenzeit helfen bei der Fehlersuche.
+
+Im Systembereich kann persönliche Erinnerung global ausgeschaltet werden. Pro Kanal lässt sich automatisch, aus, nur dieser Kanal oder gemeinsamer Bereich wählen. Bei auto bleiben private Kanäle getrennt. Änderungen zuerst speichern; „Text testen“ verwendet einen flüchtigen Speicher und verändert das echte Memory nicht.
