@@ -48,6 +48,7 @@ class Radio:
 @dataclass
 class AI:
     base_url: str = "https://openrouter.ai/api/v1"
+    completion_path: str = "/chat/completions"
     model: str = "google/gemini-2.5-flash"
     api_key_env: str = "MESHCORE_AI_API_KEY"
     allow_local_http: bool = False
@@ -202,6 +203,15 @@ class Config:
             if type(getattr(self.radio, name)) is not int:
                 raise ValueError(f"{name} must be an integer")
         validate_url(self.ai.base_url, self.ai.allow_local_http)
+        if not isinstance(self.ai.completion_path, str) or (
+            self.ai.completion_path
+            and (
+                not self.ai.completion_path.startswith("/")
+                or self.ai.completion_path.startswith("//")
+                or any(c in self.ai.completion_path for c in "?#\\\r\n")
+            )
+        ):
+            raise ValueError("completion_path must be an absolute URL path or empty")
         if not self.ai.model.strip():
             raise ValueError("ai.model is required")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.ai.api_key_env):

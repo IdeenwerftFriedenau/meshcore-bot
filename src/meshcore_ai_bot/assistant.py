@@ -189,7 +189,7 @@ class Assistant:
                         }
                     ]
                 }
-            headers = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json", "X-IW-Task": "meshcore-radio"}
             if self.config.ai.api_key:
                 headers["Authorization"] = "Bearer " + self.config.ai.api_key
             payload = {
@@ -205,7 +205,7 @@ class Assistant:
                 return await read_json(
                     self.client,
                     "POST",
-                    self.config.ai.base_url.rstrip("/") + "/chat/completions",
+                    self.config.ai.base_url.rstrip("/") + self.config.ai.completion_path,
                     headers=headers,
                     json=payload,
                     timeout=self.config.ai.timeout_seconds,

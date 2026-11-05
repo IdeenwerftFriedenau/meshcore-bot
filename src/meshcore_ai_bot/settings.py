@@ -32,6 +32,7 @@ EDITABLE = {
     },
     "ai": {
         "base_url",
+        "completion_path",
         "model",
         "allow_local_http",
         "timeout_seconds",
