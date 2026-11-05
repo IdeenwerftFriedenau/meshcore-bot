@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -103,6 +104,22 @@ def current_dab_channel():
         return channel if channel in PRESETS else None
     except (OSError, ValueError):
         return None
+
+
+def open_radio(sid):
+    # The receiver discovers services before its two-second audio-handler cycle.
+    # A just-tuned programme can therefore briefly return 503 even with RF lock.
+    channel = current_dab_channel()
+    for attempt in range(5):
+        if attempt and (current_dab_channel() != channel or scan_status().get("running")):
+            raise OSError("Receiver changed while preparing audio")
+        try:
+            return urlopen("http://127.0.0.1:7979/mp3/" + sid, timeout=5)
+        except HTTPError as error:
+            if error.code != 503 or attempt == 4:
+                raise
+            error.close()
+            time.sleep(0.5)
 
 
 def probe_remote_state():
@@ -348,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
                     409, b"Programm nicht empfangsbereit. Bitte Sender aktualisieren.", "text/plain"
                 )
             try:
-                response = urlopen("http://127.0.0.1:7979/mp3/" + sid, timeout=5)
+                response = open_radio(sid)
             except OSError:
                 return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
             with response:
