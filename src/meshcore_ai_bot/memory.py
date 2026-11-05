@@ -17,3 +17,14 @@ OVERRIDE = re.compile(
 
 def safe_memory(text: str) -> bool:
     return not OVERRIDE.search(text)
+
+
+def control(text):
+    value = " ".join(text.casefold().strip(" ?!.").split())
+    if value in {"vergiss mich", "/forget", "memory aus", "erinnerung aus"}:
+        return "forget"
+    if value in {"memory an", "erinnerung an"}:
+        return "enable"
+    if value in {"was weisst du über mich", "was weisst du ueber mich", "/memory", "mein memory"}:
+        return "inspect"
+    return None

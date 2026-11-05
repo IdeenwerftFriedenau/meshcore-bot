@@ -13,7 +13,7 @@ WorkingDirectory=/var/lib/meshcore-ai-bot
 Environment=MESHCORE_AI_DB_PATH=/var/lib/meshcore-ai-bot/bot.sqlite3
 Environment=PYTHONUNBUFFERED=1
 Environment=MESHCORE_AI_ASA_INBOX=/var/lib/meshcore-ai-bot/asa
-ExecStart=/opt/meshcore-ai-bot/.venv/bin/meshcore-ai run --config /etc/meshcore-ai-bot/config.toml --live
+ExecStart=/opt/meshcore-ai-bot/current/.venv/bin/meshcore-ai run --config /etc/meshcore-ai-bot/config.toml --live
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=30

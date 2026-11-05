@@ -246,13 +246,23 @@ async def housekeeping(config, store):
         await asyncio.sleep(30)
 
 
+async def poll_asa_once(config, store):
+    work = asyncio.create_task(asyncio.to_thread(asa.poll, config, store))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # Cancelling an await does not stop the thread using the database.
+        await work
+        raise
+
+
 async def run_radio(config: Config, config_path=None):
     with instance_lock(config.storage.path):
         store = Store(config.storage.path)
         maintenance = asyncio.create_task(housekeeping(config, store))
         try:
             async with httpx.AsyncClient(
-                timeout=15, follow_redirects=False, headers={"User-Agent": "MeshCore-AI-Bot/0.3"}
+                timeout=15, follow_redirects=False, headers={"User-Agent": "MeshCore-AI-Bot/0.4"}
             ) as client:
                 assistant = Assistant(config, store, client)
                 broadcasts = Broadcasts(config, store, client)
@@ -312,7 +322,7 @@ async def run_radio(config: Config, config_path=None):
                         async def asa_poll():
                             while True:
                                 try:
-                                    await asyncio.to_thread(asa.poll, config, store)
+                                    await poll_asa_once(config, store)
                                 except Exception:
                                     log.exception("ASA inbox unavailable; keeping radio session")
                                 await asyncio.sleep(2)

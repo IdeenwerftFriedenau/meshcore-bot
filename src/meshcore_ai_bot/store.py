@@ -31,7 +31,7 @@ class Store:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             raise ValueError("Unsupported database version; restore a compatible application")
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS messages(
@@ -54,7 +54,11 @@ class Store:
         CREATE INDEX IF NOT EXISTS memory_sender ON memory(sender,received);
         CREATE TABLE IF NOT EXISTS incoming_requests(sender TEXT NOT NULL,stamp REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS incoming_stamp ON incoming_requests(stamp);
-        PRAGMA user_version=2;
+        CREATE TABLE IF NOT EXISTS memory_preferences(sender TEXT PRIMARY KEY,enabled INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS reception(
+            id TEXT PRIMARY KEY,channel TEXT NOT NULL,sender TEXT NOT NULL,received REAL NOT NULL,
+            decision TEXT NOT NULL,reason TEXT NOT NULL);
+        PRAGMA user_version=3;
         """)
         if "priority" not in {row[1] for row in self.db.execute("PRAGMA table_info(packets)")}:
             self.db.execute("ALTER TABLE packets ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
@@ -62,6 +66,14 @@ class Store:
             self.db.execute(
                 "INSERT OR IGNORE INTO memory SELECT id,channel,lower(sender),received,question,answer FROM messages"
             )
+        if "answered_at" not in {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}:
+            self.db.execute("ALTER TABLE messages ADD COLUMN answered_at REAL")
+        if version < 3:
+            # Older versions copied generated answers into history before radio acceptance.
+            self.db.execute("UPDATE memory SET answer=''")
+            self.db.execute("UPDATE messages SET status='prepared' WHERE status='answered'")
+            self._abort_batches(self.db, time.time())
+            self._sync_replies(self.db)
         self.db.commit()
         if str(path) != ":memory:":
             os.chmod(path, 0o600)
@@ -116,6 +128,11 @@ class Store:
 
     def observe(self, msg: Incoming, now: float):
         with self.transaction() as c:
+            preference = c.execute(
+                "SELECT enabled FROM memory_preferences WHERE sender=?", (msg.sender.casefold(),)
+            ).fetchone()
+            if preference and not preference[0]:
+                return
             # Bound passive memory even when a sender floods an unaddressed channel.
             count = c.execute(
                 "SELECT count(*) FROM memory WHERE sender=? AND received>?",
@@ -191,6 +208,8 @@ class Store:
         with self.transaction() as c:
             c.execute("UPDATE messages SET status='pending' WHERE status='processing'")
             changed = c.execute("UPDATE packets SET state='uncertain' WHERE state='sending'").rowcount
+            self._abort_batches(c, time.time() if now is None else now)
+            self._sync_replies(c)
             if changed:
                 # The process may have died after handing bytes to USB. Start a fresh
                 # quiet interval instead of sending the next fragment immediately.
@@ -200,14 +219,29 @@ class Store:
                     (str(recovered_at),),
                 )
 
-    def history(self, channel: str, sender: str, since: float, turns: int, exclude: str = "") -> list[dict]:
+    def history(
+        self,
+        channel: str,
+        sender: str,
+        since: float,
+        turns: int,
+        exclude: str = "",
+        shared_channels: list[str] | None = None,
+    ) -> list[dict]:
         if not turns:
             return []
         with self.lock:
+            preference = self.db.execute(
+                "SELECT enabled FROM memory_preferences WHERE sender=?", (sender.casefold(),)
+            ).fetchone()
+            if preference and not preference[0]:
+                return []
+            channels = list(dict.fromkeys([channel, *(shared_channels or [])]))
+            placeholders = ",".join("?" for _ in channels)
             rows = self.db.execute(
                 "SELECT text,answer FROM memory WHERE sender=? AND received>=? AND id!=? "
-                "ORDER BY received DESC,rowid DESC LIMIT ?",
-                (sender.casefold(), since, exclude, turns),
+                f"AND channel IN ({placeholders}) ORDER BY received DESC,rowid DESC LIMIT ?",
+                (sender.casefold(), since, exclude, *channels, turns),
             ).fetchall()
         return [
             item
@@ -223,16 +257,107 @@ class Store:
             if safe_memory(row["text"])
         ]
 
+    def forget_memory(self, sender, now, exclude="", enabled=False):
+        with self.transaction() as c:
+            c.execute("DELETE FROM memory WHERE sender=?", (sender.casefold(),))
+            # SQLite lower() only folds ASCII; match display names with Python's
+            # Unicode rules so Änne/änne and similar names are erased together.
+            names = [
+                row[0]
+                for row in c.execute("SELECT DISTINCT sender FROM messages")
+                if row[0].casefold() == sender.casefold()
+            ]
+            for name in names:
+                c.execute(
+                    "UPDATE packets SET state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,"
+                    "expires=MIN(expires,?),text='' WHERE message_id IN "
+                    "(SELECT id FROM messages WHERE sender=? AND id!=?)",
+                    (now, name, exclude),
+                )
+                c.execute(
+                    "UPDATE messages SET raw_text='',question='',answer='',status='forgotten' "
+                    "WHERE sender=? AND id!=?",
+                    (name, exclude),
+                )
+            c.execute(
+                "INSERT INTO memory_preferences VALUES(?,?) ON CONFLICT(sender) "
+                "DO UPDATE SET enabled=excluded.enabled",
+                (sender.casefold(), int(enabled)),
+            )
+
+    def enable_memory(self, sender):
+        with self.transaction() as c:
+            c.execute(
+                "INSERT INTO memory_preferences VALUES(?,1) ON CONFLICT(sender) DO UPDATE SET enabled=1",
+                (sender.casefold(),),
+            )
+
+    def record_receive(self, msg, decision, reason, now):
+        with self.transaction() as c:
+            c.execute(
+                "INSERT INTO reception VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "decision=CASE WHEN excluded.decision='duplicate' THEN reception.decision ELSE excluded.decision END,"
+                "reason=CASE WHEN excluded.decision='duplicate' THEN reception.reason ELSE excluded.reason END",
+                (msg.identity, msg.channel, msg.sender, now, decision, reason),
+            )
+            c.execute(
+                "DELETE FROM reception WHERE id NOT IN (SELECT id FROM reception ORDER BY received DESC,rowid DESC LIMIT 500)"
+            )
+
+    @staticmethod
+    def _sync_replies(c):
+        c.execute(
+            "UPDATE messages SET status='accepted' WHERE status IN ('prepared','answered') "
+            "AND EXISTS(SELECT 1 FROM packets WHERE message_id=messages.id) "
+            "AND NOT EXISTS(SELECT 1 FROM packets WHERE message_id=messages.id AND state!='accepted')"
+        )
+        c.execute(
+            "UPDATE memory SET answer=COALESCE((SELECT answer FROM messages WHERE id=memory.id "
+            "AND status='accepted'),'')"
+        )
+
+    @staticmethod
+    def _abort_batches(c, now):
+        c.execute(
+            "UPDATE packets SET state='cancelled',updated=? WHERE state='queued' AND EXISTS "
+            "(SELECT 1 FROM packets AS broken WHERE broken.batch=packets.batch AND broken.channel=packets.channel "
+            "AND broken.state IN ('failed','uncertain','cancelled','expired'))",
+            (now,),
+        )
+        c.execute(
+            "UPDATE messages SET status='aborted' WHERE status IN ('prepared','answered') AND EXISTS "
+            "(SELECT 1 FROM packets WHERE message_id=messages.id AND state IN ('failed','uncertain','cancelled','expired'))"
+        )
+
+    def diagnostics(self):
+        with self.lock:
+            entries = self.db.execute(
+                "SELECT r.id,r.channel,r.sender,r.received,r.decision,r.reason,m.status,m.answered_at "
+                "FROM reception r LEFT JOIN messages m ON m.id=r.id ORDER BY r.received DESC,r.rowid DESC LIMIT 100"
+            ).fetchall()
+            result = []
+            for entry in entries:
+                value = dict(entry)
+                value["packets"] = [
+                    dict(row)
+                    for row in self.db.execute(
+                        "SELECT ordinal,state,created,updated FROM packets WHERE message_id=? ORDER BY ordinal",
+                        (entry["id"],),
+                    )
+                ]
+                result.append(value)
+            return result
+
     def answer(
         self, message_id: str, channel: str, answer: str, parts: list[str], now: float, expires: float
     ):
         with self.transaction() as c:
             queued = self._insert_parts(c, message_id, message_id, channel, parts, "reply", now, expires)
             c.execute(
-                "UPDATE messages SET status=?,answer=? WHERE id=?",
-                ("answered" if queued else "limited", answer, message_id),
+                "UPDATE messages SET status=?,answer=?,answered_at=? WHERE id=?",
+                ("prepared" if queued else "limited", answer, now, message_id),
             )
-            c.execute("UPDATE memory SET answer=? WHERE id=?", (answer if queued else "", message_id))
+            c.execute("UPDATE memory SET answer='' WHERE id=?", (message_id,))
 
     def _insert_parts(self, c, batch, message_id, channel, parts, stream, now, expires, priority=0):
         c.execute(
@@ -260,6 +385,7 @@ class Store:
             c.execute(
                 "UPDATE packets SET state='expired',updated=? WHERE state='queued' AND expires<=?", (now, now)
             )
+            self._abort_batches(c, now)
             if c.execute("SELECT 1 FROM packets WHERE state='sending' LIMIT 1").fetchone():
                 return None
             rows = c.execute(
@@ -295,9 +421,13 @@ class Store:
         if state not in {"accepted", "failed", "uncertain", "cancelled", "expired"}:
             raise ValueError("Invalid final packet state")
         with self.transaction() as c:
-            c.execute(
+            changed = c.execute(
                 "UPDATE packets SET state=?,updated=? WHERE id=? AND state='sending'", (state, now, packet_id)
-            )
+            ).rowcount
+            if not changed:
+                return
+            self._abort_batches(c, now)
+            self._sync_replies(c)
             if state in {"accepted", "failed", "uncertain"}:
                 c.execute(
                     "INSERT INTO meta VALUES('last_tx',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -429,10 +559,15 @@ class Store:
     def prune(self, now: float, retention_hours: int):
         cutoff = now - retention_hours * 3600
         with self.transaction() as c:
-            c.execute("UPDATE packets SET state='expired',updated=? WHERE state='queued' AND expires<=?", (now, now))
+            c.execute(
+                "UPDATE packets SET state='expired',updated=? WHERE state='queued' AND expires<=?", (now, now)
+            )
             c.execute("DELETE FROM messages WHERE received<?", (cutoff,))
             c.execute("DELETE FROM packets WHERE updated<? AND state NOT IN ('queued','sending')", (cutoff,))
             c.execute("DELETE FROM model_requests WHERE stamp<?", (now - 172800,))
             c.execute("DELETE FROM memory WHERE received<?", (cutoff,))
             c.execute("DELETE FROM incoming_requests WHERE stamp<?", (now - 60,))
             c.execute("DELETE FROM broadcasts WHERE valid_until<? AND checked<?", (cutoff, cutoff))
+            c.execute("DELETE FROM reception WHERE received<?", (cutoff,))
+            self._abort_batches(c, now)
+            self._sync_replies(c)

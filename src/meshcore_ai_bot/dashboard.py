@@ -50,6 +50,11 @@ def runtime(config):
                 asa_last_received=meta.get("asa:last_received"),
                 warning_sources=json.loads(meta.get("warnings:status", "{}")),
                 dropped_batches=int(meta.get("queue:dropped", "0")),
+                reception=snapshot.get("reception", []),
+                snapshot_age_seconds=max(0, time.time() - snapshot.get("published_at", 0)),
+                estimated_queue_seconds=sum(snapshot["packets"].get(k, 0) for k in ("queued", "sending"))
+                * config.radio.send_interval_seconds,
+                warning_checked_at=meta.get("warnings:checked_at"),
             )
             result["connected"] = (
                 meta.get("bot:connected") == "1"

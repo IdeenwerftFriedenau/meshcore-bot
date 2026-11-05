@@ -19,7 +19,7 @@ RSS versendet Überschrift und Link, keine vollständigen Artikel. Ein konfiguri
 
 ## Datenschutz und Sicherung
 
-Der Bot speichert Fragen und Antworten für kontextbezogene Rückfragen pro sichtbarem Absender kanalübergreifend, einschließlich nicht direkt an den Bot gerichteter Nachrichten in konfigurierten Kanälen. Public und eigene Nachrichten bleiben ausgeschlossen. Standard: 24 Stunden. Bereinigung läuft im Dienst alle 30 Sekunden, auch ohne USB-Verbindung. Kanalnamen, Absendernamen und Texte sind keine verlässlich authentifizierten Identitäten. Keine Passwörter über Funk senden.
+Der Bot speichert Fragen und Antworten für kontextbezogene Rückfragen pro sichtbarem Absender innerhalb des gewählten Memory-Bereichs, einschließlich nicht direkt an den Bot gerichteter Nachrichten. Hashtag-Kanäle teilen in der Einstellung auto einen Bereich; private Kanäle bleiben getrennt. Public und eigene Nachrichten bleiben ausgeschlossen. Standard: 24 Stunden. Bereinigung läuft im Dienst alle 30 Sekunden, auch ohne USB-Verbindung. Kanalnamen, Absendernamen und Texte sind keine verlässlich authentifizierten Identitäten. Keine Passwörter über Funk senden.
 
 Bei Online-KI werden Frage, begrenzter Verlauf, Stationskontext und gegebenenfalls Wetter-/Repeaterinformationen an den eingestellten Anbieter übertragen. Wetteranfragen übermitteln den gesuchten Ort an Open-Meteo. Lokale Ollama-Modelle halten die KI-Verarbeitung auf dem Pi; Wetter und Warnungen benötigen weiterhin Internet.
 
@@ -39,3 +39,17 @@ Warnungen, Antworten und Nachrichten wechseln sich bei gefüllten Warteschlangen
 Die Statusdatei `<Datenbankpfad>.dashboard.json` enthält nur Status und Repeaterkontakte, keine Gesprächsinhalte. Sie wird atomar ersetzt, ist nur für den Dienstbenutzer lesbar und kann vom schreibgeschützten Dashboarddienst gelesen werden. Die bisherige direkte SQLite-Lesemethode dient nur als Übergang, wenn noch keine Statusdatei vorhanden ist.
 
 Dateibasierte API- und Kanalschlüssel werden bei jedem gültigen Neuladen vollständig ersetzt. Das Entfernen eines Dateiwerts entfernt dessen Wirkung; ein ausdrücklich in der Dienstumgebung gesetzter Ersatzwert bleibt gültig. `.env` hat für Schlüssel Vorrang vor der Dienstumgebung. Ein leerer gespeicherter Wert deaktiviert den Schlüssel auch bei einem Ersatzwert. Dashboard-Zugangscodes werden beim Start gebunden; zum Ändern oder Entfernen den Dashboarddienst neu starten. Kompromittierte API-Schlüssel zusätzlich beim Anbieter widerrufen.
+
+## Versandabbruch und Memory
+
+`prepared` bedeutet Antwort erzeugt und eingereiht, `accepted` bedeutet alle Teile vom eigenen Gerät akzeptiert. Bei `failed`, `uncertain`, `cancelled` oder `expired` endet die restliche Paketfolge im betreffenden Kanal; andere Nachrichten und Zielkanäle laufen weiter. Auch nach einem Neustart werden unsichere Teile und deren Restfolge nicht erneut versendet. Nur vollständig akzeptierte Antworten werden als Assistentenbeiträge ins Memory übernommen. Frühere fälschlich erinnerte Antworten werden bei der Schema-3-Migration korrigiert.
+
+Memory-Regeln gelten sowohl für das Lesen als auch für das Erfassen von Kontext. `auto`: Hashtag-Kanäle teilen Kontext, private Kanäle bleiben getrennt. `off`: keine Erinnerung dieses Kanals. `channel`: nur dieser Kanal. `shared`: ausdrückliche Freigabe für den gemeinsamen Bereich. `Vergiss mich` gilt für den sichtbaren Funknamen in allen Bereichen und schaltet neues Erinnern bis `memory an` ab. Die Befehle werden lokal ausgeführt; die Inspektion zeigt höchstens drei gefilterte letzte Nutzernachrichten aus dem aktuellen Bereich, keine vermeintlich gesicherte Persönlichkeitsbeschreibung.
+
+Das Empfangsprotokoll hält höchstens 500 Metadateneinträge vor und zeigt die letzten 100. Es enthält Kanal, Funkname, Entscheidung, Zeit und Paketstatus, keine Nachrichtentexte. Die Statusdatei wird alle 30 Sekunden erneuert; ihre Altersanzeige verhindert, dass alte Werte für aktuell gehalten werden. Wartezeiten sind Schätzungen ohne Empfangsruhe, Quell- und Gerätezeiten.
+
+## Updates und Rückkehr
+
+Vor Update und Rollback beide Dienste stoppen. Der Installer erstellt ein separates Release und eine geschützte Sicherung, prüft Datenbankmigration, freien Speicher und Integrität, aktiviert danach `current` und aktualisiert Dienstdefinitionen. Ein Fehler nach dem Sicherungspunkt stellt den vorherigen Stand wieder her. Ein Fehler beim Erstellen des neuen Releases lässt den bisherigen Stand unverändert.
+
+Die vorherige Programmumgebung bleibt erhalten. Die erste Aktualisierung einer älteren Installation sichert auch deren ursprüngliche Dienstdefinitionen und kann auf das frühere Layout zurückkehren. Die manuelle Rückkehr stellt den gesamten Sicherungsstand einschließlich Datenbank und Einstellungen wieder her; nachträgliche Daten gehen dabei verloren. Automatische Wiederherstellung nach einem Prozessfehler ist getestet; Schutz gegen jeden beliebigen Stromausfall mitten in mehreren Dateisystemoperationen wird nicht behauptet.

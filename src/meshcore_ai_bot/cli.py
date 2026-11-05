@@ -30,6 +30,7 @@ def parser():
     sub = root.add_subparsers(dest="command", required=True)
     for name in [
         "check",
+        "doctor",
         "demo",
         "replay",
         "run",
@@ -99,7 +100,13 @@ async def simulate(config, cases, *, offline: bool):
 
 
 async def async_main(args, config):
-    if args.command == "demo":
+    if args.command == "doctor":
+        from .health import doctor
+
+        result = doctor(config)
+        print(json.dumps(result, indent=2))
+        return 0 if result["ok"] else 1
+    elif args.command == "demo":
         print(
             json.dumps(
                 await simulate(

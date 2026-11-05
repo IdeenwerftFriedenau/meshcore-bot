@@ -43,6 +43,7 @@ retention_hours = 24
 message_max_age_seconds = 300
 reply_ttl_seconds = 1800
 history_turns = 12
+memory_enabled = true
 
 [weather]
 enabled = true
@@ -67,6 +68,9 @@ rss_feeds = []
 
 [[channels]]
 name = "#fragdenbot"
+# auto: hashtag channels share memory; private channels remain separate.
+# off, channel and shared may be selected explicitly.
+memory_scope = "auto"
 mode = "all"
 broadcasts = []
 

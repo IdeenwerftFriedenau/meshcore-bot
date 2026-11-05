@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -18,6 +19,8 @@ def publish(store):
             "meta": dict(db.execute("SELECT key,value FROM meta")),
             "packets": dict(db.execute("SELECT state,count(*) FROM packets GROUP BY state")),
             "repeaters": [dict(row) for row in db.execute("SELECT * FROM repeaters ORDER BY id")],
+            "reception": store.diagnostics(),
+            "published_at": time.time(),
         }
     target = snapshot_path(store.path)
     fd, temp = tempfile.mkstemp(prefix=".dashboard-", dir=target.parent)

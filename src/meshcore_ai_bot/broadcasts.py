@@ -319,6 +319,7 @@ class Broadcasts:
                 log.warning("Warning source %s unavailable", source, exc_info=True)
                 results[source] = "unavailable"
         self.store.meta_set("warnings:status", json.dumps(results))
+        self.store.meta_set("warnings:checked_at", time.time())
         return results
 
     async def poll_news(self) -> int:
