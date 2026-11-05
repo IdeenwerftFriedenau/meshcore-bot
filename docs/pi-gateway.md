@@ -185,3 +185,14 @@ empfangen. Unterbrochene Live-Wiedergabe anschließend erneut starten. Die Auswa
 wird durch die Reservierung nicht überschrieben. Suchläufe lassen sich nur zwischen
 Minute 06 und 49 starten und werden bei einer laufenden Nachrichtenreservierung
 abgebrochen; Kanal und ASA-Schalter werden wiederhergestellt.
+
+
+### Direkte Senderauswahl
+
+„Radio & Aufnahmen“ zeigt nur alphabetisch sortierte Sendernamen. Mehrfach
+empfangene Programmkennungen werden zusammengeführt. Ein Klick auf „Radio hören“
+stellt automatisch den passenden DAB-Kanal ein und wartet auf aktuelle
+Empfangsdaten des gewählten Senders. Die Senderauswahl bleibt beim Aktualisieren
+erhalten. Deutschlandfunk-Aufnahme und Suchlauf haben weiterhin Vorrang.
+Manuelle Ensemble-Einstellungen bleiben auf der ASA-Seite unter der optionalen
+Empfangstechnik erreichbar.
