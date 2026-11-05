@@ -8,9 +8,11 @@ import queue
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +46,9 @@ try:
     from meshcore_ai_bot.dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
 except ModuleNotFoundError:
     from dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
+
+sys.path.insert(0, str(Path(__file__).parent))
+from radio_features import RadioFeatures  # noqa: E402
 
 HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("DASHBOARD_PORT", "8088"))
@@ -265,6 +270,15 @@ def asa_diagnostics(mux, now):
     }
 
 
+def song_info(service, mux, now):
+    dls = service.get("dls", {})
+    stamp = dls.get("time", 0)
+    changed = mux.get("receiver", {}).get("software", {}).get("lastchannelchange", 0)
+    fresh = type(stamp) in (int, float) and -5 <= now - stamp < 300 and stamp * 1000 >= changed
+    text = str(dls.get("label", "")).strip()[:500] if fresh and fresh_signal(mux, now) else ""
+    return {"text": text, "received": stamp if text else None, "source": "DAB-Senderinfo"}
+
+
 def snapshot():
     mux = local_json("mux.json") or {}
     journaline = local_json("journaline.json") or {}
@@ -312,6 +326,7 @@ def snapshot():
                     "sid": str(s.get("sid", ""))[:16],
                     "name": str(s.get("label", {}).get("label", ""))[:80].strip(),
                     "audio": any(c.get("transportmode") == "audio" for c in s.get("components", [])),
+                    "song": song_info(s, mux, time.time()),
                 }
                 for s in mux.get("services", [])[:64]
             ],
@@ -321,7 +336,7 @@ def snapshot():
             "scan_allowed": scan_allowed(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
-        "radio": RADIO_HUB.status(),
+        "radio": {**RADIO_HUB.status(), "jobs": RADIO_FEATURES.list()},
         "recordings": recordings(),
         "inbox": inbox_state(),
         "outbox": local_outbox(),
@@ -363,12 +378,17 @@ class RadioStream:
         self.active = True
         self.ready = threading.Event()
         self.opened = False
+        self.buffered = threading.Event()
+        self.history = deque(maxlen=16)
+        self.started = time.monotonic()
 
     def add(self):
         with self.lock:
             if not self.active:
                 return None
             listener = RadioListener(self)
+            for chunk in self.history:
+                listener.chunks.put_nowait(chunk)
             self.listeners.add(listener)
             return listener
 
@@ -382,6 +402,9 @@ class RadioStream:
 
     def publish(self, chunk):
         with self.lock:
+            self.history.append(chunk)
+            if len(self.history) >= 16 or time.monotonic() - self.started >= 5:
+                self.buffered.set()
             for listener in list(self.listeners):
                 try:
                     listener.chunks.put_nowait(chunk)
@@ -411,6 +434,7 @@ class RadioStream:
                     listener.ended.set()
                 self.listeners.clear()
             self.ready.set()
+            self.buffered.set()
             self.hub.finished(self)
 
 
@@ -456,6 +480,30 @@ class RadioHub:
 RADIO_HUB = RadioHub()
 
 
+def subscribe_radio(sid):
+    mux = local_json("mux.json") or {}
+    channel = current_dab_channel()
+    service = next(
+        (
+            s
+            for s in mux.get("services", [])
+            if s.get("sid") == sid and any(c.get("transportmode") == "audio" for c in s.get("components", []))
+        ),
+        None,
+    )
+    if not channel or not service or not fresh_signal(mux, time.time()) or scan_status().get("running"):
+        raise ValueError("Gewählten Sender zuerst empfangen; Aufnahme/Erkennung benötigt aktuellen Empfang")
+    generation = mux.get("receiver", {}).get("software", {}).get("lastchannelchange", 0)
+    listener = RADIO_HUB.subscribe((channel, generation, sid), lambda: open_radio(sid))
+    return listener, {
+        "station": str(service.get("label", {}).get("label", sid)).strip()[:100],
+        "channel": channel,
+    }
+
+
+RADIO_FEATURES = RadioFeatures(OUTBOX.parent / "radio-recordings", subscribe_radio)
+
+
 ASSETS = Path(os.environ.get("DASHBOARD_ASSETS", str(Path(__file__).with_name("local-console"))))
 
 
@@ -499,6 +547,8 @@ class Handler(BaseHTTPRequestHandler):
                 stream = listener.stream
                 if not stream.ready.wait(timeout=8) or not stream.opened:
                     return self.reply(503, b"Audio nicht verfuegbar", "text/plain")
+                if not stream.buffered.wait(timeout=10):
+                    return self.reply(503, b"Audiopuffer noch nicht bereit", "text/plain")
                 self.connection.settimeout(5)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
@@ -517,6 +567,12 @@ class Handler(BaseHTTPRequestHandler):
             STREAM_SLOTS.release()
 
     def do_GET(self):
+        recording = re.fullmatch(r"/radio-recordings/([0-9a-f]{32}\.mp3)", self.path)
+        if recording:
+            path = RADIO_FEATURES.root / recording.group(1)
+            if not path.is_file() or time.time() - path.stat().st_mtime > 86400:
+                return self.reply(404, b"Aufnahme nicht gefunden", "text/plain")
+            return self.reply(200, path.read_bytes(), "audio/mpeg")
         match = re.fullmatch(r"/radio/(0x[0-9a-f]{1,8})", self.path)
         if match:
             return self.stream_radio(match.group(1))
@@ -554,7 +610,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, b"Nicht gefunden", "text/plain")
 
     def do_POST(self):
-        if self.path not in {"/api/send", "/api/dab/settings", "/api/dab/scan"}:
+        if self.path not in {
+            "/api/send",
+            "/api/dab/settings",
+            "/api/dab/scan",
+            "/api/radio/record",
+            "/api/radio/stop",
+            "/api/radio/identify",
+        }:
             return self.reply(404, b"Nicht gefunden", "text/plain")
         try:
             origin = self.headers.get("Origin")
@@ -568,6 +631,13 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError("JSON-Objekt erforderlich")
+            if self.path in {"/api/radio/record", "/api/radio/identify", "/api/radio/stop"}:
+                if self.path.endswith("stop"):
+                    result = RADIO_FEATURES.stop(data.get("id"))
+                else:
+                    kind = "record" if self.path.endswith("record") else "identify"
+                    result = RADIO_FEATURES.start(kind, data.get("sid"), data.get("seconds", 300))
+                return self.reply(202, json.dumps(result).encode(), "application/json")
             if self.path in {"/api/dab/settings", "/api/dab/scan"} and scan_status().get("running"):
                 raise ValueError("DAB-Suchlauf läuft; bitte bis zur Wiederherstellung warten.")
             if self.path == "/api/dab/scan":
