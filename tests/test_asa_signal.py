@@ -1,8 +1,10 @@
 import copy
 import json
+import re
 
 import pytest
 
+from meshcore_ai_bot.asa_fic import parse_fig
 from meshcore_ai_bot.asa_signal import forward_signal
 from meshcore_ai_bot.config import Channel, Config
 from meshcore_ai_bot.dab_control import load_settings, save_settings
@@ -18,7 +20,16 @@ def setup(tmp_path):
     store = Store(tmp_path / "state.sqlite3")
     now = 1000
     mux = {
-        "asa": {"active": True, "is_test": False, "status": "actual", "iid": 15, "level": 1},
+        "asa": {
+            "active": True,
+            "is_test": False,
+            "status": "actual",
+            "iid": 3,
+            "level": 1,
+            "validation_version": 1,
+            "validated_at": 999,
+            "target_id": "subchannel:1",
+        },
         "ensemble": {"label": {"label": "DR Deutschland"}},
         "demodulator": {"time_last_fct0_frame": 999000},
         "receiver": {"software": {"lastchannelchange": 990000}},
@@ -32,7 +43,8 @@ def test_actual_signal_only_targets_warnings_and_survives_restart_without_duplic
     assert forward_signal(config, store, mux, "5C", settings, now) == "queued"
     rows = store.db.execute("SELECT channel,text FROM packets").fetchall()
     assert rows and {row["channel"] for row in rows} == {"#warnings"}
-    assert "Kein amtlicher Warntext" in " ".join(row["text"] for row in rows)
+    combined = " ".join(re.sub(r"\[\d+/\d+\]", "", " ".join(row["text"] for row in rows)).split())
+    assert "Kein amtlicher Warntext" in combined
     count = len(rows)
     assert forward_signal(config, store, mux, "5C", settings, now + 1) == "duplicate"
     path = store.path
@@ -88,6 +100,26 @@ def test_queue_full_retries_same_episode_without_losing_signal(setup):
     assert forward_signal(config, store, mux, "5C", settings, now) == "queue_full"
     store.limits.max_pending_packets = 128
     assert forward_signal(config, store, mux, "5C", settings, now) == "queued"
+
+
+def test_captured_nonlocal_trigger_never_reaches_warnings(setup):
+    config, store, mux, settings, now = setup
+    mux["asa"] = {
+        **parse_fig(bytes.fromhex("090f418f01c894090033")),
+        "active": True,
+        "status": "actual",
+        "validation_version": 1,
+        "validated_at": now,
+    }
+    assert forward_signal(config, store, mux, "5C", settings, now) == "outside_area"
+    assert store.counts() == {}
+
+
+def test_legacy_decoder_summary_cannot_authorize_transmission(setup):
+    config, store, mux, settings, now = setup
+    del mux["asa"]["validation_version"]
+    assert forward_signal(config, store, mux, "5C", settings, now) == "unverified_decoder"
+    assert store.counts() == {}
 
 
 def test_control_settings_validate_and_preserve_other_fields(tmp_path):
