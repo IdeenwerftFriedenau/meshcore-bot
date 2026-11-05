@@ -95,18 +95,17 @@ def test_store_dedup_recovery_and_history():
         s.recover()
         assert s.next_message(1002, 300)
         s.answer(msg.identity, msg.channel, "Pong", ["part1", "part2"], 1002, 2000)
-        assert len(s.history(msg.channel, "Alice", 0, 4)) == 2
+        assert len(s.history(msg.channel, "Alice", 0, 4)) == 1
         assert not s.history(msg.channel, "Bob", 0, 4)
-        assert s.history("#bot", "Alice", 0, 4) == s.history(msg.channel, "Alice", 0, 4)
+        assert not s.history("#bot", "Alice", 0, 4)
         p = s.claim(1003, lambda *_: True)
         assert p["text"] == "part1"
         s.recover(now=1004)
         assert s.last_tx() == 1004
         assert s.counts()["uncertain"] == 1
-        p2 = s.claim(1004, lambda *_: True)
-        assert p2["text"] == "part2"
-        s.finish(p2["id"], "accepted", 1005)
-        assert s.last_tx() == 1005
+        assert s.claim(1004, lambda *_: True) is None
+        assert s.counts()["cancelled"] == 1
+        assert s.last_tx() == 1004
         assert s.claim(1006, lambda *_: True) is None
     finally:
         s.close()
