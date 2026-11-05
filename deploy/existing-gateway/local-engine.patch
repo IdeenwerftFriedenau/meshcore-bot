@@ -1,0 +1,133 @@
+--- a/collector.py
++++ b/collector.py
+@@ -4,10 +4,13 @@
+ from direct_contacts import prepare_direct_contact,active_pins,archived_contact_type
+ from radio_pacing import ReceiveFirstSender
+ from receive_channels import read_receive_channels
++from channel_mirror import ChannelMirror,upload_mirror
+ from meshcore import MeshCore,EventType
++from pi_gateway_bridge import GatewayBridge
+ from radio_bot import RadioInbox,request_answer,split_reply,send_reply_parts,addressed,bot_addressed
+ CHANNEL_NAMES={"#ideenwerft","#test","#mc-treffen","#warnings","#news","#fragdenbot","#bot"}
+ REQUIRED_CHANNELS={"#ideenwerft","#test","#warnings","#fragdenbot","#bot"}
++MIRROR=ChannelMirror(os.environ.get('CHANNEL_MIRROR_PATH','/var/lib/meshcore-gateway/channel-mirror.sqlite3'))
+ INBOX=RadioInbox(os.environ.get("INBOX_PATH","/var/lib/meshcore-gateway/inbox.sqlite3"))
+ ANSWER_URL=os.environ["INGEST_URL"].rsplit("/",1)[0]+"/channel-message"
+ DIRECT_URL=os.environ["INGEST_URL"].rsplit("/",1)[0]+"/direct-message"
+@@ -139,7 +142,7 @@
+ async def main():
+  directory_version_sent=-1
+  while True:
+-  mc=None;worker=None
++  mc=None;worker=None;local_bot=None
+   try:
+    mc=await MeshCore.create_serial(PORT,default_timeout=5,auto_reconnect=False)
+    if mc is None:raise RuntimeError('No USB companion response')
+@@ -151,8 +154,11 @@
+    paced_send=ReceiveFirstSender(mc.commands.send_chan_msg)
+    mc.commands.send_chan_msg=paced_send
+    channel_indices=await load_channel_indices(mc)
++   local_bot=GatewayBridge("/etc/meshcore-ai-bot/config.toml",mc,channel_indices)
++   local_bot.start()
+    contact_response=await mc.commands.get_contacts()
+    if contact_response.type!=EventType.CONTACTS:raise RuntimeError('Contact query failed')
++   local_bot.update_contacts(contact_response.payload)
+    contacts,nodes=radio_contact_list(contact_response,seen)
+    contact_map={contact['id'][:12]:contact for contact in contacts}
+    await asyncio.to_thread(archive_radio_contacts,contacts)
+@@ -235,14 +241,16 @@
+    queue=asyncio.Queue(maxsize=100)
+    async def received(event):
+     paced_send.received()
++    local_bot.engine.pacer.received()
+     p=event.payload;idx=p.get('channel_idx')
+     if idx not in channel_indices:return
+     text=p.get('text','');stamp=p.get('sender_timestamp',0)
+     if not isinstance(text,str) or not text or type(stamp) is not int:return
+     key=INBOX.record(channel_indices[idx],stamp,text)
+     if key:
+-     try:queue.put_nowait((key,idx,channel_indices[idx],stamp,text,time.time()))
+-     except asyncio.QueueFull:INBOX.status(key,'queue_full')
++     MIRROR.record(key,channel_indices[idx],stamp,text)
++     decision=local_bot.receive(channel_indices[idx],text,stamp)
++     INBOX.status(key,"local_"+decision)
+    def upload_direct(data):
+     request=urllib.request.Request(DIRECT_URL,json.dumps(data).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+TOKEN},method='POST')
+     with urllib.request.urlopen(request,timeout=10) as response:response.read()
+@@ -275,11 +283,11 @@
+     return last_sent_at
+    async def answer_worker():
+     while True:
+-     key,idx,received_channel,stamp,text,queued_at=await queue.get()
++     key,idx,stamp,text,queued_at=await queue.get()
+      try:
+-      result=await asyncio.to_thread(request_answer,ANSWER_URL,TOKEN,{'channel':received_channel,'stamp':stamp,'text':text,'queued_at':queued_at})
++      result=await asyncio.to_thread(request_answer,ANSWER_URL,TOKEN,{'channel':channel_indices[idx],'stamp':stamp,'text':text,'queued_at':queued_at})
+       reply=result.get('reply')
+-      if reply and channel_indices.get(idx)==received_channel and received_channel in ('#ideenwerft','#fragdenbot','#bot') and (received_channel!='#bot' or addressed(text) or bool(re.search(r'(?<![\w@])#ideenwerft(?:\s+friedenau)?\b',text.split(': ',1)[-1],re.I))):
++      if reply and channel_indices[idx] in ('#ideenwerft','#fragdenbot','#bot') and (channel_indices[idx]!='#bot' or addressed(text) or bool(re.search(r'(?<![\w@])#ideenwerft(?:\s+friedenau)?\b',text.split(': ',1)[-1],re.I))):
+        # Commit before sending: an uncertain USB acknowledgement must never trigger a duplicate.
+        own=str(mc.self_info.get('name',mc.self_info.get('node_name','Ideenwerft Friedenau')))
+        parts=split_reply(reply,max(60,min(133,153-len(own.encode()))))
+@@ -300,22 +308,35 @@
+        INBOX.status(key,status,reply)
+        try:await asyncio.to_thread(request_answer,ANSWER_URL.rsplit('/',1)[0]+'/channel-delivery',TOKEN,{'id':key,'status':status,'reply':reply})
+        except Exception:logging.warning('Delivery status upload unavailable')
+-       logging.info('Channel %s reply: %s (%s parts)',received_channel,status,len(parts))
++       logging.info('Channel %s reply: %s (%s parts)',channel_indices[idx],status,len(parts))
+       else:INBOX.status(key,result.get('status','no_reply'))
+      except Exception as e:
+       INBOX.status(key,'unavailable');logging.warning('Channel processing unavailable: %s',type(e).__name__)
+      finally:queue.task_done()
+    mc.subscribe(EventType.CHANNEL_MSG_RECV,received)
+    mc.subscribe(EventType.CONTACT_MSG_RECV,direct_received)
+-   worker=asyncio.create_task(answer_worker())
++   async def mirror_worker():
++    while True:
++     row=MIRROR.next()
++     if row is None:
++      await asyncio.sleep(0.5);continue
++     try:
++      await asyncio.to_thread(upload_mirror,ANSWER_URL,TOKEN,row)
++      MIRROR.finish(row[0],True)
++     except Exception as error:
++      MIRROR.finish(row[0],False)
++      logging.warning('Receive-only app mirror retry scheduled: %s',type(error).__name__)
++   # The local v0.4 engine owns replies; this worker only mirrors received text.
++   worker=asyncio.create_task(mirror_worker())
+    await mc.start_auto_message_fetching()
+    # Drain already queued messages; old mentions are recorded but not answered.
+    for _ in range(100):
+     pending=await mc.commands.get_msg()
+     if pending.type in (EventType.NO_MORE_MSGS,EventType.ERROR):break
+-   logging.info('Listening: %s; Public receive-only; replies unchanged', ', '.join(channel_indices.values()))
++   logging.info('Listening: %s; Public receive-only; local v0.4 replies active', ', '.join(channel_indices.values()))
+    nodes=[];contacts=[];last_refresh=0
+    while True:
++    local_bot.check()
+     try:last_sent_at=await local_dashboard_outbox(last_sent_at)
+     except Exception:logging.warning('Local dashboard outbox unavailable')
+     try:last_sent_at=await poll_admin_outbox(mc,URL,TOKEN,last_sent_at,channel_indices,prepare_direct=prepare_dm)
+@@ -331,11 +352,13 @@
+       if refreshed_channels!=channel_indices:
+        await asyncio.to_thread(upload,{'nodes':nodes,'contacts':contacts,'connected':True,'receive_channels':[{'slot':slot,'name':name} for slot,name in refreshed_channels.items()],**metrics})
+        channel_indices=refreshed_channels
++       local_bot.indices=channel_indices
+        logging.info('Receive channels refreshed: %s', ', '.join(channel_indices.values()))
+      except Exception as error:
+       logging.warning('Receive channel refresh failed; keeping previous inventory: %s',type(error).__name__)
+      response=await mc.commands.get_contacts()
+      if response.type!=EventType.CONTACTS:raise RuntimeError('Contact query failed')
++     local_bot.update_contacts(response.payload)
+      contacts,nodes=radio_contact_list(response,seen)
+      contact_map={contact['id'][:12]:contact for contact in contacts}
+      await asyncio.to_thread(archive_radio_contacts,contacts)
+@@ -350,6 +373,8 @@
+     await asyncio.sleep(10)
+   except Exception as e:logging.warning('USB connection unavailable: %s',type(e).__name__)
+   finally:
++   if local_bot is not None:
++    await local_bot.close()
+    if worker is not None:
+     worker.cancel()
+     try:await worker

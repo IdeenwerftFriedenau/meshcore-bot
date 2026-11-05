@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshcore-ai-bot"
-version = "0.4.0"
+version = "0.4.2"
 description = "A standalone, policy-driven MeshCore AI bot for Raspberry Pi"
 readme = "README.md"
 requires-python = ">=3.11"
