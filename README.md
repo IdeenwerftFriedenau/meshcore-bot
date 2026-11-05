@@ -30,9 +30,9 @@ sudo nano /etc/meshcore-ai-bot/.env
 In `config.toml` den USB-Pfad (`ls -l /dev/serial/by-id/`), Stationsnamen, Standort, Kanäle und KI-Modell eintragen. In `.env` den Schlüssel hinterlegen. Die Kanäle müssen auf dem Funkgerät vorhanden sein und ihre Schlüssel müssen passen. `create_channels = true` erlaubt das Anlegen in freien Plätzen; bestehende Kanäle werden nicht überschrieben.
 
 ```sh
-sudo -u meshcore-ai /opt/meshcore-ai-bot/.venv/bin/meshcore-ai check --config /etc/meshcore-ai-bot/config.toml
+sudo -u meshcore-ai /opt/meshcore-ai-bot/current/.venv/bin/meshcore-ai check --config /etc/meshcore-ai-bot/config.toml
 # Optional: Kanäle prüfen / ausdrücklich konfigurierte freie Plätze anlegen:
-sudo -u meshcore-ai /opt/meshcore-ai-bot/.venv/bin/meshcore-ai provision --config /etc/meshcore-ai-bot/config.toml
+sudo -u meshcore-ai /opt/meshcore-ai-bot/current/.venv/bin/meshcore-ai provision --config /etc/meshcore-ai-bot/config.toml
 sudo systemctl enable --now meshcore-ai-bot
 journalctl -u meshcore-ai-bot -f
 ```
@@ -109,10 +109,22 @@ Profil für **Nooelec RTL-SDR V5**, optionale RTL-SDR-Treiber und eine lokale Of
 
 Hashtag-Kanäle erhalten ihren Schlüssel aus dem Namen. Für einen privaten Kanal einen Namen ohne `#` und `secret_env = "MESHCORE_CHANNEL_IDEENWERFT"` eintragen. Die entsprechende Variable in `.env` enthält genau 32 Hex-Zeichen. Bestehende Geräteschlüssel werden niemals überschrieben.
 
-Das persönliche Memory berücksichtigt bis zu zwölf vorherige Nachrichten desselben sichtbaren Funknamens über konfigurierte Kanäle hinweg, auch ohne direkte Anrede. Public und eigene Nachrichten bleiben ausgeschlossen. Die Aufbewahrung beträgt standardmäßig 24 Stunden; `history_turns = 0` deaktiviert die Kontextnutzung. Anzeigenamen sind nicht authentifiziert: gleiche Namen teilen Erinnerung. Keine Geheimnisse über Funk mitteilen. Dauerhafte Rollen- und Regelanweisungen werden aus dem Kontext gefiltert; der Filter ist kein vollständiger Schutz gegen beliebige Prompt-Injections.
+Das persönliche Memory berücksichtigt bis zu zwölf vorherige Nachrichten desselben sichtbaren Funknamens. In der Einstellung `auto` teilen Hashtag-Kanäle einen gemeinsamen Bereich; private Kanäle ohne `#` bleiben getrennt. Mit `memory_scope = "off"`, `"channel"` oder `"shared"` wird dies ausdrücklich festgelegt. Auch Nachrichten ohne direkte Anrede können erinnert werden. Public und eigene Nachrichten bleiben ausgeschlossen. Die Aufbewahrung beträgt standardmäßig 24 Stunden; `history_turns = 0` deaktiviert die Kontextnutzung. Anzeigenamen sind nicht authentifiziert: gleiche Namen teilen Erinnerung. Keine Geheimnisse über Funk mitteilen. Dauerhafte Rollen- und Regelanweisungen werden aus dem Kontext gefiltert; der Filter ist kein vollständiger Schutz gegen beliebige Prompt-Injections.
 
-## Aktualisierung auf 0.3
+## Aktualisierung
 
-Vor einem Update laufenden Bot und Dashboard stoppen und Daten/Einstellungen sichern. Danach den Installer ausführen und die gewünschten Dienste wieder starten. Die Datenbank wird auf Schema 2 erweitert; ein Downgrade benötigt die Sicherung. Alte `#bot`-Konfigurationen mit Stichwort KI werden beim Laden auf Erwähnungen umgestellt. Bereits konfigurierte Sendeabstände bleiben bestehen; für das Echtbetrieb-Profil `send_interval_seconds = 10` und `receive_quiet_seconds = 2` einstellen.
+Vor einem Update laufenden Bot und Dashboard stoppen und Daten/Einstellungen sichern. Danach den Installer ausführen und die gewünschten Dienste wieder starten. Die Datenbank wird auf Schema 3 erweitert; ein Downgrade benötigt die Sicherung. Alte `#bot`-Konfigurationen mit Stichwort KI werden beim Laden auf Erwähnungen umgestellt. Bereits konfigurierte Sendeabstände bleiben bestehen; für das Echtbetrieb-Profil `send_interval_seconds = 10` und `receive_quiet_seconds = 2` einstellen.
 
 Der Installer erzeugt ohne Funkzugriff eine schreibgeschützt lesbare Dashboard-Statusdatei. Im Betrieb wird sie alle 30 Sekunden erneuert. Manuell: `meshcore-ai snapshot --config /etc/meshcore-ai-bot/config.toml` als Dienstbenutzer ausführen.
+
+## Version 0.4: Versand, Memory und sichere Updates
+
+Antwortteile einer fehlgeschlagenen oder unklaren Sendung werden angehalten. Eine Antwort wird erst dann als Assistentenbeitrag erinnert, wenn das eigene Funkgerät alle Teile akzeptiert hat; das ist keine Empfängerbestätigung. Das Dashboard zeigt unter **Empfang & Versand** Entscheidungen, Paketstatus, Erstellungszeiten, Quellenprüfung und geschätzte Wartezeit, ohne Nachrichtentexte zu veröffentlichen.
+
+Lokale Befehle in einem freigegebenen Antwortkanal: **Was weißt du über mich?**, **Vergiss mich** / **memory aus**, **memory an**. In `#bot` zusätzlich die übliche Erwähnung verwenden. Vergessen löscht die Erinnerung und redigiert frühere Frage-/Antworttexte und wartende Pakete des Funknamens; neue Erinnerungen bleiben bis zum erneuten Einschalten aus. Technische Metadaten bleiben bis zur üblichen Bereinigung erhalten. Gleiche Anzeigenamen teilen weiterhin dieselbe Identität. `storage.memory_enabled = false` schaltet Erfassung und Kontextnutzung global ab.
+
+Der neue Installer legt eine eigene Programmversion unter `/opt/meshcore-ai-bot/releases` an, sichert Einstellungen, Daten und Dienstdefinitionen und schaltet erst nach Migration und Offline-Diagnose den Link `current` um. Bei einem fehlgeschlagenen Update wird die Sicherung automatisch wiederhergestellt. Laufende Dienste müssen vorher gestoppt sein; der Installer startet sie nicht.
+
+Manuelle Rückkehr bei gestoppten Diensten: `sudo bash /opt/meshcore-ai-bot/rollback-pi.sh`. Dabei werden auch Datenbank und Einstellungen auf den Sicherungsstand zurückgesetzt; spätere Änderungen gehen verloren. Schema 3 benötigt beim Downgrade die passende Sicherung. Sicherungen unter `/var/backups/meshcore-ai-bot` enthalten Zugangsdaten und bleiben nur für root zugänglich.
+
+Offline prüfen: `sudo -u meshcore-ai /opt/meshcore-ai-bot/current/.venv/bin/meshcore-ai doctor --config /etc/meshcore-ai-bot/config.toml`. USB wird dabei nur auf Existenz geprüft und niemals geöffnet. Den wiederholbaren Fehlertest und den Ablauf für einen echten Pi-Dauerlauf beschreibt [Dauertest](docs/pi-soak-test.md).
