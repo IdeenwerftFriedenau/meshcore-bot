@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiohttp
 import yaml
-from dab_control import load_settings
+from dab_control import effective_channel, load_settings
 
 ROOT = Path(__file__).resolve().parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
@@ -106,6 +106,32 @@ async def log_welle(proc):
             LOG.info("welle: %s", text[:320])
 
 
+async def follow_tuning(stop):
+    """Local tuning remains responsive even while an Internet upload times out."""
+    global CHANNEL
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+        while not stop.is_set():
+            try:
+                desired = effective_channel(load_settings())
+                async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
+                    current = (await response.text()).strip()
+                if current != desired:
+                    async with session.post(f"http://127.0.0.1:{PORT}/channel", data=desired) as response:
+                        response.raise_for_status()
+                        await response.read()
+                    async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
+                        if (await response.text()).strip() != desired:
+                            raise RuntimeError("DAB retune not confirmed")
+                    LOG.info("DAB channel switched to %s", desired)
+                CHANNEL = desired
+            except (OSError, ValueError, RuntimeError, aiohttp.ClientError):
+                pass
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=1)
+            except TimeoutError:
+                pass
+
+
 async def main():
     global CHANNEL
     stop = asyncio.Event()
@@ -117,12 +143,14 @@ async def main():
     proc = None
     last_signal = None
     was_active = False
+    tuning = asyncio.create_task(follow_tuning(stop))
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         while not stop.is_set():
             try:
                 if proc is None or proc.returncode is not None:
                     if proc is not None:
                         LOG.warning("welle-cli ended; restarting decoder")
+                    CHANNEL = effective_channel(load_settings())
                     proc = await asyncio.create_subprocess_exec(
                         WELLE,
                         "-c",
@@ -137,22 +165,6 @@ async def main():
                     asyncio.create_task(log_welle(proc))
                     LOG.info("DAB receiver started on %s; HTTP access is loopback-only", CHANNEL)
                     await asyncio.sleep(3)
-                desired = load_settings()["channel"]
-                if desired != CHANNEL:
-                    async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
-                        current = (await response.text()).strip()
-                    if current != desired:
-                        async with session.post(f"http://127.0.0.1:{PORT}/channel", data=desired) as response:
-                            if response.status != 200:
-                                raise RuntimeError("DAB retune rejected")
-                            await response.read()
-                    async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
-                        if (await response.text()).strip() != desired:
-                            raise RuntimeError("DAB retune not confirmed")
-                    CHANNEL = desired
-                    was_active = False
-                    last_signal = None
-                    LOG.info("DAB channel switched to %s", CHANNEL)
                 async with session.get(f"http://127.0.0.1:{PORT}/mux.json") as response:
                     if response.status != 200:
                         raise RuntimeError(f"welle-cli mux HTTP {response.status}")
@@ -224,6 +236,7 @@ async def main():
                 await asyncio.wait_for(stop.wait(), timeout=10)
             except TimeoutError:
                 pass
+    await tuning
     if proc and proc.returncode is None:
         proc.send_signal(signal.SIGINT)
         try:
