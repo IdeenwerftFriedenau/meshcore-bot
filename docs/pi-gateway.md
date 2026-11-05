@@ -169,3 +169,19 @@ Das System-Python des lokalen Dashboards benötigt neben `dab_control.py` auch
 `dab_scan.py`, wenn das Paket nur in der privaten Programmumgebung installiert
 ist. Der Suchlauf startet ausschließlich das fest vorgegebene installierte Modul
 `meshcore_ai_bot.dab_scan`, ohne Shell und ohne frei übergebbare Befehle.
+
+
+### Live-Radio und stündlicher Deutschlandfunk
+
+Unter „Radio & Aufnahmen“ kann der Browser Radioprogramme des empfangenen Ensembles
+lokal abspielen. Die Wiedergabe startet nur auf Klick; der Stream bleibt auf dem Pi
+und nutzt keinen Internet-Radiodienst. Bis zu acht lokale Hörer teilen sich denselben
+DAB-Empfänger. Ein Ensemblewechsel unterbricht andere Programme.
+
+Der Empfänger wechselt unabhängig von Internet-Uploads jede Stunde ab Minute 59:30
+auf 5C (Deutschlandfunk). Bis Minute 05:50 hat die bestehende fünfminütige
+Nachrichtenaufzeichnung Vorrang. Danach wird die gespeicherte Auswahl wieder
+empfangen. Unterbrochene Live-Wiedergabe anschließend erneut starten. Die Auswahl
+wird durch die Reservierung nicht überschrieben. Suchläufe lassen sich nur zwischen
+Minute 06 und 49 starten und werden bei einer laufenden Nachrichtenreservierung
+abgebrochen; Kanal und ASA-Schalter werden wiederhergestellt.
