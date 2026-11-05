@@ -17,7 +17,7 @@ from meshcore_ai_bot.asa_fic import FicState, matches_location
 from meshcore_ai_bot.asa_signal import forward_signal
 from meshcore_ai_bot.assistant import Assistant
 from meshcore_ai_bot.config import load_config
-from meshcore_ai_bot.dab_control import load_settings
+from meshcore_ai_bot.dab_control import effective_channel, load_settings
 from meshcore_ai_bot.engine import Engine
 from meshcore_ai_bot.protocol import Incoming, allows_send
 from meshcore_ai_bot.settings import digest, refresh_secrets
@@ -136,7 +136,7 @@ class GatewayBridge:
                 mux = response.json()
                 verify = await self.client.get("http://127.0.0.1:7979/channel", timeout=3)
                 verify.raise_for_status()
-                if channel != verify.text.strip() or channel != settings["channel"]:
+                if channel != verify.text.strip() or channel != effective_channel(settings):
                     status = "retuning"
                 else:
                     now = time.time()
