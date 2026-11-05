@@ -129,6 +129,8 @@ def test_offline_assets_and_manual_send_stay_local(console, monkeypatch):
 def test_live_radio_streams_only_current_audio_service(console, monkeypatch):
     import io
 
+    monkeypatch.setattr(console, "current_dab_channel", lambda: "5C")
+
     monkeypatch.setattr(console, "scan_status", lambda: {"running": False})
     monkeypatch.setattr(
         console,
@@ -164,3 +166,47 @@ def test_live_radio_streams_only_current_audio_service(console, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize("unavailable", [0, 1, 4, 5])
+def test_radio_waits_for_receiver_audio_handler(console, monkeypatch, unavailable):
+    import io
+
+    attempts = []
+    monkeypatch.setattr(console, "current_dab_channel", lambda: "7D")
+    monkeypatch.setattr(console, "scan_status", lambda: {"running": False})
+    monkeypatch.setattr(console.time, "sleep", lambda duration: None)
+
+    def stream(url, timeout):
+        attempts.append(url)
+        if len(attempts) <= unavailable:
+            raise urllib.error.HTTPError(url, 503, "Audio handler not ready", {}, io.BytesIO())
+        return io.BytesIO(b"ready audio")
+
+    monkeypatch.setattr(console, "urlopen", stream)
+    if unavailable == 5:
+        with pytest.raises(urllib.error.HTTPError):
+            console.open_radio("0xd321")
+    else:
+        with console.open_radio("0xd321") as response:
+            assert response.read() == b"ready audio"
+    assert attempts == ["http://127.0.0.1:7979/mp3/0xd321"] * min(unavailable + 1, 5)
+
+
+def test_radio_retry_stops_if_another_listener_retunes(console, monkeypatch):
+    import io
+
+    channels = iter(["7D", "5C"])
+    calls = []
+    monkeypatch.setattr(console, "current_dab_channel", lambda: next(channels))
+    monkeypatch.setattr(console, "scan_status", lambda: {"running": False})
+    monkeypatch.setattr(console.time, "sleep", lambda duration: None)
+
+    def stream(url, timeout):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, 503, "Preparing audio", {}, io.BytesIO())
+
+    monkeypatch.setattr(console, "urlopen", stream)
+    with pytest.raises(OSError, match="Receiver changed"):
+        console.open_radio("0xd321")
+    assert len(calls) == 1
