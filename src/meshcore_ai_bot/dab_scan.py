@@ -11,9 +11,9 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 try:
-    from .dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, save_settings
+    from .dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, news_window, save_settings
 except ImportError:
-    from dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, save_settings
+    from dab_control import CONTROL_PATH, PRESETS, fresh_signal, load_settings, news_window, save_settings
 
 INVENTORY = CONTROL_PATH.with_name("dab-ensembles.json")
 SCAN_STATE = CONTROL_PATH.with_name("dab-scan.json")
@@ -127,6 +127,8 @@ def scan():
         save_settings({"forward_asa": False})
         try:
             for index, channel in enumerate(PRESETS, 1):
+                if news_window():
+                    raise ScanCancelled("DLF-Nachrichten haben Vorrang")
                 publish(index=index, channel=channel)
                 tune(channel)
                 record = None

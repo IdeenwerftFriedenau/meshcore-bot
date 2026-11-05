@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 CONTROL_PATH = Path(os.environ.get("MESHCORE_DAB_CONTROL", "/var/lib/meshcore-gateway/dab-control.json"))
@@ -76,3 +77,19 @@ def fresh_signal(mux, now):
         and type(changed) in (int, float)
         and frame >= changed
     )
+
+
+def news_window(now=None):
+    """Reserve the single tuner from HH:59:30 through HH:05:50 for DLF."""
+    second = (time.time() if now is None else now) % 3600
+    return second >= 3570 or second < 350
+
+
+def effective_channel(settings, now=None):
+    return "5C" if news_window(now) else settings["channel"]
+
+
+def scan_allowed(now=None):
+    # Leave ten minutes for the full scan before the next bulletin reservation.
+    second = (time.time() if now is None else now) % 3600
+    return 350 <= second < 2970
