@@ -40,7 +40,13 @@ EDITABLE = {
         "max_tokens",
     },
     "weather": {"enabled", "location", "latitude", "longitude"},
-    "storage": {"retention_hours", "message_max_age_seconds", "reply_ttl_seconds", "history_turns"},
+    "storage": {
+        "retention_hours",
+        "message_max_age_seconds",
+        "reply_ttl_seconds",
+        "history_turns",
+        "memory_enabled",
+    },
     "broadcasts": {
         "warnings_enabled",
         "dwd_enabled",
@@ -56,7 +62,7 @@ EDITABLE = {
     },
     "asa": {"enabled", "regions", "max_age_seconds", "receiver", "dab_channel", "device_index"},
 }
-CHANNEL_FIELDS = {"name", "mode", "keyword", "mentions", "respond_to_checks", "broadcasts"}
+CHANNEL_FIELDS = {"name", "mode", "keyword", "mentions", "respond_to_checks", "broadcasts", "memory_scope"}
 
 
 def digest(path):

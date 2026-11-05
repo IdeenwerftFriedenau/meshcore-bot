@@ -96,6 +96,29 @@ def question_for(message: Incoming, config: Config, now: float) -> str | None:
     return body.strip() or "Hallo"
 
 
+def ignored_reason(message, config, now):
+    channel = config.channel(message.channel)
+    if not channel:
+        return "unknown_channel"
+    if message.channel in PUBLIC_CHANNELS:
+        return "public_protected"
+    if message.sender.strip().casefold() in {
+        name.strip().casefold() for name in [config.station.name, *config.station.own_names]
+    }:
+        return "own_message"
+    if type(message.timestamp) is not int:
+        return "invalid_timestamp"
+    if message.timestamp < now - config.storage.message_max_age_seconds:
+        return "old_message"
+    if message.timestamp > now + 120:
+        return "future_message"
+    if not isinstance(message.text, str) or not message.text.strip() or len(message.text.encode()) > 600:
+        return "invalid_text"
+    if channel.mode == "off":
+        return "channel_off"
+    return "missing_keyword" if channel.mode == "keyword" else "missing_mention"
+
+
 def allows_send(config: Config, channel_name: str, stream: str) -> bool:
     channel = config.channel(channel_name)
     if not channel or channel_name in PUBLIC_CHANNELS:

@@ -11,7 +11,8 @@ from collections.abc import Awaitable, Callable
 
 from .assistant import Assistant
 from .config import Config
-from .protocol import Incoming, allows_send, fit_reply, may_remember, question_for
+from .memory import control
+from .protocol import Incoming, allows_send, fit_reply, ignored_reason, may_remember, question_for
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -77,12 +78,25 @@ class Engine:
         self.pacer.received()
         if message.sender.casefold() in self.own_names:
             return "ignored"
-        if may_remember(message, self.config, now):
-            self.store.observe(message, now)
         question = question_for(message, self.config, now)
+        channel = self.config.channel(message.channel)
+        if (
+            self.config.storage.memory_enabled
+            and channel
+            and channel.memory_scope != "off"
+            and may_remember(message, self.config, now)
+            and not control(question or message.text)
+        ):
+            self.store.observe(message, now)
         if question is None:
+            if channel and message.channel not in {"Public", "#public"}:
+                reason = ignored_reason(message, self.config, now)
+                self.store.record_receive(message, "ignored", reason, now)
             return "ignored"
-        return self.store.admit(message, question, now)
+        decision = self.store.admit(message, question, now)
+        reason = "rate_or_queue_limit" if decision == "limited" else decision
+        self.store.record_receive(message, decision, reason, now)
+        return decision
 
     async def process_one(self, now: float | None = None) -> bool:
         now = time.time() if now is None else now
@@ -94,16 +108,43 @@ class Engine:
         if question is None or row["sender"].casefold() in self.own_names:
             self.store.cancel_message(row["id"])
             return True
-        history = self.store.history(
-            row["channel"],
-            row["sender"],
-            now - self.config.storage.retention_hours * 3600,
-            self.config.storage.history_turns,
-            exclude=row["id"],
+        channel = self.config.channel(row["channel"])
+        shared = (
+            [ch.name for ch in self.config.channels if ch.shares_memory and ch.memory_scope != "off"]
+            if channel.shares_memory
+            else []
+        )
+        memory_on = self.config.storage.memory_enabled and channel.memory_scope != "off"
+        history = (
+            self.store.history(
+                row["channel"],
+                row["sender"],
+                now - self.config.storage.retention_hours * 3600,
+                self.config.storage.history_turns,
+                exclude=row["id"],
+                shared_channels=shared,
+            )
+            if memory_on
+            else []
         )
         try:
-            answer = await self.assistant.answer(question, history)
-            text = answer.text
+            command = control(question)
+            if command == "forget":
+                self.store.forget_memory(row["sender"], now, exclude=row["id"])
+                text = "Deine Erinnerungen sind gelöscht; ich merke mir nichts Neues. Mit 'memory an' aktivierst du es wieder."
+            elif command == "enable":
+                self.store.enable_memory(row["sender"])
+                text = "Deine persönliche Erinnerung ist wieder erlaubt. Es gelten weiterhin die Memory-Einstellungen dieses Kanals."
+            elif command == "inspect":
+                facts = [item["content"] for item in history if item["role"] == "user"][-3:]
+                text = (
+                    "Aus deinen letzten Nachrichten in diesem Memory-Bereich: " + " | ".join(facts)
+                    if facts
+                    else "In diesem Memory-Bereich habe ich keine nutzbaren Erinnerungen an dich."
+                )
+            else:
+                answer = await self.assistant.answer(question, history)
+                text = answer.text
         except Exception:
             # A plugin bug must not kill the daemon or expose a traceback on air.
             log.exception("Answer generation failed for message %s", row["id"][:12])
@@ -117,8 +158,14 @@ class Engine:
         history_text, parts = fit_reply(
             prefix, text, self.config.radio.packet_bytes, self.config.radio.reply_max_packets
         )
+        completed = time.time()
         self.store.answer(
-            row["id"], row["channel"], history_text, parts, now, now + self.config.storage.reply_ttl_seconds
+            row["id"],
+            row["channel"],
+            history_text,
+            parts,
+            completed,
+            completed + self.config.storage.reply_ttl_seconds,
         )
         return True
 

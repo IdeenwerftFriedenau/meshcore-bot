@@ -68,6 +68,7 @@ class Storage:
     message_max_age_seconds: int = 300
     reply_ttl_seconds: int = 1800
     history_turns: int = 12
+    memory_enabled: bool = True
 
 
 @dataclass
@@ -120,6 +121,13 @@ class Channel:
     respond_to_checks: bool = False
     broadcasts: list[str] = field(default_factory=list)
     secret_env: str = ""
+    memory_scope: str = "auto"
+
+    @property
+    def shares_memory(self):
+        return self.memory_scope == "shared" or (
+            self.memory_scope == "auto" and self.name.startswith("#") and not self.secret_env
+        )
 
 
 @dataclass
@@ -145,6 +153,7 @@ class Config:
             (self.radio, ["create_channels"]),
             (self.ai, ["allow_local_http"]),
             (self.weather, ["enabled"]),
+            (self.storage, ["memory_enabled"]),
             (
                 self.broadcasts,
                 ["warnings_enabled", "news_enabled", "include_instructions", "dwd_enabled", "bbk_enabled"],
@@ -229,6 +238,8 @@ class Config:
         if not self.channels:
             raise ValueError("At least one channel must be configured")
         for ch in self.channels:
+            if ch.memory_scope not in {"auto", "off", "channel", "shared"}:
+                raise ValueError("memory_scope must be auto, off, channel or shared")
             if not ch.name or len(ch.name.encode()) > 32 or any(ord(c) < 32 for c in ch.name):
                 raise ValueError("Channel names need 1–32 UTF-8 bytes without control characters")
             if ch.mode not in {"off", "all", "keyword", "mention"}:
