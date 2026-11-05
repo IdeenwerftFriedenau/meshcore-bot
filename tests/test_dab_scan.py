@@ -4,6 +4,7 @@ from meshcore_ai_bot import dab_control, dab_scan
 
 
 def configure(monkeypatch, tmp_path):
+    monkeypatch.setattr(dab_scan, "news_window", lambda: False)
     control = tmp_path / "control.json"
     dab_control.save_settings({"channel": "5C", "forward_asa": True}, control)
     monkeypatch.setattr(dab_scan, "SCAN_STATE", tmp_path / "scan.json")
