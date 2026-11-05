@@ -116,7 +116,7 @@ def bot_state():
         meta = data.get("meta", {})
         heartbeat = float(meta.get("bot:heartbeat", 0))
         return {
-            "version": meta.get("bot:version", "0.4.2"),
+            "version": meta.get("bot:version", "0.4.3"),
             "connected": str(meta.get("bot:connected")) == "1" and time.time() - heartbeat < 90,
             "age": round(time.time() - heartbeat),
             "packets": data.get("packets", {}),
@@ -125,10 +125,11 @@ def bot_state():
             "reception": data.get("reception", [])[:40],
             "asa_forward_status": meta.get("asa:forward_status", "starting"),
             "asa_watch_age": time.time() - float(meta.get("asa:watch_heartbeat", 0)),
+            "asa_validated": json.loads(meta.get("asa:validated", "{}")),
         }
     except (OSError, ValueError, TypeError):
         return {
-            "version": "0.4.2",
+            "version": "0.4.3",
             "connected": False,
             "age": None,
             "packets": {},
@@ -227,12 +228,18 @@ def asa_diagnostics(mux, now):
 def snapshot():
     mux = local_json("mux.json") or {}
     journaline = local_json("journaline.json") or {}
-    asa = mux.get("asa", {}) if isinstance(mux, dict) else {}
     demod = mux.get("demodulator", {}) if isinstance(mux, dict) else {}
     ensemble = mux.get("ensemble", {}).get("label", {}) if isinstance(mux, dict) else {}
     settings = load_settings(CONTROL_PATH)
     actual_channel = current_dab_channel()
     bot = bot_state()
+    checked = bot.get("asa_validated", {})
+    verified = (
+        checked.get("validated") is True
+        and -5 <= time.time() - checked.get("validated_at", 0) < 15
+        and checked.get("channel") == actual_channel
+    )
+    checked_signals = [s for s in checked.get("signals", []) if s.get("active")]
     return {
         "now": time.time(),
         "services": {name: service(name) for name in SERVICES},
@@ -242,11 +249,15 @@ def snapshot():
             "reachable": bool(mux),
             "snr": demod.get("snr"),
             "ensemble": ensemble.get("label", ""),
-            "asa_active": asa.get("active") is True,
-            "asa_test": asa.get("is_test") is True,
-            "asa_status": asa.get("status", ""),
-            "asa_level": asa.get("level", 0),
             **asa_diagnostics(mux, time.time()),
+            "asa_data_present": verified,
+            "asa_active": verified and checked.get("active") is True,
+            "emergency_warning": verified and checked.get("active") is True and not checked.get("is_test"),
+            "asa_test": verified and checked.get("is_test") is True,
+            "asa_outside_area": verified and checked.get("outside_area") is True,
+            "asa_status": ("test" if checked.get("is_test") else "actual") if verified else "unverified",
+            "asa_level": checked_signals[0].get("level", 0) if verified and checked_signals else 0,
+            "ews_ensemble": verified and checked.get("ews_ensemble") is True,
             "dab_channel": actual_channel,
             "desired_channel": settings["channel"],
             "presets": [{"channel": key, **value} for key, value in PRESETS.items()],
@@ -254,7 +265,8 @@ def snapshot():
             "asa_forwarding": settings["forward_asa"]
             and bot.get("asa_watch_age", 999) > -5
             and bot.get("asa_watch_age", 999) < 30
-            and bot.get("asa_forward_status") in {"idle", "queued", "duplicate"},
+            and bot.get("asa_forward_status")
+            in {"idle", "queued", "duplicate", "test_suppressed", "outside_area"},
             "services": [
                 {
                     "sid": str(s.get("sid", ""))[:16],
