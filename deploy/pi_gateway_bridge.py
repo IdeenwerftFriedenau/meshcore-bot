@@ -13,12 +13,13 @@ import time
 import httpx
 
 from meshcore_ai_bot import __version__
+from meshcore_ai_bot.asa_fic import FicState, matches_location
 from meshcore_ai_bot.asa_signal import forward_signal
 from meshcore_ai_bot.assistant import Assistant
 from meshcore_ai_bot.config import load_config
 from meshcore_ai_bot.dab_control import load_settings
 from meshcore_ai_bot.engine import Engine
-from meshcore_ai_bot.protocol import Incoming
+from meshcore_ai_bot.protocol import Incoming, allows_send
 from meshcore_ai_bot.settings import digest, refresh_secrets
 from meshcore_ai_bot.snapshot import publish
 from meshcore_ai_bot.store import Store
@@ -40,12 +41,15 @@ class GatewayBridge:
         if own:
             self.engine.own_names.add(str(own).casefold())
         self.needs_reconnect = False
+        self.raw_asa = FicState()
+        self.asa_channel = None
+        self.asa_ignore_until = 0
         self.tasks = []
 
     def start(self):
         self.tasks = [
             asyncio.create_task(work())
-            for work in (self.process, self.transmit, self.maintain, self.asa_watch)
+            for work in (self.process, self.transmit, self.maintain, self.asa_watch, self.asa_stream)
         ]
         log.info("Local v0.4 engine active; existing gateway owns USB")
 
@@ -123,6 +127,10 @@ class GatewayBridge:
                 response = await self.client.get("http://127.0.0.1:7979/channel", timeout=3)
                 response.raise_for_status()
                 channel = response.text.strip()
+                if channel != self.asa_channel:
+                    self.asa_channel = channel
+                    self.raw_asa = FicState()
+                    self.asa_ignore_until = time.time() + 8
                 response = await self.client.get("http://127.0.0.1:7979/mux.json", timeout=3)
                 response.raise_for_status()
                 mux = response.json()
@@ -131,13 +139,73 @@ class GatewayBridge:
                 if channel != verify.text.strip() or channel != settings["channel"]:
                     status = "retuning"
                 else:
-                    status = forward_signal(self.config, self.store, mux, channel, settings, time.time())
+                    now = time.time()
+                    raw = self.raw_asa.snapshot(now)
+                    active = [s for s in raw["signals"] if s["active"]]
+                    relevant = [
+                        s
+                        for s in active
+                        if matches_location(
+                            s["locations"],
+                            self.config.asa.location_latitude,
+                            self.config.asa.location_longitude,
+                        )
+                    ]
+                    raw["outside_area"] = bool(active) and not relevant
+                    raw["active"] = bool(relevant)
+                    raw["is_test"] = bool(relevant) and all(s["is_test"] for s in relevant)
+                    self.store.meta_set("asa:validated", json.dumps({**raw, "channel": channel}))
+                    status = "awaiting_validated_signal"
+                    if raw["validated"]:
+                        status = "idle" if settings["forward_asa"] else "disabled"
+                        if settings["forward_asa"] and (
+                            not self.config.asa.enabled
+                            or not allows_send(self.config, "#warnings", "warnings")
+                        ):
+                            status = "blocked"
+                        if raw["heartbeat"]:
+                            self.clear_asa_heartbeat(channel)
+                        for event in raw["signals"]:
+                            checked = {**mux, "asa": event}
+                            result = forward_signal(self.config, self.store, checked, channel, settings, now)
+                            if result not in {"idle", "duplicate"}:
+                                status = "test_suppressed" if result == "test_or_unconfirmed" else result
                 self.store.meta_set("asa:forward_status", status)
                 self.store.meta_set("asa:watch_heartbeat", time.time())
             except (OSError, ValueError, TypeError, KeyError, httpx.HTTPError):
                 self.store.meta_set("asa:forward_status", "receiver_unavailable")
                 self.store.meta_set("asa:watch_heartbeat", time.time())
             await asyncio.sleep(2)
+
+    def clear_asa_heartbeat(self, channel):
+        with self.store.transaction() as db:
+            for key, value in db.execute(
+                "SELECT key,value FROM meta WHERE key LIKE 'asa:signal:%'"
+            ).fetchall():
+                record = json.loads(value)
+                if record.get("channel") == channel and record.get("active"):
+                    record["active"] = False
+                    db.execute("UPDATE meta SET value=? WHERE key=?", (json.dumps(record), key))
+
+    async def asa_stream(self):
+        while True:
+            self.raw_asa = FicState()
+            self.asa_ignore_until = time.time() + 8
+            try:
+                async with self.client.stream(
+                    "GET", "http://127.0.0.1:7979/fic", timeout=httpx.Timeout(5, connect=3)
+                ) as response:
+                    response.raise_for_status()
+                    pending = b""
+                    async for chunk in response.aiter_bytes():
+                        pending += chunk
+                        while len(pending) >= 32:
+                            fib, pending = pending[:32], pending[32:]
+                            if self.asa_channel and time.time() >= self.asa_ignore_until:
+                                self.raw_asa.feed(fib, time.time())
+            except (OSError, httpx.HTTPError):
+                pass
+            await asyncio.sleep(1)
 
     async def close(self):
         for task in self.tasks:
