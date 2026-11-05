@@ -175,7 +175,7 @@ ist. Der Suchlauf startet ausschließlich das fest vorgegebene installierte Modu
 
 Unter „Radio & Aufnahmen“ kann der Browser Radioprogramme des empfangenen Ensembles
 lokal abspielen. Die Wiedergabe startet nur auf Klick; der Stream bleibt auf dem Pi
-und nutzt keinen Internet-Radiodienst. Bis zu acht lokale Hörer teilen sich denselben
+und nutzt keinen Internet-Radiodienst. Bis zu 16 lokale Wiedergaben teilen sich denselben
 DAB-Empfänger. Ein Ensemblewechsel unterbricht andere Programme.
 
 Der Empfänger wechselt unabhängig von Internet-Uploads jede Stunde ab Minute 59:30
@@ -196,3 +196,52 @@ Empfangsdaten des gewählten Senders. Die Senderauswahl bleibt beim Aktualisiere
 erhalten. Deutschlandfunk-Aufnahme und Suchlauf haben weiterhin Vorrang.
 Manuelle Ensemble-Einstellungen bleiben auf der ASA-Seite unter der optionalen
 Empfangstechnik erreichbar.
+
+
+### Gleichzeitige Audioausgabe
+
+Der lokale Audioproxy verteilt pro empfangenem Programm einen gemeinsamen
+Decoder-Stream an mehrere Geräte. Jede Wiedergabe besitzt einen begrenzten Puffer;
+ein langsames oder getrenntes Gerät blockiert die anderen nicht. Maximal 16
+Wiedergaben können gleichzeitig verbunden sein. Die Oberfläche zeigt deren Anzahl.
+
+Gleiche Sender lassen sich parallel hören; verschiedene Programme des aktuell
+empfangenen Ensembles ebenfalls. Ein Wechsel zu einer anderen Empfangsfrequenz
+unterbricht die dort nicht verfügbaren Programme. Stündliche DLF-Umschaltung und
+Suchlauf behalten Vorrang. Das ist keine zwischen Geräten zeitsynchrone Wiedergabe;
+die Browser können unterschiedliche Pufferverzögerungen haben.
+
+### Radio-Studio: Aufnahme, Titelinfos und Online-Erkennung
+
+Die Radioseite besitzt eine klassische Receiver-Oberfläche und mehrere getrennte
+Player. Jeder eingeschaltete Sender erhält Lautstärke-/Pause-Regler, Aufnahme und
+Songerkennung. Parallele Sender benötigen dieselbe empfangene Frequenz; ein einzelner
+SDR kann keine unterschiedlichen Ensembles gleichzeitig empfangen.
+
+Der gemeinsame Audiostream puffert bis zu 16 MP3-Blöcke (64 KiB) vor. Bei geringerer
+Bitrate beginnt die Wiedergabe nach etwa fünf Sekunden mit dem vorhandenen Puffer.
+Später hinzukommende Geräte erhalten den jüngsten Puffer. Geräte laufen dadurch
+nicht zwingend zeitsynchron.
+
+Eigene Aufnahmen dauern wahlweise 1, 5 oder 15 Minuten und lassen sich vorzeitig
+stoppen. Bis zu vier Aufnahme-/Erkennungsaufträge sind gleichzeitig möglich.
+Pro Aufnahme gelten 32 MiB, insgesamt 512 MiB und 24 Stunden Aufbewahrung. Die
+Dateien und Auftragsdaten liegen nur unter
+`/var/lib/meshcore-gateway/radio-recordings`; dieser Pfad ist für den bestehenden
+Dashboard-Dienst schreibbar. Ein Empfangsabbruch kann die Aufnahme verkürzen.
+
+DLS-Sendertexte erscheinen lokal beim jeweiligen Player. Nur frische, nach dem
+letzten Empfangswechsel eingegangene Texte werden gezeigt. Ein Sendertext ist
+keine garantierte Songerkennung. „Song online erkennen“ erfasst auf ausdrücklichen
+Klick etwa zwölf Sekunden Radioaudio, erzeugt mit ShazamIO einen Fingerabdruck und
+fragt den Shazam-Dienst ab. Kein Mikrofon wird verwendet. Internet ist erforderlich;
+Fehler oder kein Treffer werden angezeigt. Der inoffizielle Client ist optional:
+
+```
+python3 -m venv /opt/meshcore-ai-bot/radio-recognition/.venv
+/opt/meshcore-ai-bot/radio-recognition/.venv/bin/pip install -r deploy/local-console/recognition-requirements.txt
+```
+
+Neben `local_dashboard.py` müssen `radio_features.py` und `recognize_song.py` im
+lokalen Dashboard-Verzeichnis liegen. Zugangsdaten sind dafür nicht erforderlich.
+Referenz: https://github.com/shazamio/ShazamIO
