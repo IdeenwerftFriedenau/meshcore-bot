@@ -97,6 +97,10 @@ ssh -L 8765:127.0.0.1:8765 pi@raspberrypi.local
 
 Browser: `http://127.0.0.1:8765`. Das Dashboard startet den Funkdienst nicht. [Einrichtung und Zugriffsschutz](docs/dashboard.md).
 
+Ein Pi mit bereits laufendem USB-Gateway benötigt die [Gateway-Integration](docs/pi-gateway.md), damit nur ein Prozess das Funkgerät öffnet und der lokale Betrieb ohne Internet erhalten bleibt.
+
+Die lokale Pi Console unterstützt kanalweise Funkverläufe, automatische Weiterleitung realer ASA-Warnsignale ausschließlich nach `#warnings` und die DAB+-Auswahl zwischen 5C, RBB Berlin (7D) und RBB Brandenburg/Berlin (10B). Ein Empfänger überwacht jeweils ein Ensemble; auf RBB pausieren neue DLF-Aufnahmen und der Empfang von 5C. ASA-Signalisierung wird klar von einem amtlichen Warntext unterschieden. Die [Einrichtung](docs/pi-gateway.md) beschreibt Voraussetzungen und Sicherungen. Änderungen werden vor der regulären Pi-Auslieferung mit GitHub synchronisiert.
+
 ### Text testen
 
 Unter **Text testen** eine Nachricht, einen vorhandenen Kanal und einen Testabsender wählen. Die Vorschau verwendet die gespeicherten Kanalregeln, denselben Antwortprozess und dieselbe Paketaufteilung wie der Bot. Public bleibt auch im Test stumm, #bot benötigt eine Erwähnung. Standardmäßig läuft der Test offline. Für freie KI-Fragen oder Wetterdaten Offline ausschalten; dabei werden die konfigurierten Dienste abgefragt und es können Anbietergebühren entstehen. Jeder Test startet ohne Gesprächsverlauf; vorhandene Repeaterkontakte werden ausschließlich gelesen. Die Testdatenbank liegt nur im Arbeitsspeicher, die echte Sendewarteschlange bleibt unverändert. Es wird keine Funkhardware geöffnet und nichts ausgesendet. Die Vorschau prüft keine Funkzustellung. Ein Test dauert höchstens 60 Sekunden, nur ein Test läuft gleichzeitig. Verbundene Tests haben eigene Limits pro Dashboard-Prozess, getrennt vom Funkdienst. Jeder tatsächliche Modellaufruf einschließlich Wiederholungen zählt gegen diese Limits.
