@@ -28,6 +28,7 @@ try:
         fresh_signal,
         load_settings,
         news_window,
+        rbb_news_window,
         save_settings,
         scan_allowed,
     )
@@ -38,6 +39,7 @@ except ModuleNotFoundError:
         fresh_signal,
         load_settings,
         news_window,
+        rbb_news_window,
         save_settings,
         scan_allowed,
     )
@@ -56,7 +58,8 @@ RECORDINGS = Path(os.environ.get("DAB_RECORDINGS_DIR", "/home/marc/dab-warnings-
 INBOX = Path(os.environ.get("INBOX_PATH", "/var/lib/meshcore-gateway/inbox.sqlite3"))
 OUTBOX = Path(os.environ.get("LOCAL_OUTBOX_PATH", "/var/lib/meshcore-gateway/local-outbox.sqlite3"))
 BERLIN = ZoneInfo("Europe/Berlin")
-SERVICES = ("meshcore-gateway.service", "ideenwerft-dab-monitor.service", "ideenwerft-dab-news.service")
+SERVICES = ("meshcore-gateway.service", "ideenwerft-dab-monitor.service", "ideenwerft-dab-news.service",
+            "ideenwerft-rbb-news.timer")
 CHANNELS = ("#ideenwerft", "#test", "#mc-treffen", "#warnings", "#news", "#fragdenbot", "#bot")
 
 
@@ -333,6 +336,8 @@ def snapshot():
             "inventory": read_json(INVENTORY, {"ensembles": [], "complete": False}),
             "scan": scan_status(),
             "news_window": news_window(),
+            "rbb_news_window": settings.get("rbb_news_enabled", False) and rbb_news_window(),
+            "rbb_news_enabled": settings.get("rbb_news_enabled", False),
             "scan_allowed": scan_allowed(),
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
