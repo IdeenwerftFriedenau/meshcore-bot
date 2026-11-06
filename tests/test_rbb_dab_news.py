@@ -24,18 +24,18 @@ def stamp(value):
 
 
 @pytest.mark.parametrize("date,reserved,channel,scan", [
-    ("2026-11-06T10:19:29+01:00", False, "5D", True),
-    ("2026-11-06T10:19:30+01:00", False, "5D", False),
-    ("2026-11-06T10:29:29+01:00", False, "5D", False),
-    ("2026-11-06T10:29:30+01:00", True, "7D", False),
-    ("2026-11-06T10:34:49+01:00", True, "7D", False),
-    ("2026-11-06T10:34:50+01:00", False, "5D", True),
-    ("2026-11-06T11:30:00+01:00", False, "5D", True),
-    ("2026-11-06T10:59:30+01:00", False, "5C", False),
-    ("2026-11-06T11:05:49+01:00", False, "5C", False),
-    ("2026-10-25T02:30:00+02:00", True, "7D", False),
-    ("2026-10-25T02:30:00+01:00", True, "7D", False),
-    ("2026-03-29T04:30:00+02:00", True, "7D", False),
+    ("2026-11-06T10:29:30+01:00", False, "5D", True),
+    ("2026-11-06T10:59:29+01:00", False, "5D", False),
+    ("2026-11-06T10:59:30+01:00", True, "7D", False),
+    ("2026-11-06T11:00:00+01:00", True, "7D", False),
+    ("2026-11-06T11:05:49+01:00", True, "7D", False),
+    ("2026-11-06T11:05:50+01:00", False, "5D", True),
+    ("2026-11-06T11:59:30+01:00", False, "5C", False),
+    ("2026-11-06T12:00:00+01:00", False, "5C", False),
+    ("2026-10-25T01:00:00+02:00", True, "7D", False),
+    ("2026-10-25T02:00:00+02:00", False, "5C", False),
+    ("2026-10-25T02:00:00+01:00", False, "5C", False),
+    ("2026-03-29T03:00:00+02:00", True, "7D", False),
 ])
 def test_tuner_reservations_preserve_listener_choice(date, reserved, channel, scan):
     now = stamp(date)
@@ -48,7 +48,7 @@ def test_tuner_reservations_preserve_listener_choice(date, reserved, channel, sc
 
 def test_rbb_is_explicit_opt_in_and_setting_is_preserved(tmp_path):
     path = tmp_path / "settings.json"
-    now = stamp("2026-11-06T10:30:00+01:00")
+    now = stamp("2026-11-06T11:00:00+01:00")
     assert effective_channel(load_settings(path), now) == "5C"
     save_settings({"channel": "5D", "rbb_news_enabled": True}, path)
     save_settings({"forward_asa": True}, path)
@@ -58,23 +58,23 @@ def test_rbb_is_explicit_opt_in_and_setting_is_preserved(tmp_path):
 
 
 @pytest.mark.parametrize("date,ok", [
-    ("2026-11-06T10:30:00+01:00", True),
-    ("2026-11-06T10:30:15+01:00", True),
-    ("2026-11-06T10:30:16+01:00", False),
-    ("2026-11-06T11:30:00+01:00", False),
-    ("2026-11-06T10:29:59+01:00", False),
+    ("2026-11-06T13:00:00+01:00", True),
+    ("2026-11-06T13:00:15+01:00", True),
+    ("2026-11-06T13:00:16+01:00", False),
+    ("2026-11-06T14:00:00+01:00", False),
+    ("2026-11-06T12:59:59+01:00", False),
 ])
 def test_no_late_or_wrong_hour_capture(date, ok):
     now = stamp(date)
     if ok:
-        assert news.bulletin(now) == int(now // 3600) * 3600 + 1800
+        assert news.bulletin(now) == int(now // 3600) * 3600
     else:
         with pytest.raises(ValueError):
             news.bulletin(now)
 
 
 def test_receiver_must_have_fresh_rbb_on_correct_ensemble():
-    now = stamp("2026-11-06T10:30:00+01:00")
+    now = stamp("2026-11-06T11:00:00+01:00")
     mux = {"demodulator": {"time_last_fct0_frame": now * 1000},
            "services": [{"sid": "0xd321", "components": [{"transportmode": "audio"}]}]}
     assert news.ready(mux, "7D", now)
@@ -87,9 +87,9 @@ def test_receiver_must_have_fresh_rbb_on_correct_ensemble():
 def test_only_source_supported_short_news_packets():
     transcript = "in berlin wird heute über den haushalt beraten weitere nachrichten folgen"
     item = {"headline": "Berlin berät über den Haushalt.", "evidence": "in berlin wird heute über den haushalt beraten"}
-    slot = stamp("2026-11-06T10:30:00+01:00")
+    slot = stamp("2026-11-06T13:00:00+01:00")
     assert news.messages({"is_news": True, "items": [item]}, transcript, slot) == [
-        "rbb88.8 10:30: Berlin berät über den Haushalt."
+        "rbb88.8 13:00: Berlin berät über den Haushalt."
     ]
     assert news.messages({"is_news": False, "items": [item]}, transcript, slot) == []
     assert news.messages({"is_news": True, "items": [
@@ -97,3 +97,23 @@ def test_only_source_supported_short_news_packets():
         {**item, "headline": "Überprüfung " * 30},
         "wrong shape", {**item, "evidence": "berlin"},
     ]}, transcript, slot) == []
+
+
+@pytest.mark.parametrize("now,expected", [
+    ("2026-11-06T12:30:00+01:00", "2026-11-06T14:00:00+01:00"),
+    ("2026-11-06T14:05:00+01:00", "2026-11-06T16:00:00+01:00"),
+    ("2026-11-06T23:30:00+01:00", "2026-11-07T00:00:00+01:00"),
+    ("2026-10-25T01:30:00+02:00", "2026-10-25T02:00:00+02:00"),
+    ("2026-03-29T01:30:00+01:00", "2026-03-29T04:00:00+02:00"),
+])
+def test_dlf_uses_even_hours_when_alternating(monkeypatch, now, expected):
+    spec = importlib.util.spec_from_file_location(
+        "dab_news", Path(__file__).parents[1] / "deploy/dab/dab_news.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("DAB_NEWS_EVEN_HOURS_ONLY", "1")
+    assert module.next_hour(stamp(now)) == stamp(expected)
+    monkeypatch.delenv("DAB_NEWS_EVEN_HOURS_ONLY")
+    now = stamp("2026-11-06T12:30:00+01:00")
+    assert module.next_hour(now) == stamp("2026-11-06T13:00:00+01:00")
