@@ -319,6 +319,42 @@ async def test_live_weather_fields_and_clear_probability():
     store.close()
 
 
+async def test_local_places_are_live_limited_and_attributed():
+    config = Config()
+    config.places._api_key = "test-key"
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "places": [
+                    {
+                        "id": "one",
+                        "displayName": {"text": "Kleine Kaffeerösterei"},
+                        "shortFormattedAddress": "Friedenau",
+                        "googleMapsUri": "https://maps.google.com/?cid=one",
+                    }
+                ]
+            },
+        )
+
+    store = Store(":memory:")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        answer = await Assistant(config, store, client).answer("Wo gibt es ein Café in Friedenau?")
+    try:
+        assert "Google Maps" in answer.text
+        assert "Kleine Kaffeerösterei" in answer.text
+        assert answer.sources == ["https://maps.google.com/", "https://maps.google.com/?cid=one"]
+        assert len(requests) == 1
+        assert requests[0].url == "https://places.googleapis.com/v1/places:searchText"
+        assert requests[0].headers["X-Goog-Api-Key"] == "test-key"
+        assert "Café in Friedenau" in requests[0].content.decode()
+    finally:
+        store.close()
+
+
 def test_schema_one_upgrade_preserves_existing_data_and_history(tmp_path):
     path = tmp_path / "old.db"
     store = Store(path)
