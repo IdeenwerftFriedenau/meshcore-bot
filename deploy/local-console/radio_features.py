@@ -44,7 +44,9 @@ class RadioFeatures:
                 j["kind"] == kind and time.time() - j["created"] < 30 for j in self.jobs.values()
             ):
                 raise ValueError("Songerkennung bitte höchstens alle 30 Sekunden starten")
-            used = sum(p.stat().st_size for p in self.root.glob("*.mp3"))
+            used = sum(p.stat().st_size for p in self.root.glob("*.mp3")) + sum(
+                p.stat().st_size for p in (self.root / ".trash").glob("*.mp3")
+            )
             if used + (len(active) + 1) * 32 * 1024 * 1024 > 512 * 1024 * 1024:
                 raise ValueError("Aufnahmespeicher voll; bitte ältere Aufnahmen abwarten")
             key = uuid.uuid4().hex
@@ -71,12 +73,47 @@ class RadioFeatures:
             job["stop"].set()
         return {"id": key, "status": "stopping"}
 
+    def delete(self, key, restore=False):
+        if not re.fullmatch(r"[0-9a-f]{32}", str(key)):
+            raise ValueError("Ungültige Aufnahme")
+        with self.lock:
+            path = self.root / (key + ".json")
+            try:
+                job = self.jobs.get(key) or json.loads(path.read_text())
+            except (OSError, ValueError):
+                raise ValueError("Aufnahme nicht gefunden") from None
+            if job.get("kind") != "record" or job.get("status") in ("preparing", "capturing"):
+                raise ValueError("Laufende Aufnahme zuerst stoppen")
+            trash = self.root / ".trash"
+            trash.mkdir(mode=0o700, exist_ok=True)
+            live, retired = self.root / (key + ".mp3"), trash / (key + ".mp3")
+            if restore:
+                if (
+                    job.get("status") != "deleted"
+                    or not retired.is_file()
+                    or time.time() - job["created"] > 86400
+                ):
+                    raise ValueError("Aufnahme kann nicht wiederhergestellt werden")
+                retired.replace(live)
+                job.update(status="ready", file=live.name)
+            else:
+                if job.get("status") == "deleted":
+                    return {"id": key, "status": "deleted"}
+                if not live.is_file():
+                    raise ValueError("Aufnahmedatei nicht gefunden")
+                live.replace(retired)
+                job.update(status="deleted")
+                job.pop("file", None)
+            self.persist(job)
+            return {"id": key, "status": job["status"]}
+
     def list(self):
         records = {}
         for path in self.root.glob("*.json"):
             try:
                 item = json.loads(path.read_text())
                 if time.time() - item.get("created", 0) > 86400:
+                    (self.root / ".trash" / (path.stem + ".mp3")).unlink(missing_ok=True)
                     for suffix in (".json", ".mp3", ".part"):
                         path.with_suffix(suffix).unlink(missing_ok=True)
                     continue

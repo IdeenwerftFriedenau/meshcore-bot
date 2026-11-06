@@ -617,6 +617,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/radio/record",
             "/api/radio/stop",
             "/api/radio/identify",
+            "/api/radio/delete",
+            "/api/radio/restore",
         }:
             return self.reply(404, b"Nicht gefunden", "text/plain")
         try:
@@ -631,8 +633,16 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError("JSON-Objekt erforderlich")
-            if self.path in {"/api/radio/record", "/api/radio/identify", "/api/radio/stop"}:
-                if self.path.endswith("stop"):
+            if self.path in {
+                "/api/radio/record",
+                "/api/radio/identify",
+                "/api/radio/stop",
+                "/api/radio/delete",
+                "/api/radio/restore",
+            }:
+                if self.path.endswith(("delete", "restore")):
+                    result = RADIO_FEATURES.delete(data.get("id"), restore=self.path.endswith("restore"))
+                elif self.path.endswith("stop"):
                     result = RADIO_FEATURES.stop(data.get("id"))
                 else:
                     kind = "record" if self.path.endswith("record") else "identify"
