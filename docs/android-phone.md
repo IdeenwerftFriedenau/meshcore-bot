@@ -254,3 +254,20 @@ Hintergrund weiterlaufen kann. Nur ausdrücklich zu diesem Motorola gehörende
 PipeWire-Knoten werden verwendet; es gibt keinen Rückfall auf Systemmikrofon,
 Standardlautsprecher oder andere Bluetooth-Geräte. PCM-Daten bleiben in Pipes
 und begrenzten Arbeitsspeicherpuffern.
+
+### Wähltasten und Kontakte im Dashboard
+
+Unter „Telefon & Kontakte“ stehen große Wähltasten, Nummernfeld, Kontaktsuche und
+Anrufstatus bereit. „Kontakte laden“ liest bis zu 1000 Telefonnummern über die
+bestehende geschützte USB-Verbindung. Kontakte bleiben nur im Arbeitsspeicher des
+Browsers und werden beim Verlassen der Telefonseite oder Abmelden verworfen.
+Namen werden als Text dargestellt. Es werden keine Kontaktdateien angelegt.
+
+„Nummer am Handy öffnen“ öffnet Androids ACTION_DIAL; den Anruf anschließend in
+der Liveansicht bestätigen und gegebenenfalls die SIM auswählen. Es wird kein
+Anruf automatisch gestartet. MMI/USSD-Codes werden nicht angenommen. „Auflegen“
+ist nur bei gemeldetem Anruf verfügbar. Eingehende Anrufe werden in der
+Handyansicht angenommen. Android gibt die Rufnummer nicht immer frei; eine
+gewählte Nummer wird deshalb nicht als bestätigte Gegenstelle ausgegeben.
+Alle Telefon-Endpunkte benötigen dieselbe Sitzung, CSRF-Prüfung und den
+privaten Zugang wie die Fernbedienung. Ton/Mikrofon bleiben separat schaltbar.
