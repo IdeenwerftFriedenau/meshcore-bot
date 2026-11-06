@@ -17,7 +17,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_BLUETOOTH
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_BLUETOOTH AF_NETLINK
 MemoryMax=220M
 
 [Install]
