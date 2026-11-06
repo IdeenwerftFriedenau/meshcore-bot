@@ -73,10 +73,10 @@ function update(){
   if(stationSelect.dataset.signature!==stationSignature){const selected=stationSelect.value||sessionStorage.getItem('meshcore-radio-station');stationSelect.innerHTML=stations.map(s=>`<option value="${esc(s.sid)}">${esc(s.name)}</option>`).join('');if(stations.some(s=>s.sid===selected))stationSelect.value=selected;stationSelect.dataset.signature=stationSignature;}
   stationSelect.disabled=!!radioPending;$('#live-start').disabled=!!x.scan?.running||!stations.length||!!radioPending;$('#live-start').textContent=radioPending?'Empfang wird vorbereitet …':'Sender einschalten';
   $('#live-listeners').textContent=(d.radio?.listeners||0)+' aktive Wiedergaben · bis zu '+(d.radio?.limit||16)+' gleichzeitig';
-  $('#live-state').textContent=radioMessage||(x.scan?.running?'Sendersuchlauf läuft; Radio pausiert.':x.rbb_news_window?'Die Berlin-Nachrichten von rbb 88.8 werden gerade aufgenommen.':x.news_window?'Die stündlichen Deutschlandfunk-Nachrichten haben gerade Vorrang.':stations.length?'Wähle einen Sender und drücke „Sender einschalten“.':'Noch keine Sender gefunden. Unter DAB+ ASA einen Sendersuchlauf starten.');
+  $('#live-state').textContent=radioMessage||(x.scan?.running?'Sendersuchlauf läuft; Radio pausiert.':x.rbb_news_window?'Die Berlin-Nachrichten von rbb 88.8 werden gerade aufgenommen.':x.news_window?'Die Deutschlandfunk-Nachrichten haben gerade Vorrang.':stations.length?'Wähle einen Sender und drücke „Sender einschalten“.':'Noch keine Sender gefunden. Unter DAB+ ASA einen Sendersuchlauf starten.');
   renderRadioStudio(d);
   $('#audio-summary').textContent=d.recordings.length+' lokale Aufnahmen · Die Audiodateien bleiben auf dem Pi. Während der Wiedergabe wird der Player nicht neu geladen.';const signature=d.recordings.map(r=>r.file).join('|');if(signature!==audioSignature){const playing=[...document.querySelectorAll('audio')].some(player=>!player.paused);if(!playing){$('#audio-list').innerHTML=d.recordings.map(r=>`<article class="panel recording"><div class="recording-top"><span class="sourceicon">♫</span><div><h2>Deutschlandfunk · ${esc(r.time)} Uhr</h2><p>${Math.round(r.bytes/1048576)} MB · lokal gespeichert</p></div></div><audio controls preload="none" aria-label="DLF-Aufnahme ${esc(r.time)}" src="/audio/${encodeURIComponent(r.file)}"></audio></article>`).join('')||'<section class="panel"><p>Noch keine Aufnahme im 24-Stunden-Fenster.</p></section>';audioSignature=signature;}}
- }else if(route==='system'){$('#service-list').innerHTML=Object.entries(d.services).map(([k,v])=>`<div class="service-row"><span>${esc(({'meshcore-gateway.service':'MeshCore-Gateway','ideenwerft-dab-monitor.service':'DAB+ / ASA-Empfang','ideenwerft-dab-news.service':'DLF-Aufzeichnung und Nachrichten','ideenwerft-rbb-news.timer':'rbb 88.8 Berlin alle zwei Stunden','meshcore-dashboard.service':'Geschützte Konfigurationsoberfläche'})[k]||k)}</span>${badge(v==='active'?'Läuft':v,v==='active')}</div>`).join('');}
+ }else if(route==='system'){$('#service-list').innerHTML=Object.entries(d.services).map(([k,v])=>`<div class="service-row"><span>${esc(({'meshcore-gateway.service':'MeshCore-Gateway','ideenwerft-dab-monitor.service':'DAB+ / ASA-Empfang','ideenwerft-dab-news.service':'DLF-Aufzeichnung und Nachrichten','ideenwerft-rbb-news.timer':'Nachrichten: ungerade Stunden rbb 88.8 · gerade DLF','meshcore-dashboard.service':'Geschützte Konfigurationsoberfläche'})[k]||k)}</span>${badge(v==='active'?'Läuft':v,v==='active')}</div>`).join('');}
 }
 function renderReception(){
  if(route!=='reception'||!state)return;
@@ -127,7 +127,7 @@ async function playRadio(){
 
  try{
   if(state.dab.scan?.running)throw Error('Der Sendersuchlauf läuft. Bitte danach erneut starten.');
-  if(state.dab.rbb_news_window&&target!=='7D')throw Error('rbb 88.8 Berlin-Nachrichten haben bis Minute 34:50 Vorrang. Bitte danach erneut starten.');
+  if(state.dab.rbb_news_window&&target!=='7D')throw Error('rbb 88.8 Berlin-Nachrichten haben bis Minute 05:50 Vorrang. Bitte danach erneut starten.');
   if(state.dab.news_window&&target!=='5C')throw Error('Deutschlandfunk-Nachrichten haben bis Minute 05:50 Vorrang. Bitte danach erneut „Sender einschalten“ drücken.');
   if(state.dab.dab_channel!==target||state.dab.desired_channel!==target){
    const response=await fetch('/api/dab/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:target})});
@@ -144,8 +144,8 @@ async function playRadio(){
     if(request!==radioRequest||route!=='audio')return;
     state=latest;update();const dab=latest.dab;
     if(dab.scan?.running)throw Error('Sendersuchlauf gestartet. Bitte danach erneut versuchen.');
-    if(dab.rbb_news_window&&target!=='7D')throw Error('Die rbb 88.8 Berlin-Nachrichten beginnen. Bitte ab Minute 34:50 erneut starten.');
-    if(dab.news_window&&target!=='5C')throw Error('Die stündlichen Deutschlandfunk-Nachrichten beginnen. Bitte ab Minute 05:50 erneut starten.');
+    if(dab.rbb_news_window&&target!=='7D')throw Error('Die rbb 88.8 Berlin-Nachrichten beginnen. Bitte ab Minute 05:50 erneut starten.');
+    if(dab.news_window&&target!=='5C')throw Error('Die Deutschlandfunk-Nachrichten beginnen. Bitte ab Minute 05:50 erneut starten.');
     if(dab.desired_channel!==target)throw Error('Die Senderauswahl wurde auf einem anderen Gerät geändert. Bitte erneut starten.');
     if(dab.dab_channel===target&&dab.signal_fresh&&dab.services.some(s=>s.audio&&s.sid===station.sid)){ready=true;break;}
    }finally{clearTimeout(timeout);}

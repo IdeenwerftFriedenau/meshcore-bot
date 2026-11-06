@@ -335,7 +335,7 @@ def snapshot():
             ],
             "inventory": read_json(INVENTORY, {"ensembles": [], "complete": False}),
             "scan": scan_status(),
-            "news_window": news_window(),
+            "news_window": news_window() and not (settings.get("rbb_news_enabled", False) and rbb_news_window()),
             "rbb_news_window": settings.get("rbb_news_enabled", False) and rbb_news_window(),
             "rbb_news_enabled": settings.get("rbb_news_enabled", False),
             "scan_allowed": scan_allowed(),
