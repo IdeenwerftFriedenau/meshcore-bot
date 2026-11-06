@@ -213,7 +213,7 @@ die Browser können unterschiedliche Pufferverzögerungen haben.
 
 ### Radio-Studio: Aufnahme, Titelinfos und Online-Erkennung
 
-Die Radioseite besitzt eine klassische Receiver-Oberfläche und mehrere getrennte
+Die Radioseite besitzt eine helle Radiooberfläche und mehrere getrennte
 Player. Jeder eingeschaltete Sender erhält Lautstärke-/Pause-Regler, Aufnahme und
 Songerkennung. Parallele Sender benötigen dieselbe empfangene Frequenz; ein einzelner
 SDR kann keine unterschiedlichen Ensembles gleichzeitig empfangen.
