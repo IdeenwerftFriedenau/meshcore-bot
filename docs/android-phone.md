@@ -103,6 +103,12 @@ ersetzen. Kein zusätzlicher MeshCore-Funkdienst wird gestartet.
 
 Unter **Motorola** stehen ein manuell einschaltbares Livebild, Tippen/Wischen,
 Home, Zurück, offene Apps, Display und Lautstärke sowie Texteingabe bereit.
+**Vollbild öffnen** startet das Livebild und vergrößert die Ansicht. Tippen,
+Wischen und die Bedientasten bleiben verfügbar. Mit **Vollbild schließen** oder
+Esc zurückkehren; beim Seitenwechsel und beim Stoppen des Livebilds wird das
+Vollbild ebenfalls beendet. Unterstützt der Browser keinen nativen Vollbildmodus,
+wird die gesamte verfügbare Browserfläche genutzt.
+
 Das ist eine Bildschirm-Fernbedienung, kein Audio- oder Kamerastream. Geschützte
 Android-Inhalte können schwarz bleiben. Entsperren weiterhin am Handy; keine
 Geräte-PIN im Dashboard speichern. Texte werden nicht automatisch abgesendet.
