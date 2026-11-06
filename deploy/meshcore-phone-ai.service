@@ -1,0 +1,26 @@
+[Unit]
+Description=Local Motorola AI over private USB connection
+After=local-fs.target
+
+[Service]
+Type=simple
+User=marc
+Group=marc
+SupplementaryGroups=plugdev
+EnvironmentFile=/etc/meshcore-ai-bot/phone.env
+ExecStart=/usr/bin/python3 /opt/meshcore-ai-bot/source/deploy/android_phone_ai.py
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=25
+StateDirectory=meshcore-ai-bot/phone
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/marc/.android
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=180M
+
+[Install]
+WantedBy=multi-user.target
