@@ -67,6 +67,66 @@ class PhoneRemote:
             raise ValueError('Handy nicht erreichbar oder Aktion nicht verfügbar')
         return result.stdout
 
+    @staticmethod
+    def phone_number(value):
+        if not isinstance(value, str) or len(value) > 80:
+            raise ValueError('Ungültige Telefonnummer')
+        number = re.sub(r'[ ()\-./]', '', value)
+        if not re.fullmatch(r'\+?[0-9]{1,30}', number):
+            raise ValueError('Bitte eine Telefonnummer mit Ziffern und optional + eingeben')
+        return number
+
+    def contacts(self):
+        # Personal data stays in this response and browser memory, never in a file.
+        raw = self.adb('shell', '-T', 'sh', script="content query --uri 'content://com.android.contacts/data/phones?limit=1000' --projection _id:data1:display_name 2>&1\n").decode(errors='replace')
+        if 'Exception' in raw or 'Permission Denial' in raw or (not raw.strip()):
+            raise ValueError('Android erlaubt den Kontaktzugriff derzeit nicht')
+        rows = []
+        seen = set()
+        for line in raw.splitlines():
+            match = re.fullmatch(r'Row: \d+ _id=\d+, data1=([^,\r\n]+), display_name=(.*)', line)
+            if not match:
+                continue
+            try:
+                number = self.phone_number(match[1])
+            except ValueError:
+                continue
+            name = match[2][:200]
+            if (name, number) not in seen:
+                rows.append({'name': name, 'number': number})
+                seen.add((name, number))
+            if len(rows) >= 1000:
+                break
+        return {'contacts': sorted(rows, key=lambda row: row['name'].casefold()), 'limit': 1000}
+
+    def call_status(self):
+        raw = self.adb('shell', '-T', 'sh', script='dumpsys telephony.registry\n').decode(errors='replace')
+        states = re.findall(r'\bmCallState\s*=\s*([012])\b', raw)
+        state = 'ringing' if '1' in states else 'active' if '2' in states else 'idle' if states else 'unknown'
+        numbers = re.findall(r'\bmCallIncomingNumber\s*=\s*(\+?[0-9]{1,30})\s*$', raw, re.M)
+        return {'state': state, 'number': numbers[0] if state == 'ringing' and len(set(numbers)) == 1 else None}
+
+    def telephone(self, data):
+        action = data.get('action')
+        with self.lock:
+            if self.clock() - getattr(self, 'last_telephone', 0) < 2:
+                raise ValueError('Bitte kurz warten')
+            if action == 'dial':
+                number = self.phone_number(data.get('number'))
+                # DIAL never initiates a call or runs an MMI/USSD code.
+                script = 'am start -a android.intent.action.DIAL -d ' + shlex.quote('tel:' + number) + ' 2>&1\n'
+            elif action == 'hangup':
+                if self.call_status()['state'] not in ('active', 'ringing'):
+                    raise ValueError('Kein laufender Anruf gemeldet')
+                script = 'input keyevent 6\n'
+            else:
+                raise ValueError('Unbekannte Telefonaktion')
+            self.last_telephone = self.clock()
+            output = self.adb('shell', '-T', 'sh', script=script).decode(errors='replace')
+            if 'Error' in output or 'Exception' in output:
+                raise ValueError('Telefonaktion von Android nicht verfügbar')
+        return {'message': 'Nummer am Motorola geöffnet. Anruf dort bestätigen.' if action == 'dial' else 'Auflegen angefordert.'}
+
     def _read(self):
         try:
             data = json.loads((self.root / 'sessions.json').read_text())
