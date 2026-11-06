@@ -62,6 +62,12 @@ SCHEMAS = [
         {"query": {"type": "string"}},
         [],
     ),
+    tool(
+        "find_local_places",
+        "Live-Suche nach lokalen Orten. Nur bei Empfehlungen oder konkreten Orten nutzen, nie Ergebnisse erfinden.",
+        {"query": {"type": "string"}, "location": {"type": "string"}},
+        ["query", "location"],
+    ),
 ]
 
 
@@ -75,6 +81,7 @@ class Tools:
             "get_weather": {"location", "period"},
             "get_repeater_status": {"name"},
             "list_repeaters": {"query"},
+            "find_local_places": {"query", "location"},
         }
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
@@ -84,7 +91,67 @@ class Tools:
             return await self.weather(**arguments)
         if name == "get_repeater_status":
             return self.repeater(**arguments)
+        if name == "find_local_places":
+            return await self.places(**arguments)
         return self.catalogue(**arguments)
+
+    async def places(self, query: str, location: str) -> dict:
+        """Search Google Places live; never cache or persist the provider response here."""
+        if not self.config.places.enabled or self.offline:
+            return {"text": "Die lokale Ortssuche ist in dieser Konfiguration deaktiviert.", "sources": []}
+        if not self.config.places.api_key:
+            return {"text": "Die lokale Ortssuche ist noch nicht eingerichtet.", "sources": []}
+        query = query.strip()
+        location = location.strip() or self.config.station.location
+        if not query:
+            return {"text": "Wonach soll ich in der Nähe suchen?", "sources": []}
+        payload = {
+            "textQuery": f"{query} in {location}",
+            "languageCode": "de",
+            "locationBias": {
+                "circle": {
+                    "center": {
+                        "latitude": self.config.weather.latitude,
+                        "longitude": self.config.weather.longitude,
+                    },
+                    "radius": 4000.0,
+                }
+            },
+        }
+        data = await read_json(
+            self.client,
+            "POST",
+            "https://places.googleapis.com/v1/places:searchText",
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": self.config.places.api_key,
+                "X-Goog-FieldMask": "places.id,places.displayName,places.shortFormattedAddress,places.googleMapsUri",
+            },
+            json=payload,
+            timeout=12,
+        )
+        rows = data.get("places")
+        if not isinstance(rows, list) or not rows:
+            return {"text": f"Dazu finde ich gerade keine passenden Orte nahe {location}.", "sources": []}
+        entries, sources = [], ["https://maps.google.com/"]
+        for place in rows[: self.config.places.max_results]:
+            if not isinstance(place, dict):
+                continue
+            display = place.get("displayName")
+            name = display.get("text") if isinstance(display, dict) else None
+            address = place.get("shortFormattedAddress")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            entries.append(name.strip() + (f" ({address.strip()})" if isinstance(address, str) and address.strip() else ""))
+            uri = place.get("googleMapsUri")
+            if isinstance(uri, str) and uri.startswith("https://"):
+                sources.append(uri)
+        if not entries:
+            return {"text": f"Dazu finde ich gerade keine verwendbaren Orte nahe {location}.", "sources": []}
+        return {
+            "text": f"Google Maps, nahe {location}: " + "; ".join(entries) + ".",
+            "sources": list(dict.fromkeys(sources))[: 1 + self.config.places.max_results],
+        }
 
     async def weather(self, location: str, period: str) -> dict:
         if not self.config.weather.enabled or self.offline:

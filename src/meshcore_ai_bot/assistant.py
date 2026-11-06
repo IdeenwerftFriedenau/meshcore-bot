@@ -71,6 +71,9 @@ class Assistant:
         wx = wx_request(question, self.config.weather.location)
         if wx:
             return await self._tool_answer("get_weather", wx)
+        places = local_place_request(question, self.config.station.location)
+        if places:
+            return await self._tool_answer("find_local_places", places)
         # Named station commands are useful without an API key or Internet.
         target = repeater_target(question, self.store)
         if target:
@@ -158,6 +161,7 @@ class Assistant:
                     "get_weather",
                     "get_repeater_status",
                     "list_repeaters",
+                    "find_local_places",
                 }:
                     # Clothing questions deserve a human-readable interpretation of the facts.
                     clothing = re.search(r"mütze|mutze|muetze|schal|jacke|handschuhe", question, re.I)
@@ -243,6 +247,35 @@ def repeater_target(question: str, store: Store) -> str | None:
             ):
                 return target
     return None
+
+
+def local_place_request(question: str, default_location: str) -> dict | None:
+    """Keep recommendation searches compact and avoid passing unrelated radio text onward."""
+    lowered = question.casefold()
+    categories = [
+        (r"\b(caf[eé]|kaffee)\b", "Café"),
+        (r"\b(restaurant|essen|abendessen|mittagessen)\b", "Restaurant"),
+        (r"\b(pizza|pizzeria)\b", "Pizzeria"),
+        (r"\b(sushi)\b", "Sushi-Restaurant"),
+        (r"\b(b[aä]cker|b[aä]ckerei)\b", "Bäckerei"),
+        (r"\b(apotheke)\b", "Apotheke"),
+        (r"\b(supermarkt|lebensmittel)\b", "Supermarkt"),
+        (r"\b(bar|kneipe)\b", "Bar"),
+        (r"\b(park|spielplatz)\b", "Park"),
+    ]
+    query = next((label for pattern, label in categories if re.search(pattern, lowered)), None)
+    if not query:
+        return None
+    asks = re.search(r"\b(wo|welche|gibt|empfiehl|suche|n[aä]he|in der n[aä]he|finde)\b", lowered)
+    if not asks:
+        return None
+    location = default_location
+    match = re.search(r"\b(?:in|bei|nahe)\s+([\wäöüß .-]{2,60})", question, re.I)
+    if match:
+        candidate = match.group(1).strip(" ?!.,")
+        if candidate and not re.search(r"\b(?:der|die|das|mir|einem|einer)\b", candidate, re.I):
+            location = candidate
+    return {"query": query, "location": location}
 
 
 def norm_name(text):
