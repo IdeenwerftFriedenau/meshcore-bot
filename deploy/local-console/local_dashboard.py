@@ -604,7 +604,10 @@ class Handler(BaseHTTPRequestHandler):
             cookie = self.headers.get("Cookie", "")
             headers = None
             if not post:
-                if self.path == "/api/phone/audio/status":
+                if self.path in ("/api/phone/contacts", "/api/phone/call-status"):
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    result = PHONE_REMOTE.contacts() if self.path.endswith("contacts") else PHONE_REMOTE.call_status()
+                elif self.path == "/api/phone/audio/status":
                     PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
                     result = PHONE_AUDIO.request("status", digest(PHONE_REMOTE.token(cookie)))
                 elif self.path == "/api/phone/session":
@@ -627,7 +630,10 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(self.rfile.read(size))
                 if not isinstance(data, dict):
                     raise ValueError("JSON-Objekt erforderlich")
-                if self.path in ("/api/phone/audio/offer", "/api/phone/audio/heartbeat", "/api/phone/audio/stop"):
+                if self.path == "/api/phone/telephone":
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    result = PHONE_REMOTE.telephone(data)
+                elif self.path in ("/api/phone/audio/offer", "/api/phone/audio/heartbeat", "/api/phone/audio/stop"):
                     PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
                     result = PHONE_AUDIO.request(self.path.rsplit("/", 1)[1], digest(PHONE_REMOTE.token(cookie)), data)
                 elif self.path == "/api/phone/pair":
@@ -679,7 +685,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, EMERGENCY.encode())
         if self.path in ("/", "/index.html"):
             return self.reply(200, (ASSETS / "index.html").read_bytes())
-        if self.path in ("/console.css", "/console.js", "/phone-audio.js"):
+        if self.path in ("/console.css", "/console.js", "/phone-audio.js", "/phone-dialer.js"):
             content_type = (
                 "text/css; charset=utf-8" if self.path.endswith(".css") else "text/javascript; charset=utf-8"
             )
