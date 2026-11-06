@@ -81,6 +81,19 @@ class Weather:
 
 
 @dataclass
+class Places:
+    """Live local-search settings.  Results are deliberately never cached."""
+
+    enabled: bool = True
+    api_key_env: str = "GOOGLE_MAPS_API_KEY"
+    max_results: int = 3
+
+    @property
+    def api_key(self) -> str:
+        return getattr(self, "_api_key", os.environ.get(self.api_key_env, ""))
+
+
+@dataclass
 class Broadcasts:
     warnings_enabled: bool = False
     dwd_enabled: bool = True
@@ -142,6 +155,7 @@ class Config:
     ai: AI = field(default_factory=AI)
     storage: Storage = field(default_factory=Storage)
     weather: Weather = field(default_factory=Weather)
+    places: Places = field(default_factory=Places)
     broadcasts: Broadcasts = field(default_factory=Broadcasts)
     channels: list[Channel] = field(default_factory=lambda: [Channel("#fragdenbot", "all")])
 
@@ -156,6 +170,7 @@ class Config:
             (self.radio, ["create_channels"]),
             (self.ai, ["allow_local_http"]),
             (self.weather, ["enabled"]),
+            (self.places, ["enabled"]),
             (self.storage, ["memory_enabled"]),
             (
                 self.broadcasts,
@@ -179,6 +194,7 @@ class Config:
             (self.ai.requests_per_day, 1, 10000, "requests_per_day"),
             (self.ai.max_tokens, 32, 2048, "max_tokens"),
             (self.ai.timeout_seconds, 1, 180, "timeout_seconds"),
+            (self.places.max_results, 1, 3, "places.max_results"),
             (self.broadcasts.warning_poll_seconds, 300, 86400, "warning_poll_seconds"),
             (self.broadcasts.news_poll_seconds, 300, 86400, "news_poll_seconds"),
             (self.radio.reply_max_packets, 1, 5, "reply_max_packets"),
@@ -194,6 +210,8 @@ class Config:
         for value in [self.radio.packet_bytes, self.storage.history_turns, self.ai.max_tokens]:
             if type(value) is not int:
                 raise ValueError("packet_bytes, history_turns and max_tokens must be integers")
+        if type(self.places.max_results) is not int:
+            raise ValueError("places.max_results must be an integer")
         for name in (
             "reply_max_packets",
             "broadcast_max_packets",
@@ -218,6 +236,8 @@ class Config:
             raise ValueError("ai.model is required")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.ai.api_key_env):
             raise ValueError("ai.api_key_env must be an environment variable name")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.places.api_key_env):
+            raise ValueError("places.api_key_env must be an environment variable name")
         if not -90 <= self.weather.latitude <= 90 or not -180 <= self.weather.longitude <= 180:
             raise ValueError("Invalid weather coordinates")
         if not -90 <= self.asa.location_latitude <= 90 or not -180 <= self.asa.location_longitude <= 180:
@@ -324,7 +344,7 @@ def load_config(path: str | Path) -> Config:
     path = Path(path).expanduser().resolve()
     with path.open("rb") as stream:
         raw = tomllib.load(stream)
-    known = {"station", "radio", "ai", "storage", "weather", "broadcasts", "channels", "asa", "dashboard"}
+    known = {"station", "radio", "ai", "storage", "weather", "places", "broadcasts", "channels", "asa", "dashboard"}
     if set(raw) - known:
         raise ValueError("Unknown configuration section")
     config = Config(
@@ -335,6 +355,7 @@ def load_config(path: str | Path) -> Config:
         ai=_section(AI, raw.get("ai", {})),
         storage=_section(Storage, raw.get("storage", {})),
         weather=_section(Weather, raw.get("weather", {})),
+        places=_section(Places, raw.get("places", {})),
         broadcasts=_section(Broadcasts, raw.get("broadcasts", {})),
         channels=[
             _section(Channel, ch) for ch in raw.get("channels", [{"name": "#fragdenbot", "mode": "all"}])
@@ -362,6 +383,7 @@ def bind_secrets(config, path):
     """Replace file-backed secrets without mutating process-wide environment state."""
     env = {**os.environ, **dotenv_values(Path(path).parent / ".env")}
     config.ai._api_key = env.get(config.ai.api_key_env) or ""
+    config.places._api_key = env.get(config.places.api_key_env) or ""
     config._dashboard_token = env.get(config.dashboard.token_env) or ""
     for channel in config.channels:
         channel._secret = env.get(channel.secret_env) or ""
