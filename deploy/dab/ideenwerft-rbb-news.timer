@@ -1,0 +1,12 @@
+[Unit]
+Description=Capture Berlin DAB+ news every two hours at half past
+
+[Timer]
+OnCalendar=*-*-* 00/2:30:00 Europe/Berlin
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=false
+Unit=ideenwerft-rbb-news.service
+
+[Install]
+WantedBy=timers.target
