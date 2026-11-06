@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 
 PROFILE = Path('/var/lib/meshcore-ai-bot/phone/device.json')
@@ -90,7 +90,7 @@ class PhoneRemote:
         try:
             jar.load(cookie or '')
             token = jar[COOKIE].value
-        except (KeyError, ValueError):
+        except (CookieError, KeyError, ValueError):
             return ''
         return token if re.fullmatch(r'[A-Za-z0-9_-]{43}', token) else ''
 
@@ -125,22 +125,69 @@ class PhoneRemote:
                             'attempts': 0, 'device': digest(self.device())}
             return {'message': 'Freigabecode in der Benachrichtigung am Motorola ablesen (2 Minuten gültig).'}
 
+    def set_access_code(self, code):
+        """Provision only locally, never through the public HTTP API."""
+        if not isinstance(code, str) or not re.fullmatch(r'[0-9]{4,12}', code):
+            raise ValueError('Zugangscode benötigt 4–12 Ziffern')
+        with self.lock:
+            salt = secrets.token_hex(32)
+            row = {'salt': salt, 'iterations': 600000,
+                   'hash': hashlib.pbkdf2_hmac('sha256', code.encode(), bytes.fromhex(salt), 600000).hex(),
+                   'device': digest(self.device())}
+            self._save_private('access.json', row)
+            self._save_private('attempts.json', {'failures': 0, 'blocked_until': 0})
+            # Changing a credential revokes existing browser sessions.
+            self._save({})
+
+    def _save_private(self, name, data):
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix='.access-', dir=self.root)
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(data, stream)
+            os.replace(temporary, self.root / name)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _private(self, name):
+        try:
+            data = json.loads((self.root / name).read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
     def authorize(self, code):
         with self.lock:
+            now = self.clock()
+            attempts = self._private('attempts.json')
+            if attempts.get('blocked_until', 0) > now:
+                raise ValueError('Zugang nach Fehlversuchen gesperrt; bitte in 30 Minuten erneut versuchen')
+            fixed = self._private('access.json')
+            valid_fixed = False
+            if fixed and isinstance(code, str) and re.fullmatch(r'[0-9]{4,12}', code):
+                value = hashlib.pbkdf2_hmac('sha256', code.encode(), bytes.fromhex(fixed['salt']), fixed['iterations']).hex()
+                valid_fixed = hmac.compare_digest(value, fixed['hash']) and fixed['device'] == digest(self.device())
             pending = self.pending
-            if not pending or self.clock() > pending['expires'] or pending['attempts'] >= 5:
-                raise ValueError('Freigabecode abgelaufen; bitte neu anfordern')
-            pending['attempts'] += 1
-            if not isinstance(code, str) or not re.fullmatch(r'[0-9]{8}', code) or not hmac.compare_digest(
-                pending['hash'], digest(pending['salt'] + code)
-            ) or pending['device'] != digest(self.device()):
-                raise ValueError('Freigabecode stimmt nicht')
+            valid_once = bool(pending and now <= pending['expires'] and pending['attempts'] < 5
+                              and isinstance(code, str) and re.fullmatch(r'[0-9]{8}', code)
+                              and hmac.compare_digest(pending['hash'], digest(pending['salt'] + code))
+                              and pending['device'] == digest(self.device()))
+            if not valid_fixed and not valid_once:
+                if pending:
+                    pending['attempts'] += 1
+                failures = attempts.get('failures', 0) + 1
+                self._save_private('attempts.json', {'failures': failures if failures < 5 else 0,
+                                   'blocked_until': now + 1800 if failures >= 5 else 0})
+                raise ValueError('Zugangscode ungültig oder abgelaufen')
             self.pending = None
+            self._save_private('attempts.json', {'failures': 0, 'blocked_until': 0})
+            device = digest(self.device())
             token = secrets.token_urlsafe(32)
             sessions = self._read()
             # Bounded state; pairing does not silently revoke the current browser.
             sessions = dict(sorted(sessions.items(), key=lambda item: item[1]['expires'])[-7:])
-            sessions[digest(token)] = {'expires': self.clock() + 7 * 86400, 'device': pending['device']}
+            sessions[digest(token)] = {'expires': self.clock() + 7 * 86400, 'device': device}
             self._save(sessions)
             return token
 
@@ -182,7 +229,7 @@ class PhoneRemote:
             if self.clock() - self.last_control < .15:
                 raise ValueError('Bitte einen Moment warten')
             kind = data.get('action')
-            if kind == 'key' and data.get('key') in KEYS:
+            if kind == 'key' and isinstance(data.get('key'), str) and data['key'] in KEYS:
                 command = 'input keyevent ' + str(KEYS[data['key']])
             elif kind in ('tap', 'swipe'):
                 if not self.dimensions:
@@ -209,3 +256,11 @@ class PhoneRemote:
             self.last_control = self.clock()
             self.frame_cache = None
             return {'ok': True}
+
+
+if __name__ == '__main__':
+    import getpass
+
+    code = getpass.getpass('Fester Motorola-Zugangscode: ')
+    PhoneRemote('/var/lib/meshcore-gateway/phone-remote').set_access_code(code)
+    print('Privater Zugangscode eingerichtet; bisherige Browserfreigaben widerrufen.')

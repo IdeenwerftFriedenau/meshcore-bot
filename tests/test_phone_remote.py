@@ -68,7 +68,7 @@ def test_pairing_limits_attempts_and_rate_and_device_binding(remote):
     for _ in range(5):
         with pytest.raises(ValueError):
             phone.authorize('not-a-code')
-    with pytest.raises(ValueError, match='abgelaufen'):
+    with pytest.raises(ValueError, match='gesperrt'):
         phone.authorize('12345678')
 
 
@@ -115,3 +115,27 @@ def test_status_whitelists_only_device_and_battery(remote):
     phone.runner = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=b'moto g35 5G\n16\n USB powered: true\n level: 49\n temperature: 240\n secret: private\n')
     assert phone.status() == {'connected': True, 'model': 'moto g35 5G', 'android': '16',
                               'battery': 49, 'temperature': 24, 'charging': True}
+
+
+def test_fixed_code_persists_hashed_and_lockout_survives_restart(remote):
+    module, phone, calls, now = remote
+    phone.set_access_code('826395')
+    access = (phone.root / 'access.json').read_text()
+    assert '826395' not in access and 'test-device' not in access
+    assert (phone.root / 'access.json').stat().st_mode & 0o777 == 0o600
+    token = phone.authorize('826395')
+    cookie = 'meshcore_phone=' + token
+    assert phone.session(cookie)['authorized']
+    for _ in range(5):
+        with pytest.raises(ValueError):
+            phone.authorize('wrong')
+    restarted = module.PhoneRemote(phone.root, phone.profile, phone.runner, phone.clock)
+    with pytest.raises(ValueError, match='gesperrt'):
+        restarted.authorize('826395')
+    now[0] += 1801
+    assert restarted.authorize('826395')
+    restarted.set_access_code('923857')
+    assert not restarted.session(cookie)['authorized']
+    with pytest.raises(ValueError):
+        restarted.authorize('826395')
+    assert restarted.authorize('923857')
