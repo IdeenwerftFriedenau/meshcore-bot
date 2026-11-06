@@ -50,6 +50,7 @@ except ModuleNotFoundError:
     from dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
 
 sys.path.insert(0, str(Path(__file__).parent))
+from phone_remote import COOKIE, PhoneRemote, trusted_address  # noqa: E402
 from radio_features import RadioFeatures  # noqa: E402
 
 HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
@@ -524,6 +525,9 @@ def subscribe_radio(sid):
 RADIO_FEATURES = RadioFeatures(OUTBOX.parent / "radio-recordings", subscribe_radio)
 
 
+PHONE_REMOTE = PhoneRemote(OUTBOX.parent / "phone-remote")
+
+
 ASSETS = Path(os.environ.get("DASHBOARD_ASSETS", str(Path(__file__).with_name("local-console"))))
 
 
@@ -531,16 +535,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def reply(self, status, body, content_type="text/html; charset=utf-8"):
+    def reply(self, status, body, content_type="text/html; charset=utf-8", headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'self'; img-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -586,7 +592,61 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             STREAM_SLOTS.release()
 
+    def phone_request(self, post=False):
+        try:
+            if not trusted_address(self.client_address[0]):
+                raise PermissionError("Fernbedienung über die Tailscale-Adresse des Pi oder einen lokalen SSH-Tunnel öffnen")
+            origin = self.headers.get("Origin")
+            if (origin and urlsplit(origin).netloc != self.headers.get("Host")) or self.headers.get("Sec-Fetch-Site") == "cross-site":
+                raise PermissionError("Fremder Ursprung nicht erlaubt")
+            cookie = self.headers.get("Cookie", "")
+            headers = None
+            if not post:
+                if self.path == "/api/phone/session":
+                    result = PHONE_REMOTE.session(cookie)
+                    result["trusted"] = True
+                elif self.path == "/api/phone/frame":
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    return self.reply(200, PHONE_REMOTE.frame(), "image/png")
+                elif self.path == "/api/phone/status":
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    result = PHONE_REMOTE.status()
+                else:
+                    return self.reply(404, b"{}", "application/json")
+            else:
+                if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                    raise ValueError("JSON erforderlich")
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 2 <= size <= 2048:
+                    raise ValueError("Ungültige Anfrage")
+                data = json.loads(self.rfile.read(size))
+                if not isinstance(data, dict):
+                    raise ValueError("JSON-Objekt erforderlich")
+                if self.path == "/api/phone/pair":
+                    result = PHONE_REMOTE.pair()
+                elif self.path == "/api/phone/authorize":
+                    token = PHONE_REMOTE.authorize(data.get("code"))
+                    headers = {"Set-Cookie": f"{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/api/phone; Max-Age=604800"}
+                    result = {"authorized": True}
+                elif self.path in ("/api/phone/control", "/api/phone/logout"):
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    if self.path.endswith("logout"):
+                        result = PHONE_REMOTE.logout(cookie)
+                        headers = {"Set-Cookie": f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/api/phone; Max-Age=0"}
+                    else:
+                        result = PHONE_REMOTE.control(data)
+                else:
+                    return self.reply(404, b"{}", "application/json")
+            return self.reply(200, json.dumps(result, ensure_ascii=False).encode(), "application/json", headers)
+        except PermissionError as error:
+            return self.reply(403, json.dumps({"error": str(error)}).encode(), "application/json")
+        except (ValueError, OSError) as error:
+            message = str(error) if isinstance(error, ValueError) else "Handy-Verbindung gerade nicht verfügbar"
+            return self.reply(400, json.dumps({"error": message}).encode(), "application/json")
+
     def do_GET(self):
+        if self.path.startswith("/api/phone/"):
+            return self.phone_request()
         recording = re.fullmatch(r"/radio-recordings/([0-9a-f]{32}\.mp3)", self.path)
         if recording:
             path = RADIO_FEATURES.root / recording.group(1)
@@ -630,6 +690,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, b"Nicht gefunden", "text/plain")
 
     def do_POST(self):
+        if self.path.startswith("/api/phone/"):
+            return self.phone_request(post=True)
         if self.path not in {
             "/api/send",
             "/api/dab/settings",
