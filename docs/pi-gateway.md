@@ -174,15 +174,15 @@ ist. Der Suchlauf startet ausschließlich das fest vorgegebene installierte Modu
 ### Berlin-Nachrichten über DAB+ rbb 88.8
 
 `deploy/dab/ideenwerft-rbb-news.timer` startet alle zwei Stunden um
-00:30, 02:30, …, 22:30 Uhr (Europe/Berlin). Quelle ist ausschließlich der
+01:00, 03:00, …, 23:00 Uhr (Europe/Berlin). Quelle ist ausschließlich der
 lokale DAB+-Audiostrom von **rbb 88.8**, Service `0xd321` im Ensemble 7D.
-Der [Sender nennt Berlin-Nachrichten zur halben Stunde](https://www.rbb888.de/vorlagen/topnavigation-ach.html).
+Der vom Benutzer gewünschte Takt ist die volle Stunde: ungerade Stunden rbb 88.8, gerade Stunden Deutschlandfunk.
 Es werden weder RSS-Meldungen noch ein Internet-Radiostream verwendet.
 
 Die gemeinsame Tunersteuerung reserviert bei aktivierter Option
-`rbb_news_enabled` die Zeit **:29:30 bis :34:50** in geraden Berliner Stunden
+`rbb_news_enabled` die Zeit **:59:30 bis :05:50** vor/in ungeraden Berliner Stunden
 für 7D. Danach gilt wieder die gespeicherte Senderwahl. Die bestehende
-stündliche DLF-Reservierung bleibt erhalten. Ein einzelner DAB-Empfänger
+Reservierung auf 5C gilt dann nur für gerade Stunden. Ohne RBB-Option bleibt die bisherige stündliche DLF-Reservierung erhalten. Ein einzelner DAB-Empfänger
 unterbricht dabei Programme auf anderen Ensembles; ein Suchlauf darf nicht
 mit einer Nachrichten-Aufnahme konkurrieren.
 
@@ -197,7 +197,7 @@ und Spracherkennung funktionieren lokal. Die privaten Aufnahmen unter
 `/var/lib/meshcore-gateway/rbb-news/` werden beim nächsten Lauf nach 24 Stunden
 gelöscht und nicht nach GitHub übertragen.
 
-Die Meldungen tragen `rbb88.8 HH:30:` und werden über die vorhandene
+Die Meldungen tragen `rbb88.8 HH:00:` und werden über die vorhandene
 Bot-Warteschlange nur nach `#news` versandt. Sie verfallen nach 30 Minuten.
 Ein Neustart wiederholt dieselbe Ausgabe nicht. Verpasste Sendetermine
 werden nicht nachgeholt; ein Start nach den ersten 15 Sekunden wird
@@ -208,8 +208,13 @@ Quellstand samt Paket und identischen `dab_control.py`-Kopien ausliefern.
 In der privaten Bot-Konfiguration `[broadcasts].news_enabled = true` und
 für `#news` `broadcasts = ["news"]` setzen. In der lokalen DAB-Steuerung
 `rbb_news_enabled = true` über `save_settings` aktivieren. Die beiden
-RBB-Units aus `deploy/dab/` nach `/etc/systemd/system/` installieren,
+RBB-Units aus `deploy/dab/` nach `/etc/systemd/system/` installieren.
+Das bisherige `dab_news.py` durch die Repository-Datei ersetzen und
+`ideenwerft-dab-news-even-hours.conf` als
+`/etc/systemd/system/ideenwerft-dab-news.service.d/even-hours.conf` installieren.
+Dadurch nimmt DLF nur um 00:00, 02:00, …, 22:00 Uhr auf. Dann
 `systemctl daemon-reload` ausführen und
+`systemctl restart ideenwerft-dab-news.service` und
 `systemctl enable --now ideenwerft-rbb-news.timer` verwenden. Der Dienst
 verwendet das bestehende Vosk unter `/home/marc/dab-warnings-meshcore/.venv`
 und öffnet niemals das MeshCore-USB-Gerät selbst. Der letzte Lauf steht
@@ -217,7 +222,8 @@ unter `rbb:status` in der Bot-Statusdatei; Details liefert das Dienstjournal.
 `--dry-run` nimmt auf und fasst zusammen, ohne Funknachrichten einzureihen.
 
 Zum Abschalten sowohl den RBB-Timer deaktivieren als auch die lokale
-DAB-Option auf `false` setzen. Die stündlichen DLF-Aufnahmen laufen weiter.
+DAB-Option auf `false` setzen. Für stündlichen DLF-Betrieb zusätzlich das
+Even-hours-Drop-in entfernen, die Units neu laden und den DLF-Dienst neu starten.
 
 ### Live-Radio und stündlicher Deutschlandfunk
 
@@ -226,8 +232,9 @@ lokal abspielen. Die Wiedergabe startet nur auf Klick; der Stream bleibt auf dem
 und nutzt keinen Internet-Radiodienst. Bis zu 16 lokale Wiedergaben teilen sich denselben
 DAB-Empfänger. Ein Ensemblewechsel unterbricht andere Programme.
 
-Der Empfänger wechselt unabhängig von Internet-Uploads jede Stunde ab Minute 59:30
-auf 5C (Deutschlandfunk). Bis Minute 05:50 hat die bestehende fünfminütige
+Ohne aktivierten RBB-Wechsel wechselt der Empfänger unabhängig von Internet-Uploads jede Stunde ab Minute 59:30
+auf 5C (Deutschlandfunk). Im Wechselbetrieb gilt dies nur für gerade Stunden;
+vor ungeraden Stunden wird rbb 88.8 auf 7D eingestellt. Bis Minute 05:50 hat die bestehende fünfminütige
 Nachrichtenaufzeichnung Vorrang. Danach wird die gespeicherte Auswahl wieder
 empfangen. Unterbrochene Live-Wiedergabe anschließend erneut starten. Die Auswahl
 wird durch die Reservierung nicht überschrieben. Suchläufe lassen sich nur zwischen
