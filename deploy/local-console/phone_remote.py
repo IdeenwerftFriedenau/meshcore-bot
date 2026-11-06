@@ -111,10 +111,13 @@ class PhoneRemote:
         with self.lock:
             if self.clock() - getattr(self, 'last_telephone', 0) < 2:
                 raise ValueError('Bitte kurz warten')
-            if action == 'dial':
+            if action in ('dial', 'call'):
                 number = self.phone_number(data.get('number'))
-                # DIAL never initiates a call or runs an MMI/USSD code.
-                script = 'am start -a android.intent.action.DIAL -d ' + shlex.quote('tel:' + number) + ' 2>&1\n'
+                # Keep legacy DIAL non-calling for browsers with cached assets.
+                if action == 'call' and self.call_status()['state'] != 'idle':
+                    raise ValueError('Bereits ein Anruf aktiv oder Anrufstatus nicht verfügbar')
+                intent = 'CALL' if action == 'call' else 'DIAL'
+                script = 'am start -a android.intent.action.' + intent + ' -d ' + shlex.quote('tel:' + number) + ' 2>&1\n'
             elif action == 'hangup':
                 if self.call_status()['state'] not in ('active', 'ringing'):
                     raise ValueError('Kein laufender Anruf gemeldet')
@@ -125,7 +128,10 @@ class PhoneRemote:
             output = self.adb('shell', '-T', 'sh', script=script).decode(errors='replace')
             if 'Error' in output or 'Exception' in output:
                 raise ValueError('Telefonaktion von Android nicht verfügbar')
-        return {'message': 'Nummer am Motorola geöffnet. Anruf dort bestätigen.' if action == 'dial' else 'Auflegen angefordert.'}
+        messages = {'call': 'Anruf angefordert. Der Anrufstatus zeigt den Aufbau an.',
+                    'dial': 'Nummer am Motorola geöffnet. Anruf dort bestätigen.',
+                    'hangup': 'Auflegen angefordert.'}
+        return {'message': messages[action]}
 
     def _read(self):
         try:

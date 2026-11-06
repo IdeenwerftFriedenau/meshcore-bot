@@ -180,3 +180,24 @@ def test_call_status_and_hangup_guard(remote):
     assert phone.call_status() == {'state': 'ringing', 'number': '123'}
     output('permission error')
     assert phone.call_status()['state'] == 'unknown'
+
+
+def test_direct_call_only_on_explicit_action_and_idle_phone(remote):
+    _, phone, calls, now = remote
+    original = phone.runner
+    def runner(command, **kwargs):
+        result = original(command, **kwargs)
+        if kwargs.get('input') == b'dumpsys telephony.registry\n':
+            result.stdout = b'mCallState=0\n'
+        return result
+    phone.runner = runner
+    phone.telephone({'action': 'call', 'number': '+49 (30) 123-456'})
+    assert calls[-1][1]['input'] == b'am start -a android.intent.action.CALL -d tel:+4930123456 2>&1\n'
+    now[0] += 3
+    for state in ['mCallState=1', 'mCallState=2', 'unknown']:
+        phone.runner = lambda *a, state=state, **k: SimpleNamespace(returncode=0, stdout=state.encode())
+        with pytest.raises(ValueError, match='Anruf aktiv'):
+            phone.telephone({'action': 'call', 'number': '030123456'})
+    for number in ['*123#', '123;reboot', None]:
+        with pytest.raises(ValueError):
+            phone.telephone({'action': 'call', 'number': number})

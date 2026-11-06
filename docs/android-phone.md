@@ -263,9 +263,14 @@ bestehende geschützte USB-Verbindung. Kontakte bleiben nur im Arbeitsspeicher d
 Browsers und werden beim Verlassen der Telefonseite oder Abmelden verworfen.
 Namen werden als Text dargestellt. Es werden keine Kontaktdateien angelegt.
 
-„Nummer am Handy öffnen“ öffnet Androids ACTION_DIAL; den Anruf anschließend in
-der Liveansicht bestätigen und gegebenenfalls die SIM auswählen. Es wird kein
-Anruf automatisch gestartet. MMI/USSD-Codes werden nicht angenommen. „Auflegen“
+„Anrufen“ startet auf ausdrücklichen Klick direkt über Android ACTION_CALL und
+die Standard-SIM des Motorola. Dafür muss Android CALL_PHONE für die bestehende
+USB-Fernbedienung erlauben. Bei mehreren SIM-Karten muss am Motorola eine
+Standard-SIM für Anrufe eingestellt sein, damit Android keine SIM-Auswahl öffnet.
+Bei aktivem oder unbekanntem Anrufstatus wird kein weiterer Anruf angefordert.
+Alte Browser mit zwischengespeicherter Oberfläche behalten ACTION_DIAL ohne
+automatischen Anruf; die Telefonseite nach dem Update neu laden.
+MMI/USSD-Codes werden nicht angenommen. „Auflegen“
 ist nur bei gemeldetem Anruf verfügbar. Eingehende Anrufe werden in der
 Handyansicht angenommen. Android gibt die Rufnummer nicht immer frei; eine
 gewählte Nummer wird deshalb nicht als bestätigte Gegenstelle ausgegeben.
