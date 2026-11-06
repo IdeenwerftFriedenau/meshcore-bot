@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from meshcore_ai_bot.config import Channel, Config
 from meshcore_ai_bot.dab_control import (
     effective_channel,
     load_settings,
@@ -11,6 +12,7 @@ from meshcore_ai_bot.dab_control import (
     save_settings,
     scan_allowed,
 )
+from meshcore_ai_bot.store import Store
 
 spec = importlib.util.spec_from_file_location(
     "rbb_news", Path(__file__).parents[1] / "deploy/dab/rbb_news.py"
@@ -97,6 +99,31 @@ def test_only_source_supported_short_news_packets():
         {**item, "headline": "Überprüfung " * 30},
         "wrong shape", {**item, "evidence": "berlin"},
     ]}, transcript, slot) == []
+
+
+def test_ten_supported_headlines_from_the_whole_bulletin():
+    evidence = "eine klar erkannte nachricht aus der sendung"
+    items = [{"headline": f"Nachricht {i} aus Deutschland", "evidence": evidence} for i in range(12)]
+    slot = stamp("2026-11-06T13:00:00+01:00")
+    texts = news.messages({"is_news": True, "items": items}, evidence, slot)
+    assert len(texts) == 10
+    assert all(len(t.encode()) <= 110 for t in texts)
+
+
+def test_followup_shares_ten_packet_budget_without_cancelling_pending():
+    store = Store(":memory:")
+    c = Config(channels=[Channel("#news", "off", broadcasts=["news"])])
+    c.broadcasts.news_enabled = True
+    slot = stamp("2026-11-06T13:00:00+01:00")
+    try:
+        assert news.queue_messages(store, c, ["First report"], slot, slot + 300)
+        assert news.queue_messages(store, c, ["First report"] + [f"Report {i}" for i in range(15)], slot, slot + 400)
+        assert len(news.prior_messages(store, slot)) == 10
+        assert store.db.execute("SELECT count(*) FROM packets WHERE state='queued'").fetchone()[0] == 10
+        assert not news.queue_messages(store, c, ["Extra"], slot, slot + 500)
+        assert not news.queue_messages(store, c, ["Stale"], slot, slot + 1800)
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("now,expected", [
