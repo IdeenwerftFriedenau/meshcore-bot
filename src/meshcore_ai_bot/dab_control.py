@@ -88,32 +88,26 @@ def fresh_signal(mux, now):
 
 
 def news_window(now=None):
-    """Reserve the single tuner from HH:59:30 through HH:05:50 for DLF."""
+    """Reserve the single tuner from HH:59:30 through HH:05:50 for news."""
     second = (time.time() if now is None else now) % 3600
     return second >= 3570 or second < 350
 
 
 def effective_channel(settings, now=None):
     if news_window(now):
-        return "5C"
-    if settings.get("rbb_news_enabled", False) and rbb_news_window(now):
-        return "7D"
+        return "7D" if settings.get("rbb_news_enabled", False) and rbb_news_window(now) else "5C"
     return settings["channel"]
 
 
 def rbb_news_window(now=None):
-    """Reserve even Berlin hours HH:29:30–HH:34:50 for rbb 88.8."""
+    """Odd Berlin hours use RBB; pre-tune 30 seconds before the full hour."""
     now = time.time() if now is None else now
-    local = datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin"))
-    return local.hour % 2 == 0 and 1770 <= now % 3600 < 2090
+    local = datetime.fromtimestamp(now + 30, ZoneInfo("Europe/Berlin"))
+    return local.hour % 2 == 1 and news_window(now)
 
 
 def scan_allowed(now=None, settings=None):
     # Leave ten minutes for the full scan before the next bulletin reservation.
     now = time.time() if now is None else now
     second = now % 3600
-    settings = load_settings() if settings is None else settings
-    rbb = settings.get("rbb_news_enabled", False)
-    # Ten-minute scan margin before the RBB reservation as well.
-    rbb_block = datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin")).hour % 2 == 0 and 1170 <= second < 2090
-    return 350 <= second < 2970 and not (rbb and rbb_block)
+    return 350 <= second < 2970
