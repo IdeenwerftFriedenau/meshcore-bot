@@ -422,3 +422,34 @@ def test_recording_delete_rejects_traversal_and_active_recordings(console, tmp_p
     features.jobs[key] = {"id": key, "kind": "record", "status": "capturing", "created": time.time()}
     with pytest.raises(ValueError, match="zuerst stoppen"):
         features.delete(key)
+
+
+def test_phone_http_requires_pairing_csrf_and_same_origin(console, tmp_path, monkeypatch):
+    from phone_remote import PhoneRemote
+
+    profile = tmp_path / 'device.json'
+    profile.write_text('{"serial":"test-device"}')
+    phone = PhoneRemote(tmp_path / 'phone', profile)
+    monkeypatch.setattr(console, 'PHONE_REMOTE', phone)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), console.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    try:
+        with urllib.request.urlopen(base + '/api/phone/session') as response:
+            assert json.load(response) == {'authorized': False, 'trusted': True}
+        for path in ('frame', 'status'):
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(base + '/api/phone/' + path)
+            assert error.value.code == 403
+        request = urllib.request.Request(base + '/api/phone/pair', data=b'{}', headers={
+            'Content-Type': 'application/json', 'Origin': 'https://foreign.example'})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        assert error.value.code == 403
+        monkeypatch.setattr(console, 'trusted_address', lambda address: False)
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base + '/api/phone/session')
+        assert error.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
