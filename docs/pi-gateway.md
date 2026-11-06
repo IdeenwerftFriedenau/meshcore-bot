@@ -171,6 +171,54 @@ ist. Der Suchlauf startet ausschließlich das fest vorgegebene installierte Modu
 `meshcore_ai_bot.dab_scan`, ohne Shell und ohne frei übergebbare Befehle.
 
 
+### Berlin-Nachrichten über DAB+ rbb 88.8
+
+`deploy/dab/ideenwerft-rbb-news.timer` startet alle zwei Stunden um
+00:30, 02:30, …, 22:30 Uhr (Europe/Berlin). Quelle ist ausschließlich der
+lokale DAB+-Audiostrom von **rbb 88.8**, Service `0xd321` im Ensemble 7D.
+Der [Sender nennt Berlin-Nachrichten zur halben Stunde](https://www.rbb888.de/vorlagen/topnavigation-ach.html).
+Es werden weder RSS-Meldungen noch ein Internet-Radiostream verwendet.
+
+Die gemeinsame Tunersteuerung reserviert bei aktivierter Option
+`rbb_news_enabled` die Zeit **:29:30 bis :34:50** in geraden Berliner Stunden
+für 7D. Danach gilt wieder die gespeicherte Senderwahl. Die bestehende
+stündliche DLF-Reservierung bleibt erhalten. Ein einzelner DAB-Empfänger
+unterbricht dabei Programme auf anderen Ensembles; ein Suchlauf darf nicht
+mit einer Nachrichten-Aufnahme konkurrieren.
+
+`deploy/dab/rbb_news.py` zeichnet vier Minuten auf, prüft Sender, aktuellen
+Empfang und Aufnahmelänge und verwendet das vorhandene lokale deutsche
+Vosk-Modell. Unsichere Spracherkennung führt zu keiner Aussendung. Der
+eingerichtete KI-Dienst erstellt höchstens drei kurze Berliner Meldungen,
+jeweils mit wörtlichem Beleg aus dem Transkript. Musik, Werbung, Wetter und
+Verkehr werden ausgelassen. Nachrichten ohne verwertbaren Text bleiben
+ohne Funkversand. Die Zusammenfassung benötigt Internet; Empfang, Aufnahme
+und Spracherkennung funktionieren lokal. Die privaten Aufnahmen unter
+`/var/lib/meshcore-gateway/rbb-news/` werden beim nächsten Lauf nach 24 Stunden
+gelöscht und nicht nach GitHub übertragen.
+
+Die Meldungen tragen `rbb88.8 HH:30:` und werden über die vorhandene
+Bot-Warteschlange nur nach `#news` versandt. Sie verfallen nach 30 Minuten.
+Ein Neustart wiederholt dieselbe Ausgabe nicht. Verpasste Sendetermine
+werden nicht nachgeholt; ein Start nach den ersten 15 Sekunden wird
+verworfen, um keine spätere Musik als Nachrichten auszuwerten.
+
+Installation nach grünem GitHub-Prüflauf: Pi sichern, den geprüften
+Quellstand samt Paket und identischen `dab_control.py`-Kopien ausliefern.
+In der privaten Bot-Konfiguration `[broadcasts].news_enabled = true` und
+für `#news` `broadcasts = ["news"]` setzen. In der lokalen DAB-Steuerung
+`rbb_news_enabled = true` über `save_settings` aktivieren. Die beiden
+RBB-Units aus `deploy/dab/` nach `/etc/systemd/system/` installieren,
+`systemctl daemon-reload` ausführen und
+`systemctl enable --now ideenwerft-rbb-news.timer` verwenden. Der Dienst
+verwendet das bestehende Vosk unter `/home/marc/dab-warnings-meshcore/.venv`
+und öffnet niemals das MeshCore-USB-Gerät selbst. Der letzte Lauf steht
+unter `rbb:status` in der Bot-Statusdatei; Details liefert das Dienstjournal.
+`--dry-run` nimmt auf und fasst zusammen, ohne Funknachrichten einzureihen.
+
+Zum Abschalten sowohl den RBB-Timer deaktivieren als auch die lokale
+DAB-Option auf `false` setzen. Die stündlichen DLF-Aufnahmen laufen weiter.
+
 ### Live-Radio und stündlicher Deutschlandfunk
 
 Unter „Radio & Aufnahmen“ kann der Browser Radioprogramme des empfangenen Ensembles

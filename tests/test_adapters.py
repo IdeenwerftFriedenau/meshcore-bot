@@ -134,6 +134,45 @@ async def test_provider_request_and_horoscope(monkeypatch):
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("Mein Geburtsdatum ist 8.5.45", "Bitte kein Geburtsdatum"),
+        ("30.02.1995", "Bitte kein Geburtsdatum"),
+        ("Wie ist die Datenschutzerklärung bei Geburtsdaten?", "frage ich keine Geburtsdaten ab"),
+        ("Horoskop bitte", "genügt dein Sternzeichen"),
+        ("Wie ist der aktuelle Stand zum MeshPager X1?", "keine verlässliche aktuelle Release-Quelle"),
+    ],
+)
+async def test_sensitive_horoscope_and_product_questions_are_deterministic(question, expected):
+    store = Store(":memory:")
+    try:
+        async with httpx.AsyncClient() as client:
+            answer = await Assistant(Config(), store, client).answer(question)
+        assert expected in answer.text
+    finally:
+        store.close()
+
+
+async def test_old_horoscope_nudge_does_not_leak_into_unrelated_answer(monkeypatch):
+    monkeypatch.setenv("MESHCORE_AI_API_KEY", "test")
+    store = Store(":memory:")
+
+    def respond(request):
+        prompt = json.loads(request.content)["messages"]
+        assert not any("Welches Sternzeichen bist du" in str(message) for message in prompt)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Kurz und sachlich."}}]})
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            answer = await Assistant(Config(), store, client).answer(
+                "Erzähl einen Witz", [{"role": "assistant", "content": "Welches Sternzeichen bist du?"}]
+            )
+        assert answer.text == "Kurz und sachlich."
+    finally:
+        store.close()
+
+
 async def test_authentication_failure_not_retried(monkeypatch):
     monkeypatch.setenv("MESHCORE_AI_API_KEY", "invalid")
     count = [0]
