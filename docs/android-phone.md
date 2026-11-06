@@ -121,6 +121,18 @@ Danach `http://127.0.0.1:18091/#phone` öffnen. Tailscale benötigt eine bestehe
 Verbindung zwischen den Geräten; getrennte Netze werden ohne Übertragungsweg
 nicht verbunden.
 
+Ein optionaler **fester Zugangscode** erlaubt die Freigabe auch ohne erneute
+Bestätigung am Handy. Er wird ausschließlich lokal eingerichtet; der Code selbst
+kommt weder ins Repository noch in Statusantworten oder Protokolle. Gespeichert
+wird ein gesalzener PBKDF2-SHA256-Prüfwert (600.000 Durchläufe, Datei 0600).
+Nach fünf Fehlversuchen ist die Anmeldung 30 Minuten gesperrt, auch nach einem
+Dashboard-Neustart. Eine Änderung des Codes widerruft alle Browserfreigaben.
+Einrichten als Dashboard-Dienstbenutzer auf dem Pi (verdeckte Eingabe):
+
+```sh
+python3 /home/marc/meshcore-gateway/phone_remote.py
+```
+
 **Code am Handy anzeigen** erzeugt eine Android-Benachrichtigung mit achtstelligem
 Code. Diesen innerhalb von zwei Minuten im eigenen Dashboard eingeben. Maximal
 fünf Fehlversuche, höchstens fünf Codeanforderungen pro Stunde, eine pro Minute.
