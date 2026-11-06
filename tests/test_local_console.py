@@ -387,3 +387,29 @@ def test_late_listener_gets_prefill_without_reopening_source(console):
     first.close()
     assert second.read() == bytes([1]) * 4096
     second.close()
+
+
+def test_recording_delete_is_recoverable_and_hides_mp3(console, tmp_path):
+    features = console.RadioFeatures(tmp_path, lambda sid: None)
+    key = "a" * 32
+    file = tmp_path / (key + ".mp3")
+    file.write_bytes(b"mp3 audio")
+    job = {"id": key, "kind": "record", "status": "ready", "created": time.time(), "file": file.name}
+    features.persist(job)
+    assert features.delete(key)["status"] == "deleted"
+    assert not file.exists()
+    assert (tmp_path / ".trash" / file.name).read_bytes() == b"mp3 audio"
+    assert features.list()[0]["status"] == "deleted"
+    assert features.delete(key, restore=True)["status"] == "ready"
+    assert file.read_bytes() == b"mp3 audio"
+    assert not (tmp_path / ".trash" / file.name).exists()
+
+
+def test_recording_delete_rejects_traversal_and_active_recordings(console, tmp_path):
+    features = console.RadioFeatures(tmp_path, lambda sid: None)
+    with pytest.raises(ValueError):
+        features.delete("../outside")
+    key = "b" * 32
+    features.jobs[key] = {"id": key, "kind": "record", "status": "capturing", "created": time.time()}
+    with pytest.raises(ValueError, match="zuerst stoppen"):
+        features.delete(key)

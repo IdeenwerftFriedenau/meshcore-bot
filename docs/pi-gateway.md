@@ -245,3 +245,10 @@ python3 -m venv /opt/meshcore-ai-bot/radio-recognition/.venv
 Neben `local_dashboard.py` müssen `radio_features.py` und `recognize_song.py` im
 lokalen Dashboard-Verzeichnis liegen. Zugangsdaten sind dafür nicht erforderlich.
 Referenz: https://github.com/shazamio/ShazamIO
+
+
+Eigene Radioaufnahmen können über „Aufnahme löschen“ in einen lokalen Papierkorb
+verschoben und wiederhergestellt werden. Dort zählen sie weiterhin zum
+Speicherlimit und unterliegen derselben 24-Stunden-Aufbewahrung. Laufende
+Aufnahmen müssen zuerst gestoppt werden. Gelöschte Aufnahmen sind nicht mehr
+über die normale MP3-Adresse abrufbar.
