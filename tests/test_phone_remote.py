@@ -139,3 +139,44 @@ def test_fixed_code_persists_hashed_and_lockout_survives_restart(remote):
     with pytest.raises(ValueError):
         restarted.authorize('826395')
     assert restarted.authorize('923857')
+
+
+def test_telephone_validation_and_no_implicit_call(remote):
+    _, phone, calls, now = remote
+    for value in ['*123#', '123;reboot', 'tel:123', '', None, '+12+3']:
+        with pytest.raises(ValueError):
+            phone.telephone({'action': 'dial', 'number': value})
+    assert not calls
+    result = phone.telephone({'action': 'dial', 'number': '+49 (30) 123-456'})
+    script = calls[-1][1]['input'].decode()
+    assert 'android.intent.action.DIAL' in script and 'tel:+4930123456' in script
+    assert 'action.CALL' not in script and 'bestätigen' in result['message']
+    with pytest.raises(ValueError, match='warten'):
+        phone.telephone({'action': 'dial', 'number': '123'})
+
+
+def test_contacts_safe_parsing_no_disk(remote):
+    _, phone, calls, _ = remote
+    phone.runner = lambda *a, **k: SimpleNamespace(returncode=0, stdout=(
+        b'Row: 0 _id=1, data1=+49 30 123, display_name=Test, Firma\n'
+        b'Row: 1 _id=2, data1=*123#, display_name=Service\n'
+        b'Row: 2 _id=3, data1=+49 30 123, display_name=Test, Firma\n'
+        b'Row: 3 _id=4, data1=456, display_name=<script>dummy</script>\n'))
+    result = phone.contacts()['contacts']
+    assert len(result) == 2
+    assert {'name': 'Test, Firma', 'number': '+4930123'} in result
+    assert not phone.root.exists()
+
+
+def test_call_status_and_hangup_guard(remote):
+    _, phone, calls, _ = remote
+    def output(text):
+        phone.runner = lambda *a, **k: SimpleNamespace(returncode=0, stdout=text.encode())
+    output('mCallState=0\nmCallState=0\nmCallIncomingNumber=123')
+    assert phone.call_status() == {'state': 'idle', 'number': None}
+    with pytest.raises(ValueError, match='Kein laufender'):
+        phone.telephone({'action': 'hangup'})
+    output('mCallState=1\nmCallIncomingNumber=123\n')
+    assert phone.call_status() == {'state': 'ringing', 'number': '123'}
+    output('permission error')
+    assert phone.call_status()['state'] == 'unknown'

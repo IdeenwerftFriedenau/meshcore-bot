@@ -437,7 +437,7 @@ def test_phone_http_requires_pairing_csrf_and_same_origin(console, tmp_path, mon
     try:
         with urllib.request.urlopen(base + '/api/phone/session') as response:
             assert json.load(response) == {'authorized': False, 'trusted': True}
-        for path in ('frame', 'status'):
+        for path in ('frame', 'status', 'contacts', 'call-status'):
             with pytest.raises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(base + '/api/phone/' + path)
             assert error.value.code == 403
