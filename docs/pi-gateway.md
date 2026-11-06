@@ -186,11 +186,14 @@ Reservierung auf 5C gilt dann nur für gerade Stunden. Ohne RBB-Option bleibt di
 unterbricht dabei Programme auf anderen Ensembles; ein Suchlauf darf nicht
 mit einer Nachrichten-Aufnahme konkurrieren.
 
-`deploy/dab/rbb_news.py` zeichnet vier Minuten auf, prüft Sender, aktuellen
+`deploy/dab/rbb_news.py` zeichnet fünf Minuten auf, prüft Sender, aktuellen
 Empfang und Aufnahmelänge und verwendet das vorhandene lokale deutsche
 Vosk-Modell. Unsichere Spracherkennung führt zu keiner Aussendung. Der
-eingerichtete KI-Dienst erstellt höchstens drei kurze Berliner Meldungen,
-jeweils mit wörtlichem Beleg aus dem Transkript. Musik, Werbung, Wetter und
+eingerichtete KI-Dienst erstellt höchstens zehn kurze Meldungen aus der gesamten Sendung,
+mit Berlin-Themen zuerst und danach Deutschland und der Welt,
+jeweils mit wörtlichem Beleg aus dem Transkript.
+Die vorhandene Funkwarteschlange erlaubt zwölf Pakete pro Aussendung;
+RBB bleibt einschließlich möglicher Nachträge auf zehn Pakete pro Ausgabe begrenzt. Musik, Werbung, Wetter und
 Verkehr werden ausgelassen. Nachrichten ohne verwertbaren Text bleiben
 ohne Funkversand. Die Zusammenfassung benötigt Internet; Empfang, Aufnahme
 und Spracherkennung funktionieren lokal. Die privaten Aufnahmen unter
