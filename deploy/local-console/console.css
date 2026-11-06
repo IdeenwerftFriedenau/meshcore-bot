@@ -11,3 +11,12 @@
 #live-player{display:block;width:100%;margin-top:18px}#live-station{max-width:100%;margin:8px 12px 8px 0}#live-state{min-height:1.5em}
 
 .radio-deck{border-top:1px solid var(--line);padding:24px 0}.deck-heading{display:flex;justify-content:space-between;align-items:center;gap:15px}.radio-deck h2{margin:0;font-size:20px}.song-display{margin:16px 0;padding:16px;background:#f2f6ef;border-radius:10px;line-height:1.6}.song-display small{display:block;color:var(--muted);margin-top:8px}.radio-deck audio{width:100%;margin:8px 0 18px}.deck-actions{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:15px}.deck-actions label{font-size:11px}.deck-actions select{margin-top:6px}.radio-deck>small,.radio-help{font-size:11px;color:var(--muted);line-height:1.7}.recording audio{width:100%}@media(max-width:700px){.deck-heading{align-items:start;flex-direction:column}}
+
+/* Motorola: the screen stays private until a paired browser starts it. */
+#phone-auth{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-top:18px}
+#phone-auth label{max-width:260px}#phone-auth input,#phone-text{display:block;width:100%;padding:12px;border:1px solid #ccd3cc;border-radius:8px;font:inherit}
+.phone-layout{display:grid;grid-template-columns:minmax(220px,380px) minmax(220px,1fr);gap:28px;margin-top:22px;align-items:start}
+.phone-display{min-height:300px;background:#edf0eb;border:1px solid #cdd6cc;border-radius:22px;padding:10px;display:flex;align-items:center;justify-content:center}
+.phone-display img{width:100%;height:auto;border-radius:14px;touch-action:none;user-select:none}.phone-display img[hidden]{display:none}
+.phone-keypad{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:24px}.phone-controls form{display:grid;gap:12px}.phone-controls small{color:var(--muted)}
+@media(max-width:700px){.phone-layout{grid-template-columns:1fr}.phone-display{max-width:380px;margin:auto;width:100%}}

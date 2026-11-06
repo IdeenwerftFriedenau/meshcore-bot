@@ -98,3 +98,53 @@ nicht mehr benötigt wird. Der primäre Anbieter bleibt erhalten. Bei einem
 Auslieferungsfehler auf die gesicherte Veröffentlichung und Konfiguration
 zurückwechseln; die laufende Gesprächsdatenbank nicht durch eine alte Sicherung
 ersetzen. Kein zusätzlicher MeshCore-Funkdienst wird gestartet.
+
+## Motorola im Dashboard fernbedienen
+
+Unter **Motorola** stehen ein manuell einschaltbares Livebild, Tippen/Wischen,
+Home, Zurück, offene Apps, Display und Lautstärke sowie Texteingabe bereit.
+Das ist eine Bildschirm-Fernbedienung, kein Audio- oder Kamerastream. Geschützte
+Android-Inhalte können schwarz bleiben. Entsperren weiterhin am Handy; keine
+Geräte-PIN im Dashboard speichern. Texte werden nicht automatisch abgesendet.
+ADB-Texteingabe unterstützt hier druckbares ASCII; Umlaute über die sichtbare
+Android-Tastatur eingeben.
+
+Die Fernbedienung akzeptiert nur Tailscale- oder Loopback-Verbindungen. Im
+normalen LAN bleibt die übrige Pi Console verfügbar. Bei Internet-Ausfall kann
+man im erreichbaren lokalen Netz einen SSH-Tunnel verwenden:
+
+```sh
+ssh -N -L 127.0.0.1:18091:127.0.0.1:8091 ideenwerft-pi
+```
+
+Danach `http://127.0.0.1:18091/#phone` öffnen. Tailscale benötigt eine bestehende
+Verbindung zwischen den Geräten; getrennte Netze werden ohne Übertragungsweg
+nicht verbunden.
+
+**Code am Handy anzeigen** erzeugt eine Android-Benachrichtigung mit achtstelligem
+Code. Diesen innerhalb von zwei Minuten im eigenen Dashboard eingeben. Maximal
+fünf Fehlversuche, höchstens fünf Codeanforderungen pro Stunde, eine pro Minute.
+Die Browserfreigabe gilt sieben Tage und lässt sich mit **Browser abmelden**
+widerrufen. Ein Gerätewechsel macht alte Freigaben ungültig. Bei verlorenem
+Browserzugang können alle Freigaben durch Entfernen der privaten
+`/var/lib/meshcore-gateway/phone-remote/sessions.json` widerrufen werden.
+
+Cookies sind HttpOnly/SameSite=Strict; Bildschirm und Aktionen benötigen außerdem
+einen Sitzungsschlüssel gegen fremde Webseiten. HTTP bleibt ausschließlich
+innerhalb des verschlüsselten Tailscale-/SSH-Transportwegs. Keine Portfreigabe
+ins Internet einrichten. Livebilder bleiben im Arbeitsspeicher, werden beim
+Seitenwechsel/Verbergen gestoppt und serverseitig nur bis zu einer Sekunde als aktuelles Bild wiederverwendet.
+Es gibt keine Bildschirmaufzeichnung oder Protokollierung der eingegebenen Texte.
+
+Der bestehende USB-Wächter schreibt ein privates `device.json` neben seinen
+Status (Verzeichnis 0700, Datei 0600). Der Dashboard-Benutzer muss derselbe
+Dienstbenutzer sein. Der Dashboard-Helfer verwendet ausschließlich den bestehenden
+ADB-Server auf Loopback-Port 18137 und startet keinen eigenen Daemon. Freigaben
+liegen mit Modus 0600 im privaten Dashboard-Zustandsverzeichnis; nur Hashes werden
+gespeichert. Geräteprofil, Sitzung, Freigabecode und Bildschirmdaten gehören
+niemals ins Repository oder öffentliche Status-API.
+
+Bei Auslieferung `phone_remote.py` neben `local_dashboard.py` installieren,
+`android_phone_ai.py` im veröffentlichten Quellbaum aktualisieren und nur
+`meshcore-phone-ai` sowie `ideenwerft-local-dashboard` neu starten. DAB-Empfang,
+Nachrichtenplanung und MeshCore-USB-Besitz bleiben davon unabhängig.

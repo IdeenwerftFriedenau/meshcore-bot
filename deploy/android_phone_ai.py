@@ -125,6 +125,13 @@ class Phone:
 
 def main():
     serial, key = credentials(os.environ)
+    # Private device profile shared only with the dashboard service user.
+    profile = STATE.with_name("device.json")
+    profile.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=".device-", dir=profile.parent)
+    with os.fdopen(fd, "w") as stream:
+        json.dump({"serial": serial}, stream)
+    os.replace(temporary, profile)
     phone = Phone(serial, key)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
