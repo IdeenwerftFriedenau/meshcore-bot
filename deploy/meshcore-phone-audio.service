@@ -1,0 +1,24 @@
+[Unit]
+Description=Private Motorola call audio over Bluetooth and WebRTC
+After=network.target bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+User=marc
+Group=marc
+SupplementaryGroups=audio bluetooth
+EnvironmentFile=/etc/meshcore-ai-bot/phone-audio.env
+ExecStart=/opt/meshcore-ai-bot/phone-audio/current/bin/python /opt/meshcore-ai-bot/source/deploy/phone_audio.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_BLUETOOTH
+MemoryMax=220M
+
+[Install]
+WantedBy=multi-user.target
