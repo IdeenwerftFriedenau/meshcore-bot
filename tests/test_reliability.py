@@ -355,6 +355,19 @@ async def test_local_places_are_live_limited_and_attributed():
         store.close()
 
 
+async def test_berlin_activity_questions_are_not_weather_or_maps_queries():
+    store = Store(":memory:")
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: pytest.fail(f"unexpected request: {request.url}"))
+        ) as client:
+            answer = await Assistant(Config(), store, client).answer("Was kann ich gratis in Berlin unternehmen?")
+        assert "Tempelhofer Feld" in answer.text
+        assert "Google Maps" not in answer.text
+    finally:
+        store.close()
+
+
 def test_schema_one_upgrade_preserves_existing_data_and_history(tmp_path):
     path = tmp_path / "old.db"
     store = Store(path)
