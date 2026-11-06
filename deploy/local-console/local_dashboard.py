@@ -50,7 +50,8 @@ except ModuleNotFoundError:
     from dab_scan import INVENTORY, SCAN_STATE, read_json, scan_status, write_json
 
 sys.path.insert(0, str(Path(__file__).parent))
-from phone_remote import COOKIE, PhoneRemote, trusted_address  # noqa: E402
+from phone_audio_client import PhoneAudioClient
+from phone_remote import COOKIE, PhoneRemote, digest, trusted_address  # noqa: E402
 from radio_features import RadioFeatures  # noqa: E402
 
 HOST = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
@@ -526,6 +527,7 @@ RADIO_FEATURES = RadioFeatures(OUTBOX.parent / "radio-recordings", subscribe_rad
 
 
 PHONE_REMOTE = PhoneRemote(OUTBOX.parent / "phone-remote")
+PHONE_AUDIO = PhoneAudioClient(OUTBOX.parent / "phone-remote")
 
 
 ASSETS = Path(os.environ.get("DASHBOARD_ASSETS", str(Path(__file__).with_name("local-console"))))
@@ -541,7 +543,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
@@ -602,7 +604,10 @@ class Handler(BaseHTTPRequestHandler):
             cookie = self.headers.get("Cookie", "")
             headers = None
             if not post:
-                if self.path == "/api/phone/session":
+                if self.path == "/api/phone/audio/status":
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    result = PHONE_AUDIO.request("status", digest(PHONE_REMOTE.token(cookie)))
+                elif self.path == "/api/phone/session":
                     result = PHONE_REMOTE.session(cookie)
                     result["trusted"] = True
                 elif self.path == "/api/phone/frame":
@@ -617,12 +622,15 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     raise ValueError("JSON erforderlich")
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 2 <= size <= 2048:
+                if not 2 <= size <= (64000 if self.path == "/api/phone/audio/offer" else 2048):
                     raise ValueError("Ungültige Anfrage")
                 data = json.loads(self.rfile.read(size))
                 if not isinstance(data, dict):
                     raise ValueError("JSON-Objekt erforderlich")
-                if self.path == "/api/phone/pair":
+                if self.path in ("/api/phone/audio/offer", "/api/phone/audio/heartbeat", "/api/phone/audio/stop"):
+                    PHONE_REMOTE.require(cookie, self.headers.get("X-Phone-CSRF"))
+                    result = PHONE_AUDIO.request(self.path.rsplit("/", 1)[1], digest(PHONE_REMOTE.token(cookie)), data)
+                elif self.path == "/api/phone/pair":
                     result = PHONE_REMOTE.pair()
                 elif self.path == "/api/phone/authorize":
                     token = PHONE_REMOTE.authorize(data.get("code"))
@@ -671,7 +679,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, EMERGENCY.encode())
         if self.path in ("/", "/index.html"):
             return self.reply(200, (ASSETS / "index.html").read_bytes())
-        if self.path in ("/console.css", "/console.js"):
+        if self.path in ("/console.css", "/console.js", "/phone-audio.js"):
             content_type = (
                 "text/css; charset=utf-8" if self.path.endswith(".css") else "text/javascript; charset=utf-8"
             )
