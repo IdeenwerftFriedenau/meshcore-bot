@@ -50,6 +50,15 @@ def test_missing_asa_is_not_reported_as_present(console):
     assert result["signal_fresh"] and not result["asa_data_present"]
 
 
+def test_phone_status_never_exposes_key_or_device_identifier(console, tmp_path):
+    console.PHONE_STATE = tmp_path / "phone.json"
+    console.PHONE_STATE.write_text(json.dumps({
+        "state": "ready", "model": "local model", "checked_at": 100,
+        "api_key": "test-private", "serial": "private-device",
+    }))
+    assert console.phone_state() == {"state": "ready", "model": "local model", "checked_at": 100}
+
+
 def test_channel_filter_reads_older_messages_beyond_global_latest_limit(console):
     now = time.time()
     with sqlite3.connect(console.INBOX) as db:

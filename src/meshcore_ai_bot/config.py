@@ -56,10 +56,16 @@ class AI:
     requests_per_minute: int = 6
     requests_per_day: int = 250
     max_tokens: int = 600
+    offline_fallback_url: str = ""
+    offline_fallback_model: str = "motorola-local"
 
     @property
     def api_key(self) -> str:
         return getattr(self, "_api_key", os.environ.get(self.api_key_env, ""))
+
+    @property
+    def phone_api_key(self) -> str:
+        return getattr(self, "_phone_api_key", os.environ.get("MESHCORE_PHONE_API_KEY", ""))
 
 
 @dataclass
@@ -223,6 +229,10 @@ class Config:
             if type(getattr(self.radio, name)) is not int:
                 raise ValueError(f"{name} must be an integer")
         validate_url(self.ai.base_url, self.ai.allow_local_http)
+        if self.ai.offline_fallback_url:
+            validate_loopback_url(self.ai.offline_fallback_url)
+            if not self.ai.offline_fallback_model.strip():
+                raise ValueError("Offline fallback requires a model")
         if not isinstance(self.ai.completion_path, str) or (
             self.ai.completion_path
             and (
@@ -299,6 +309,16 @@ class Config:
         for url in self.broadcasts.rss_feeds:
             validate_url(url)
         return self
+
+
+def validate_loopback_url(value: str) -> None:
+    validate_url(value, True)
+    try:
+        local = ipaddress.ip_address(urlsplit(value).hostname or "").is_loopback
+    except ValueError:
+        local = False
+    if not local:
+        raise ValueError("Offline fallback must use a numeric loopback address")
 
 
 def validate_url(value: str, allow_local_http: bool = False) -> None:
@@ -383,6 +403,7 @@ def bind_secrets(config, path):
     """Replace file-backed secrets without mutating process-wide environment state."""
     env = {**os.environ, **dotenv_values(Path(path).parent / ".env")}
     config.ai._api_key = env.get(config.ai.api_key_env) or ""
+    config.ai._phone_api_key = env.get("MESHCORE_PHONE_API_KEY") or ""
     config.places._api_key = env.get(config.places.api_key_env) or ""
     config._dashboard_token = env.get(config.dashboard.token_env) or ""
     for channel in config.channels:

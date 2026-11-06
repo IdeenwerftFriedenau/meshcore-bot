@@ -39,6 +39,8 @@ EDITABLE = {
         "requests_per_minute",
         "requests_per_day",
         "max_tokens",
+        "offline_fallback_url",
+        "offline_fallback_model",
     },
     "weather": {"enabled", "location", "latitude", "longitude"},
     "storage": {

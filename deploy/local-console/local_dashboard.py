@@ -61,6 +61,20 @@ BERLIN = ZoneInfo("Europe/Berlin")
 SERVICES = ("meshcore-gateway.service", "ideenwerft-dab-monitor.service", "ideenwerft-dab-news.service",
             "ideenwerft-rbb-news.timer")
 CHANNELS = ("#ideenwerft", "#test", "#mc-treffen", "#warnings", "#news", "#fragdenbot", "#bot")
+PHONE_STATE = Path("/var/lib/meshcore-ai-bot/phone/status.json")
+
+
+def phone_state():
+    data = read_json(PHONE_STATE, {})
+    if not isinstance(data, dict) or not data:
+        return {}
+    return {
+        "state": data.get("state") if data.get("state") in {
+            "ready", "loading", "disconnected", "files_missing", "error", "stopped"
+        } else "unknown",
+        "model": str(data.get("model", ""))[:60],
+        "checked_at": data.get("checked_at") if type(data.get("checked_at")) in (int, float) else 0,
+    }
 
 
 def outbox_db():
@@ -342,6 +356,7 @@ def snapshot():
             "journaline": journaline.get("objects", [])[:8] if isinstance(journaline, dict) else [],
         },
         "radio": {**RADIO_HUB.status(), "jobs": RADIO_FEATURES.list()},
+        "phone_ai": phone_state(),
         "recordings": recordings(),
         "inbox": inbox_state(),
         "outbox": local_outbox(),
