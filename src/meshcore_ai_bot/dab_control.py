@@ -5,7 +5,9 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 CONTROL_PATH = Path(os.environ.get("MESHCORE_DAB_CONTROL", "/var/lib/meshcore-gateway/dab-control.json"))
 PRESETS = {
@@ -33,7 +35,12 @@ def load_settings(path=CONTROL_PATH):
         raise ValueError("Invalid local DAB settings")
     if data.get("channel") not in PRESETS or type(data.get("forward_asa")) is not bool:
         raise ValueError("Invalid DAB channel or ASA setting")
-    return {k: data[k] for k in ("version", "channel", "forward_asa")}
+    if type(data.get("rbb_news_enabled", False)) is not bool:
+        raise ValueError("Invalid RBB news setting")
+    result = {k: data[k] for k in ("version", "channel", "forward_asa")}
+    if "rbb_news_enabled" in data:
+        result["rbb_news_enabled"] = data["rbb_news_enabled"]
+    return result
 
 
 def save_settings(updates, path=CONTROL_PATH):
@@ -46,11 +53,12 @@ def save_settings(updates, path=CONTROL_PATH):
 
 
 def _save_settings(updates, path):
-    if not isinstance(updates, dict) or not updates or set(updates) - {"channel", "forward_asa"}:
+    if not isinstance(updates, dict) or not updates or set(updates) - {"channel", "forward_asa", "rbb_news_enabled"}:
         raise ValueError("Unknown DAB setting")
     data = load_settings(path)
     data.update(updates)
-    if data["channel"] not in PRESETS or type(data["forward_asa"]) is not bool:
+    if (data["channel"] not in PRESETS or type(data["forward_asa"]) is not bool
+            or type(data.get("rbb_news_enabled", False)) is not bool):
         raise ValueError("Invalid DAB channel or ASA setting")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -86,10 +94,26 @@ def news_window(now=None):
 
 
 def effective_channel(settings, now=None):
-    return "5C" if news_window(now) else settings["channel"]
+    if news_window(now):
+        return "5C"
+    if settings.get("rbb_news_enabled", False) and rbb_news_window(now):
+        return "7D"
+    return settings["channel"]
 
 
-def scan_allowed(now=None):
+def rbb_news_window(now=None):
+    """Reserve even Berlin hours HH:29:30–HH:34:50 for rbb 88.8."""
+    now = time.time() if now is None else now
+    local = datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin"))
+    return local.hour % 2 == 0 and 1770 <= now % 3600 < 2090
+
+
+def scan_allowed(now=None, settings=None):
     # Leave ten minutes for the full scan before the next bulletin reservation.
-    second = (time.time() if now is None else now) % 3600
-    return 350 <= second < 2970
+    now = time.time() if now is None else now
+    second = now % 3600
+    settings = load_settings() if settings is None else settings
+    rbb = settings.get("rbb_news_enabled", False)
+    # Ten-minute scan margin before the RBB reservation as well.
+    rbb_block = datetime.fromtimestamp(now, ZoneInfo("Europe/Berlin")).hour % 2 == 0 and 1170 <= second < 2090
+    return 350 <= second < 2970 and not (rbb and rbb_block)
