@@ -30,3 +30,7 @@ body.phone-fullscreen-open{overflow:hidden}
 .phone-expanded .phone-display img{width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain}
 .phone-expanded .phone-controls{padding:0 4px}.phone-expanded .phone-controls h3{margin-top:6px}
 @media(max-width:700px){.phone-view.phone-expanded{padding:12px}.phone-expanded .phone-layout{grid-template-columns:1fr}.phone-viewbar{align-items:start;flex-wrap:wrap}.phone-expanded .phone-viewbar small{display:none}}
+
+.phone-call{padding:16px;border:1px solid #cbd7ce;background:#edf4ed;border-radius:14px;margin-bottom:24px}.phone-call h3{margin:0 0 10px}.phone-call p{font-size:14px}.phone-call-buttons{display:grid;gap:8px;margin:14px 0}.phone-call label{display:grid;gap:6px;margin:12px 0;font-size:13px}.phone-call input[type=range],.phone-call meter,.phone-call select{width:100%;min-width:0}.phone-call small{display:block;line-height:1.5}.phone-call-access:empty{display:none}
+
+@media(max-width:1100px){.phone-layout{grid-template-columns:1fr}.phone-display{max-width:380px;margin:auto;width:100%}.phone-controls{min-width:0}.phone-expanded .phone-controls{min-width:0}}
