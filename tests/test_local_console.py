@@ -453,3 +453,42 @@ def test_phone_http_requires_pairing_csrf_and_same_origin(console, tmp_path, mon
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_phone_audio_proxy_binds_owner_and_accepts_bounded_sdp(console, tmp_path, monkeypatch):
+    import hashlib
+
+    from phone_remote import PhoneRemote
+
+    profile = tmp_path / 'phone-device.json'
+    profile.write_text('{"serial":"test-phone"}')
+    remote = PhoneRemote(tmp_path / 'phone-private', profile)
+    remote.set_access_code('751934')
+    token = remote.authorize('751934')
+    cookie = 'meshcore_phone=' + token
+    csrf = remote.session(cookie)['csrf']
+    calls = []
+    class Audio:
+        def request(self, path, owner, data=None):
+            calls.append((path, owner, data))
+            return {'ready': False} if path == 'status' else {'id': 'test-session', 'sdp': 'answer', 'type': 'answer'}
+    monkeypatch.setattr(console, 'PHONE_REMOTE', remote)
+    monkeypatch.setattr(console, 'PHONE_AUDIO', Audio())
+    server = ThreadingHTTPServer(('127.0.0.1', 0), console.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    try:
+        request = urllib.request.Request(base + '/api/phone/audio/status', headers={'Cookie': cookie})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        assert error.value.code == 403 and calls == []
+        data = {'type': 'offer', 'sdp': 'a' * 3000, 'owner': 'forged-owner'}
+        request = urllib.request.Request(base + '/api/phone/audio/offer', data=json.dumps(data).encode(), headers={
+            'Cookie': cookie, 'X-Phone-CSRF': csrf, 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request) as response:
+            assert json.load(response)['type'] == 'answer'
+        assert calls[0][0] == 'offer' and calls[0][1] == hashlib.sha256(token.encode()).hexdigest()
+        assert calls[0][1] != 'forged-owner'
+    finally:
+        server.shutdown()
+        server.server_close()
