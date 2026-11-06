@@ -38,6 +38,10 @@ max_tokens = 600
 # base_url = "http://127.0.0.1:11434/v1"
 # model = "YOUR_INSTALLED_MODEL"
 # allow_local_http = true
+# Optional USB Android fallback for short bot replies; news uses the primary AI.
+# offline_fallback_url = "http://127.0.0.1:18180/v1"
+# offline_fallback_model = "motorola-local"
+# Keep MESHCORE_PHONE_API_KEY in the private .env, never in this file.
 
 [storage]
 path = "data/bot.sqlite3"

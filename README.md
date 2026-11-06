@@ -70,6 +70,11 @@ Ollama und das Modell separat installieren. Ohne verfügbaren KI-Dienst funktion
 
 ## Betrieb und Grenzen
 
+Optional kann ein freigegebenes USB-Android-Handy bei einer Störung des primären
+KI-Dienstes kurze Bot-Antworten übernehmen. Diese Antworten tragen `Lokale KI:`;
+automatische RBB-/DLF-Nachrichten bleiben beim primären Anbieter.
+[Einrichtung und Grenzen der Handy-KI](docs/android-phone.md).
+
 Einstellungen: [Konfigurationsvorlage](config.example.toml). Details: [Betrieb und Datenschutz](docs/operation.md), [Architektur](docs/architecture.md).
 
 Die SQLite-Datenbank liegt beim Dienst unter `/var/lib/meshcore-ai-bot`. Nachrichten werden standardmäßig nach 24 Stunden bereinigt. Dieses Projekt erzeugt und speichert keine Audiodateien. Nachrichten kommen optional aus ausdrücklich eingetragenen RSS-Feeds.
