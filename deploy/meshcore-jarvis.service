@@ -1,0 +1,28 @@
+[Unit]
+Description=Jarvis: answer approved calls on the Motorola and talk with the AI
+After=network-online.target bluetooth.service meshcore-phone-ai.service
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+User=marc
+Group=marc
+SupplementaryGroups=audio bluetooth
+# Same PipeWire session as the browser call bridge, then Jarvis' private settings.
+EnvironmentFile=/etc/meshcore-ai-bot/phone-audio.env
+EnvironmentFile=/etc/meshcore-ai-bot/jarvis.env
+# Existing Vosk environment of the DAB news; standard library otherwise.
+ExecStart=/home/marc/dab-warnings-meshcore/.venv/bin/python /opt/meshcore-ai-bot/source/deploy/jarvis.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/meshcore-gateway/phone-remote/audio.lock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

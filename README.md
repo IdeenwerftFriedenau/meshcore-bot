@@ -75,6 +75,9 @@ KI-Dienstes kurze Bot-Antworten übernehmen. Diese Antworten tragen `Lokale KI:`
 automatische RBB-/DLF-Nachrichten bleiben beim primären Anbieter.
 [Einrichtung und Grenzen der Handy-KI](docs/android-phone.md).
 
+Optional nimmt **Jarvis** Anrufe von freigegebenen Nummern auf dem Motorola an
+und spricht per Bluetooth-Freisprechprofil mit der KI: [Jarvis am Telefon](docs/jarvis.md).
+
 Einstellungen: [Konfigurationsvorlage](config.example.toml). Details: [Betrieb und Datenschutz](docs/operation.md), [Architektur](docs/architecture.md).
 
 Die SQLite-Datenbank liegt beim Dienst unter `/var/lib/meshcore-ai-bot`. Nachrichten werden standardmäßig nach 24 Stunden bereinigt. Dieses Projekt erzeugt und speichert keine Audiodateien. Nachrichten kommen optional aus ausdrücklich eingetragenen RSS-Feeds.
