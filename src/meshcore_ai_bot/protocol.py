@@ -139,7 +139,15 @@ def followup_command(question: str) -> str | None:
     body = re.sub(r"[?!.,:;]+$", "", " ".join(question.casefold().split())).strip()
     if body in {"mehr", "weiter", "mehr bitte", "bitte mehr", "weiter bitte", "erzähl mehr", "mehr details"}:
         return "more"
-    if re.fullmatch(r"(?:und )?(?:die |deine )?(?:quelle|quellen|link|links)(?: bitte)?|woher weißt du das|woher weisst du das", body):
+    if re.fullmatch(r"(?:und )?(?:die |deine |welche |was ist die |was ist deine )?(?:quelle|quellen|link|links)(?: bitte)?", body):
+        return "source"
+    info = r"(?:info|infos|information|informationen|nachricht|nachrichten|meldung|meldungen|zahl|zahlen|angabe|angaben|daten)"
+    if re.fullmatch(
+        r"(?:und )?woher (?:weißt|weisst|hast|kennst) du (?:das|dies|es|(?:die|diese|deine) " + info + ")"
+        r"|(?:und )?woher (?:stammt|kommt|ist) (?:das|dies|(?:die|diese|deine) " + info + ")"
+        r"|wo (?:steht|stand|hast du) das(?: gelesen| her)?",
+        body,
+    ):
         return "source"
     return None
 

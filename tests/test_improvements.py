@@ -27,7 +27,9 @@ def sent_texts(store):
 @pytest.mark.parametrize(
     ("text", "kind"),
     [("mehr", "more"), ("Weiter!", "more"), ("Quelle?", "source"), ("Quellen bitte", "source"),
-     ("woher weißt du das?", "source"), ("Mehr Wetter in Berlin", None), ("Was ist eine Quelle?", None)],
+     ("woher weißt du das?", "source"), ("Woher hast du die Nachricht?", "source"),
+     ("woher stammt die Info", "source"), ("Wo steht das?", "source"), ("Welche Quelle?", "source"),
+     ("Mehr Wetter in Berlin", None), ("Was ist eine Quelle?", None), ("Woher kommt der Wind?", None), ("Woher kommt die Sonne?", None)],
 )
 def test_followup_commands(text, kind):
     assert followup_command(text) == kind
