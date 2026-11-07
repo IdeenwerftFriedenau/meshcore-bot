@@ -115,6 +115,9 @@ class Assistant:
         wx = wx_request(question, self.config.weather.location)
         if wx:
             return await self._tool_answer("get_weather", wx)
+        weather = weather_question(question, self.config.weather.location) if self.config.weather.enabled else None
+        if weather:
+            return await self._weather_answer(question, weather)
         flight = flight_request(question) if self.config.research.enabled and not self.offline else None
         if flight:
             return await self._tool_answer(*flight)
@@ -165,8 +168,8 @@ class Assistant:
                 + "\n"
                 + identity + "\n" + glossary_context(question) + "\n" + mesh["text"],
             },
-            *history,
-            {"role": "user", "content": question},
+            *history[-6:],
+            {"role": "user", "content": question if not history else "Neue Frage (nur diese beantworten): " + question},
         ]
         sources: list[str] = []
         allowed_urls = urls_in(question)
@@ -271,6 +274,15 @@ class Assistant:
             return Answer(
                 "Mein Antwortdienst ist gerade nicht erreichbar. Versuch es bitte später noch einmal."
             )
+
+    async def _weather_answer(self, question: str, args: dict) -> Answer:
+        """Weather straight from the data with a short verdict; the gateway model mixes up questions."""
+        try:
+            result = await self.tools.run("get_weather", args)
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
+        verdict = weather_verdict(question, result.get("day") or {})
+        return Answer((verdict + " " if verdict else "") + result["text"], result.get("sources", []))
 
     async def _tool_answer(self, name: str, args: dict) -> Answer:
         try:
@@ -532,6 +544,57 @@ def product_release_question(question: str) -> str | None:
     if not re.search(r"\b(?:stand|release|angek[üu]ndigt|neu|infos?|datum|verf[üu]gbar)\b", question, re.I):
         return None
     return "Zum MeshPager habe ich gerade keine verlässliche aktuelle Release-Quelle. Ich möchte dazu nichts erfinden."
+
+
+WEATHER_WORDS = re.compile(
+    r"\b(wetter\w*|sonnig|sonne|sonnenschein|regn\w*|regen\w*|schnee\w*|schneit|gewitter|nebel\w*|neblig"
+    r"|temperatur\w*|grad|warm|kalt|frost\w*|windig|sturm|wolkig|bewölkt|bewoelkt|schirm)\b", re.I)
+WEATHER_SKIP = re.compile(
+    r"warum|wieso|weshalb|was ist|was sind|erklär|erklaer|bedeut|invers|überreichweit|ueberreichweit|ausbreitung"
+    r"|tropo|mütze|mutze|muetze|schal|jacke|handschuh|anziehen|klima|horoskop|sternzeichen|lied|witz|gedicht"
+    r"|wo kann|wo gibt|empfehl|tipp|rezept|koch|ausflug|unternehm", re.I)
+
+
+def weather_question(question: str, default_location: str) -> dict | None:
+    """Plain weather questions -> get_weather arguments, so the answer fits the question asked."""
+    text = " ".join(question.split())
+    if len(text) > 100 or not WEATHER_WORDS.search(text) or WEATHER_SKIP.search(text):
+        return None
+    period = "now"
+    if re.search(r"übermorgen|uebermorgen", text, re.I):
+        period = "day_after_tomorrow"
+    elif re.search(r"\bmorgen\b", text, re.I):
+        period = "tomorrow"
+    elif re.search(r"\bheute\b|tagsüber|heute abend|nachher", text, re.I):
+        period = "today"
+    elif re.search(r"sonnig|sonne|regn|regen|schnee|schneit|schirm", text, re.I):
+        period = "today"
+    place = re.search(r"\b(?:in|für|fuer|bei)\s+([A-ZÄÖÜ][\wäöüß-]{2,30}(?:\s+[A-ZÄÖÜ][\wäöüß-]{2,30})?)", text)
+    location = place.group(1) if place else default_location
+    if place and location.casefold() in {"berlin", "friedenau", "berlin-friedenau"}:
+        location = default_location
+    return {"location": location, "period": period}
+
+
+def weather_verdict(question: str, day: dict) -> str:
+    """Short yes/no lead for 'wird es sonnig/regnet es' from the forecast numbers."""
+    sun, prob, mm = day.get("sun_h"), day.get("rain_prob"), day.get("rain_mm")
+    if re.search(r"sonnig|sonne", question, re.I) and sun is not None:
+        if sun >= 4:
+            return "Ja, ziemlich sonnig."
+        if sun >= 1.5:
+            return "Teils sonnig."
+        return "Eher nicht sonnig."
+    if re.search(r"regn|regen|schirm|nass", question, re.I) and (prob is not None or mm is not None):
+        prob, mm = prob or 0, mm or 0
+        if prob >= 60 or mm >= 1:
+            return "Ja, mit Regen ist zu rechnen."
+        if prob < 25 and mm < 0.3:
+            return "Nein, es bleibt wohl trocken."
+        return "Vielleicht etwas Regen."
+    if re.search(r"schnee|schneit", question, re.I) and day.get("code") is not None:
+        return "Ja, Schnee ist möglich." if day["code"] in (71, 73, 75, 77, 85, 86) else "Nein, kein Schnee in Sicht."
+    return ""
 
 
 PLANES = re.compile(

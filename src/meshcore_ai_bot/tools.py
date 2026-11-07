@@ -381,7 +381,22 @@ class Tools:
                 f"Wind bis {measurement(daily, 'wind_speed_10m_max', ' km/h', i)}, "
                 f"Böen bis {measurement(daily, 'wind_gusts_10m_max', ' km/h', i)}."
             )
-        return {"text": text, "sources": ["https://open-meteo.com/"], "checked_at": now}
+        result = {"text": text, "sources": ["https://open-meteo.com/"], "checked_at": now}
+        if period not in {"now", ""} and "daily" in forecast and "i" in locals():
+            daily = forecast["daily"]
+
+            def pick(key):
+                values = daily.get(key)
+                value = values[i] if isinstance(values, list) and i < len(values) else None
+                return value if type(value) in {int, float} else None
+
+            result["day"] = {
+                "sun_h": None if pick("sunshine_duration") is None else pick("sunshine_duration") / 3600,
+                "rain_prob": pick("precipitation_probability_max"),
+                "rain_mm": pick("precipitation_sum"),
+                "code": pick("weather_code"),
+            }
+        return result
 
     def catalogue(self, query: str = "") -> dict:
         if query.strip().casefold() in {"*", "alle", "all", "repeater", "repeaters"}:

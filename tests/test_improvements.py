@@ -500,3 +500,41 @@ def test_sunshine_hours_in_forecast():
     assert sunshine({"sunshine_duration": [14400.0]}, 0) == ", etwa 4 Std. Sonne"
     assert sunshine({"sunshine_duration": [600.0]}, 0) == ", kaum Sonne"
     assert sunshine({}, 0) == ""
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("wird es morgen sonnig", {"location": "Berlin-Friedenau", "period": "tomorrow"}),
+    ("wie viel Sonne wird es geben", {"location": "Berlin-Friedenau", "period": "today"}),
+    ("Regnet es heute in Hamburg?", {"location": "Hamburg", "period": "today"}),
+    ("Wetter übermorgen", {"location": "Berlin-Friedenau", "period": "day_after_tomorrow"}),
+    ("Wie warm ist es gerade?", {"location": "Berlin-Friedenau", "period": "now"}),
+    ("Was ist eine Inversionswetterlage?", None),
+    ("Brauche ich morgen eine Mütze?", None),
+    ("Was kann man bei Regen in Berlin unternehmen?", None),
+])
+def test_weather_questions_answered_from_data(question, expected):
+    from meshcore_ai_bot.assistant import weather_question
+    assert weather_question(question, "Berlin-Friedenau") == expected
+
+
+def test_weather_verdicts():
+    from meshcore_ai_bot.assistant import weather_verdict
+    assert weather_verdict("wird es morgen sonnig", {"sun_h": 0.2}) == "Eher nicht sonnig."
+    assert weather_verdict("wird es sonnig", {"sun_h": 5}) == "Ja, ziemlich sonnig."
+    assert weather_verdict("regnet es morgen", {"rain_prob": 0, "rain_mm": 0}) == "Nein, es bleibt wohl trocken."
+    assert weather_verdict("brauche ich einen Schirm", {"rain_prob": 80, "rain_mm": 3}) == "Ja, mit Regen ist zu rechnen."
+    assert weather_verdict("wie wird das Wetter", {"sun_h": 5}) == ""
+
+
+async def test_sunny_question_gets_verdict_without_ai(monkeypatch):
+    config = Config()
+    assistant = Assistant(config, Store(":memory:"), None)
+
+    async def fake_run(name, args, **_):
+        assert name == "get_weather" and args["period"] == "tomorrow"
+        return {"text": "Berlin-Friedenau 2026-11-08: 1.1–7.6 °C, Nebel, kaum Sonne.", "sources": ["https://open-meteo.com/"],
+                "day": {"sun_h": 0.1, "rain_prob": 0, "rain_mm": 0, "code": 45}}
+
+    monkeypatch.setattr(assistant.tools, "run", fake_run)
+    answer = await assistant.answer("wird es morgen sonnig")
+    assert answer.text.startswith("Eher nicht sonnig. Berlin-Friedenau 2026-11-08")
