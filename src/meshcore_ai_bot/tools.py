@@ -127,6 +127,33 @@ class Tools:
         self.config, self.store, self.client, self.offline = config, store, client, offline
         self.cache: dict[str, tuple[float, dict]] = {}
         self.research = Research(config, client)
+        self.last_good: dict[str, tuple[float, dict]] = {}
+
+    def last_known(self, kind: str, max_age: float = 12 * 3600) -> dict | None:
+        """Last successful news or weather result, for answers while the Internet is gone."""
+        known = self.last_good.get(kind)
+        if not known or datetime.now(UTC).timestamp() - known[0] > max_age:
+            return None
+        stamp = datetime.fromtimestamp(known[0], ZoneInfo(self.config.station.timezone)).strftime("%H:%M")
+        return {"text": f"Stand {stamp}: " + known[1]["text"], "sources": known[1].get("sources", [])}
+
+    async def _remember(self, kind: str, fetch) -> dict:
+        try:
+            result = await fetch()
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            result = None
+        # News sources report an outage as text without sources instead of raising.
+        if result is None or (kind == "news" and not result.get("sources")):
+            stale = self.last_known(kind)
+            if stale is None:
+                if result is None:
+                    raise httpx.TransportError("Source unreachable")
+                return result
+            stale["text"] = "Gerade keine Verbindung. " + stale["text"]
+            return stale
+        if result.get("sources"):
+            self.last_good[kind] = (datetime.now(UTC).timestamp(), result)
+        return result
 
     async def run(self, name: str, arguments: dict, *, allowed_urls: set[str] | None = None) -> dict:
         allowed = {
@@ -154,7 +181,9 @@ class Tools:
             return await research.cached(name, query, 1800, lambda: research.web_search(query))
         if name == "search_news":
             query = arguments.get("query", "")
-            return await research.cached(name, query, 600, lambda: research.news(query))
+            return await self._remember(
+                "news", lambda: research.cached(name, query, 600, lambda: research.news(query))
+            )
         if name == "search_wikipedia":
             query = arguments["query"]
             return await research.cached(name, query, 3600, lambda: research.wikipedia(query))
@@ -164,7 +193,12 @@ class Tools:
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())
         if name == "get_weather":
-            return await self.weather(**arguments)
+            local = norm(arguments.get("location", "")) in {
+                "", "hier", norm(self.config.weather.location), norm(self.config.station.location)
+            }
+            if not local:
+                return await self.weather(**arguments)
+            return await self._remember("weather", lambda: self.weather(**arguments))
         if name == "get_repeater_status":
             return self.repeater(**arguments)
         if name == "find_local_places":

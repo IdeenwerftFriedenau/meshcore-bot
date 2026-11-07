@@ -101,7 +101,7 @@ async def test_more_without_rest_asks_the_ai_for_details():
 def test_source_names_instead_of_links():
     assert source_name("https://www.tagesschau.de/inland/x-100.html") == "tagesschau"
     assert source_name("https://de.wikipedia.org/wiki/Hans_Baluschek") == "Wikipedia (Hans Baluschek)"
-    assert source_name("https://www.swr.de/swraktuell/liveblog-100.html") == "swr.de"
+    assert source_name("https://www.example.org/liveblog-100.html") == "example.org"
     assert source_names(["https://www.rbb24.de/a.html", "https://www.rbb24.de/b.html",
                          "https://www.tagesschau.de/c.html"]) == "Quellen: rbb24, tagesschau"
 
@@ -313,3 +313,67 @@ async def test_rate_limit_after_research_still_returns_found_facts(monkeypatch):
         answer = await Assistant(config, Store(":memory:"), client).answer("Was gibt es Neues in Berlin?")
     assert answer.text.startswith("Kurz aus meiner Recherche:") and "Meldung" in answer.text
     assert "https://t.de/m" in answer.sources
+
+
+async def test_last_news_survive_an_outage():
+    online = [True]
+
+    def respond(request):
+        if online[0]:
+            if request.url.host == "www.tagesschau.de":
+                return httpx.Response(200, json={"news": [{"title": "Meldung A", "shareURL": "https://www.tagesschau.de/a"}]})
+            return httpx.Response(200, text="<rss></rss>")
+        raise httpx.ConnectError("offline", request=request)
+
+    config = Config()
+    config.research.news_feeds = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(config, Store(":memory:"), client)
+        first = await tools.run("search_news", {"query": ""})
+        online[0] = False
+        second = await tools.run("search_news", {"query": "Berlin"})
+    assert "Meldung A" in first["text"]
+    assert second["text"].startswith("Gerade keine Verbindung. Stand ") and "Meldung A" in second["text"]
+
+
+async def test_gateway_outage_switches_to_phone_without_waiting_again(monkeypatch):
+    config = Config()
+    config.ai.base_url = "https://primary.example/v1"
+    config.ai._api_key = "primary-test-only"
+    config.ai.offline_fallback_url = "http://127.0.0.1:18180/v1"
+    config.ai._phone_api_key = "phone-test-only"
+    config.ai.requests_per_minute = 60
+    primary_calls, phone_calls = [], []
+
+    def unavailable(request):
+        primary_calls.append(1)
+        raise httpx.ConnectError("offline", request=request)
+
+    def phone(request):
+        phone_calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Antwort."}}]})
+
+    original = httpx.AsyncClient
+    async with original(transport=httpx.MockTransport(unavailable)) as primary:
+        monkeypatch.setattr(
+            assistant_module.httpx, "AsyncClient",
+            lambda **kwargs: original(transport=httpx.MockTransport(phone), **kwargs),
+        )
+        assistant = Assistant(config, Store(":memory:"), primary)
+        await assistant.answer("Erzähl mir etwas über Funkwellen bitte")
+        await assistant.answer("Was ist ein Repeater im MeshCore-Netz?")
+    assert len(primary_calls) == 1 and len(phone_calls) == 2
+    assert "MeshCore-Wissen" in phone_calls[1]["messages"][0]["content"]
+
+
+def test_lora_glossary_explains():
+    assert radio_check("Was ist LoRa?") is None
+    from meshcore_ai_bot.radio_terms import short_radio_reply
+
+    answer = short_radio_reply("Was ist LoRa?", name="X", location="Berlin", timezone_name="Europe/Berlin")
+    assert answer["answer"].startswith("LoRa: Long Range")
+
+
+def test_broadcaster_names():
+    assert source_name("https://www.swr.de/swraktuell/x.html") == "SWR"
+    assert source_name("https://www.zdfheute.de/x") == "ZDF"

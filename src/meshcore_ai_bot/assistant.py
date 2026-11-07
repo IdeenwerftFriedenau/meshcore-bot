@@ -73,6 +73,7 @@ class Assistant:
         self.config, self.store, self.client, self.offline = config, store, client, offline
         self.tools = Tools(config, store, client, offline=offline)
         self._answer_cache: dict[str, tuple[float, Answer]] = {}
+        self._offline_until = 0.0
 
     async def answer(self, question: str, history: list[dict] | None = None) -> Answer:
         history = [
@@ -278,6 +279,9 @@ class Assistant:
                 }
             if not self.config.ai.api_key and not self.config.ai.allow_local_http and self._offline_available():
                 return await self._offline_completion(messages)
+            if time.monotonic() < self._offline_until and self._offline_available():
+                # The gateway just failed: answer locally instead of waiting for another timeout.
+                return await self._offline_completion(messages)
             headers = {"Content-Type": "application/json", "X-IW-Task": "meshcore-radio"}
             if self.config.ai.api_key:
                 headers["Authorization"] = "Bearer " + self.config.ai.api_key
@@ -301,6 +305,7 @@ class Assistant:
                 )
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code >= 500 and self._offline_available():
+                    self._offline_until = time.monotonic() + OFFLINE_HOLD_SECONDS
                     return await self._offline_completion(messages)
                 # Do not disclose body/key, bypass rate limits or retry failed authentication.
                 if attempt or exc.response.status_code not in {429, 502, 503, 504}:
@@ -316,6 +321,7 @@ class Assistant:
                 await asyncio.sleep(delay)
             except httpx.TransportError:
                 if self._offline_available():
+                    self._offline_until = time.monotonic() + OFFLINE_HOLD_SECONDS
                     return await self._offline_completion(messages)
                 raise
         raise ValueError("No completion")
@@ -379,22 +385,34 @@ class Assistant:
         material = " | ".join(t for t in texts if t and "nicht" not in t[:40])
         if material:
             return material[:700]
-        research = self.config.research
         question = next(
             (row["content"] for row in reversed(messages) if row.get("role") == "user" and isinstance(row.get("content"), str)),
             "",
         )
+        parts = []
+        mesh = meshcore_context(question)["text"]
+        if mesh:
+            parts.append("MeshCore-Wissen: " + mesh[:600])
+        if NEWS_WISH.search(question) and (news := self.tools.last_known("news")):
+            parts.append("Letzte gespeicherte Nachrichten (nicht aktuell, Uhrzeit nennen): " + news["text"][:500])
+        if WEATHER_WISH.search(question) and (weather := self.tools.last_known("weather")):
+            parts.append("Letztes gespeichertes Wetter (Uhrzeit nennen): " + weather["text"][:300])
+        research = self.config.research
         topic = kiwix_topic(question)
-        if not (research.enabled and research.kiwix_url and topic):
-            return ""
-        try:
-            result = await asyncio.wait_for(self.tools.research.wikipedia_offline(topic), 20)
-        except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError, TimeoutError):
-            return ""
-        return result["text"][:700] if result.get("sources") else ""
+        if research.enabled and research.kiwix_url and topic and not mesh:
+            try:
+                result = await asyncio.wait_for(self.tools.research.wikipedia_offline(topic), 20)
+                if result.get("sources"):
+                    parts.append(result["text"][:700])
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError, TimeoutError):
+                pass
+        return " | ".join(parts)[:1200]
 
 
 RESEARCH_TOOLS = {"web_search", "search_news", "search_wikipedia", "read_webpage"}
+OFFLINE_HOLD_SECONDS = 120
+NEWS_WISH = re.compile(r"nachricht|neues|neuigkeit|schlagzeil|news|meldung|was ist los|passiert", re.I)
+WEATHER_WISH = re.compile(r"wetter|regen|temperatur|grad|warm|kalt|wind|schnee|sonne", re.I)
 
 
 def answer_cache_key(question: str) -> str | None:
