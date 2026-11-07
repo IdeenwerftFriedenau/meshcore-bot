@@ -342,7 +342,7 @@ class Tools:
                     "forecast_days": 7,
                     "wind_speed_unit": "kmh",
                     "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_gusts_10m",
-                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max",
+                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max,sunshine_duration",
                 },
             )
             forecast["_name"] = name
@@ -375,7 +375,7 @@ class Tools:
             i = daily["time"].index(target)
             text = (
                 f"{name} {target}: {daily['temperature_2m_min'][i]:g}–{daily['temperature_2m_max'][i]:g} °C, "
-                f"{day_description(daily, i)}. Niederschlagsrisiko max. "
+                f"{day_description(daily, i)}{sunshine(daily, i)}. Niederschlagsrisiko max. "
                 f"{measurement(daily, 'precipitation_probability_max', ' %', i)}, "
                 f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag. "
                 f"Wind bis {measurement(daily, 'wind_speed_10m_max', ' km/h', i)}, "
@@ -454,6 +454,16 @@ def measurement(data, key, unit, index=None):
     if index is not None:
         value = value[index] if isinstance(value, list) and index < len(value) else None
     return f"{value:g}{unit}" if type(value) in {int, float} else "k. A."
+
+
+def sunshine(daily: dict, i: int) -> str:
+    """Sunshine hours answer 'wird es sonnig?' – the weather code alone cannot."""
+    values = daily.get("sunshine_duration")
+    value = values[i] if isinstance(values, list) and i < len(values) else None
+    if type(value) not in {int, float}:
+        return ""
+    hours = value / 3600
+    return ", kaum Sonne" if hours < 0.5 else f", etwa {round(hours):g} Std. Sonne"
 
 
 def day_description(daily: dict, i: int) -> str:

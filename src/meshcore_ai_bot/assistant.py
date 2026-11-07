@@ -243,7 +243,12 @@ class Assistant:
                 }:
                     # Clothing questions deserve a human-readable interpretation of the facts.
                     clothing = re.search(r"mütze|mutze|muetze|schal|jacke|handschuhe", question, re.I)
-                    if not clothing and not PROPAGATION.search(question):
+                    # Yes/no questions ("wird es sonnig?") need an interpreted answer, not the raw numbers.
+                    yes_no = re.match(
+                        r"\s*(wird|werden|ist|gibt|regnet|schneit|scheint|brauche|brauch|soll|kann|bleibt)\b",
+                        question, re.I,
+                    )
+                    if not clothing and not yes_no and not PROPAGATION.search(question):
                         return Answer(outputs[0]["text"], list(dict.fromkeys(sources))[:5])
             return Answer("Die Antwort konnte nicht abgeschlossen werden. Versuch es bitte später nochmal.")
         except httpx.HTTPStatusError as exc:

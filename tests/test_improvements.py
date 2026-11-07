@@ -493,3 +493,10 @@ def test_flight_tools_offered_with_research():
 def test_flight_questions_go_to_live_data(question, expected):
     from meshcore_ai_bot.assistant import flight_request
     assert flight_request(question) == expected
+
+
+def test_sunshine_hours_in_forecast():
+    from meshcore_ai_bot.tools import sunshine
+    assert sunshine({"sunshine_duration": [14400.0]}, 0) == ", etwa 4 Std. Sonne"
+    assert sunshine({"sunshine_duration": [600.0]}, 0) == ", kaum Sonne"
+    assert sunshine({}, 0) == ""
