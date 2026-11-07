@@ -595,9 +595,14 @@ async def ber_flights(client: httpx.AsyncClient, timezone: str, arrivals: bool =
     return {"text": f"BER {kind} (Live): " + "; ".join(entries) + ".", "sources": [BER_PAGE]}
 
 
-async def planes_overhead(client: httpx.AsyncClient, lat: float, lon: float, place: str) -> dict:
+async def planes_overhead(
+    client: httpx.AsyncClient, lat: float, lon: float, place: str, wide: bool = False
+) -> dict:
     """Aircraft currently in the air near the station (OpenSky), with route if adsbdb knows it."""
-    box = {"lamin": lat - 0.15, "lamax": lat + 0.15, "lomin": lon - 0.25, "lomax": lon + 0.25}
+    if wide:  # all of Berlin instead of the sky over the station
+        lat, lon, place = 52.52, 13.40, "Berlin"
+    dlat, dlon = (0.25, 0.45) if wide else (0.15, 0.25)
+    box = {"lamin": lat - dlat, "lamax": lat + dlat, "lomin": lon - dlon, "lomax": lon + dlon}
     data = await read_json(client, "GET", OPENSKY, params=box, headers=HEADERS, timeout=12, limit=2_000_000)
     states = data.get("states") if isinstance(data, dict) else None
     if not isinstance(data, dict) or "states" not in data:
@@ -613,7 +618,7 @@ async def planes_overhead(client: httpx.AsyncClient, lat: float, lon: float, pla
         planes.append((distance, callsign, row[13] or row[7]))
     planes.sort()
     if not planes:
-        return {"text": f"Gerade kein Flugzeug mit Rufzeichen in der Luft über {place}.",
+        return {"text": f"Gerade kein Flugzeug mit Rufzeichen in der Luft über {place} gemeldet.",
                 "sources": ["https://opensky-network.org/"]}
     entries = []
     for distance, callsign, altitude in planes[:3]:

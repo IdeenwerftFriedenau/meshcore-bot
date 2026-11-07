@@ -479,6 +479,8 @@ def test_flight_tools_offered_with_research():
 @pytest.mark.parametrize("question,expected", [
     ("Welche Flugzeuge fliegen gerade über uns?", ("get_planes_overhead", {})),
     ("was fliegt da gerade", ("get_planes_overhead", {})),
+    ("Welche Flugzeuge sind gerade über Berlin?", ("get_planes_overhead", {"area": "berlin"})),
+    ("Flugzeuge über Berlin", ("get_planes_overhead", {"area": "berlin"})),
     ("welches Flugzeug fliegt gleich am BER ab", ("get_flights", {"direction": "abflug", "query": ""})),
     ("Wann landet LH 1958 am BER?", ("get_flights", {"direction": "ankunft", "query": "LH 1958"})),
     ("Status Flug FR146", ("get_flights", {"direction": "abflug", "query": "FR146"})),

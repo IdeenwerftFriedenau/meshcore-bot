@@ -531,7 +531,7 @@ def product_release_question(question: str) -> str | None:
 
 PLANES = re.compile(
     r"(flugzeug\w*|flieger|maschinen?|jets?|hubschrauber)\b.*\b(über|ueber|am himmel|gerade|jetzt|hier|da oben)"
-    r"|was fliegt (da|hier|gerade|über|ueber)", re.I)
+    r"|was fliegt (da|hier|gerade|über|ueber)|flugzeug\w* (über|ueber) ", re.I)
 FLIGHT_NO = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{1,4}[A-Z]?\b")
 BER = re.compile(r"\bBER\b|flughafen|airport|schönefeld|schoenefeld", re.I)
 ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landung|kommt .*an\b|ankommen", re.I)
@@ -542,7 +542,8 @@ def flight_request(question: str) -> tuple[str, dict] | None:
     """Flight questions go straight to the live data: the model tends to answer an older question instead."""
     text = " ".join(question.split())
     if PLANES.search(text) and not BER.search(text):
-        return "get_planes_overhead", {}
+        wide = re.search(r"\bberlin\b", text, re.I) and not re.search(r"friedenau|\bhier\b|\buns\b", text, re.I)
+        return "get_planes_overhead", {"area": "berlin"} if wide else {}
     number = FLIGHT_NO.search(text)
     if not BER.search(text) and not (number and re.search(r"\bflug", text, re.I)):
         return None

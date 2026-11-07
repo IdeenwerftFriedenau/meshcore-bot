@@ -113,8 +113,8 @@ RESEARCH_SCHEMAS = {
     ),
     "get_planes_overhead": tool(
         "get_planes_overhead",
-        "Welche Flugzeuge gerade in der Nähe der Station in der Luft sind, mit Route und Höhe.",
-        {},
+        "Welche Flugzeuge gerade in der Nähe der Station (oder mit area='berlin' über ganz Berlin) in der Luft sind.",
+        {"area": {"type": "string", "description": "'berlin' für ganz Berlin, leer für die Station"}},
         [],
     ),
     "read_webpage": tool(
@@ -190,7 +190,7 @@ class Tools:
                 allowed["read_webpage"] = {"url"}
             if self.config.research.transit_url:
                 allowed["get_departures"] = {"stop", "trains"}
-            allowed.update(get_flights={"direction", "query"}, get_planes_overhead=set())
+            allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -223,9 +223,10 @@ class Tools:
             )
         if name == "get_planes_overhead":
             weather = self.config.weather
+            wide = arguments.get("area", "").strip().casefold() == "berlin"
             return await research.cached(
-                name, "", 60,
-                lambda: planes_overhead(self.client, weather.latitude, weather.longitude, weather.location),
+                name, str(wide), 60,
+                lambda: planes_overhead(self.client, weather.latitude, weather.longitude, weather.location, wide),
             )
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())
