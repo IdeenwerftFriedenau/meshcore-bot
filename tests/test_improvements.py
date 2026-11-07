@@ -57,7 +57,7 @@ async def test_more_continues_cut_answer_and_source_names_links():
         engine.receive(Incoming("#fragdenbot", "Alice", "Erzähl was über Friedenau", now))
         await engine.process_one()
         first = "".join(sent_texts(store))
-        assert "(weiter mit „mehr“)" in first and "ENDE" not in first
+        assert "(weiter\u00a0mit\u00a0„mehr“)" in first and "ENDE" not in first
 
         engine.receive(Incoming("#fragdenbot", "Alice", "mehr", now + 1))
         await engine.process_one()
@@ -377,3 +377,39 @@ def test_lora_glossary_explains():
 def test_broadcaster_names():
     assert source_name("https://www.swr.de/swraktuell/x.html") == "SWR"
     assert source_name("https://www.zdfheute.de/x") == "ZDF"
+
+
+def test_cut_ends_after_a_sentence_and_hint_stays_in_one_packet():
+    from meshcore_ai_bot.protocol import MORE_ENDING, fit_reply
+    text = "Erster Satz ist da. " * 3 + "Ein sehr langer Satz ohne Ende " * 20
+    shown, parts = fit_reply("@[A] ", text, 110, 3)
+    assert shown.endswith(MORE_ENDING)
+    head = shown[: -len(MORE_ENDING)]
+    assert text[len(head)] == " "  # whole words only
+    text = "Kurzer Satz. " * 30
+    shown, _ = fit_reply("@[A] ", text, 110, 3)
+    assert shown[: -len(MORE_ENDING)].endswith("Satz.")
+    assert any(MORE_ENDING.strip() in part for part in parts)
+
+
+def test_lines_addressed_to_someone_else_are_ignored():
+    import time
+
+    from meshcore_ai_bot.config import Config
+    from meshcore_ai_bot.protocol import Incoming, question_for
+    config = Config()
+    config.station.name = "Ideenwerft Friedenau"
+    channel = config.channel("#fragdenbot")
+    if channel is None or channel.mode == "off":
+        return
+    now = int(time.time())
+    assert question_for(Incoming("#fragdenbot", "X", "@[Matze T1000E] 😸", now), config, now) is None
+    assert question_for(Incoming("#fragdenbot", "X", "@[Ideenwerft Friedenau 2] hallo", now), config, now) is None
+
+
+def test_dry_day_is_not_called_rain():
+    from meshcore_ai_bot.tools import day_description
+    daily = {"weather_code": [61], "precipitation_sum": [0], "precipitation_probability_max": [0]}
+    assert day_description(daily, 0) == "bewölkt, trocken"
+    daily["precipitation_sum"] = [2.5]
+    assert day_description(daily, 0) == "Regen"

@@ -337,7 +337,7 @@ class Tools:
             i = daily["time"].index(target)
             text = (
                 f"{name} {target}: {daily['temperature_2m_min'][i]:g}–{daily['temperature_2m_max'][i]:g} °C, "
-                f"{weather_description(daily['weather_code'][i])}. Niederschlagsrisiko max. "
+                f"{day_description(daily, i)}. Niederschlagsrisiko max. "
                 f"{measurement(daily, 'precipitation_probability_max', ' %', i)}, "
                 f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag. "
                 f"Wind bis {measurement(daily, 'wind_speed_10m_max', ' km/h', i)}, "
@@ -416,6 +416,16 @@ def measurement(data, key, unit, index=None):
     if index is not None:
         value = value[index] if isinstance(value, list) and index < len(value) else None
     return f"{value:g}{unit}" if type(value) in {int, float} else "k. A."
+
+
+def day_description(daily: dict, i: int) -> str:
+    """No 'Regen' when the same forecast says 0 mm and 0 % – that reads as a contradiction on air."""
+    text = weather_description(daily["weather_code"][i])
+    try:
+        dry = not daily["precipitation_sum"][i] and not daily["precipitation_probability_max"][i]
+    except (KeyError, IndexError, TypeError):
+        dry = False
+    return "bewölkt, trocken" if dry and text in {"Nieselregen", "Regen", "Schnee", "Gewitter"} else text
 
 
 def weather_description(code: int) -> str:

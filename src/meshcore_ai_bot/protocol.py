@@ -83,6 +83,12 @@ def question_for(message: Incoming, config: Config, now: float) -> str | None:
     if channel.mode == "off":
         return None
     body = message.text.strip()
+    addressed = re.match(r"\s*@\[([^\]]+)\]", body)
+    if addressed:
+        own = {n.strip().casefold() for n in [config.station.name, *config.station.own_names, *(channel.mentions or [])]}
+        if addressed.group(1).strip().casefold() not in own:
+            # A chat line addressed to another person is not a question for the bot.
+            return None
     if channel.mode == "keyword":
         pattern = r"(?<!\w)" + re.escape(channel.keyword) + r"(?!\w)"
         if not re.search(pattern, body, re.I):
@@ -130,7 +136,7 @@ def allows_send(config: Config, channel_name: str, stream: str) -> bool:
     return enabled.get(stream, False) and stream in channel.broadcasts
 
 
-MORE_ENDING = " … (weiter mit „mehr“)"
+MORE_ENDING = " …\u00a0(weiter\u00a0mit\u00a0„mehr“)"  # no-break spaces keep the hint in one packet
 SHORT_ENDING = " …"
 
 
@@ -172,15 +178,27 @@ def fit_reply(prefix: str, text: str, limit: int, max_parts: int) -> tuple[str, 
     ending = MORE_ENDING
     if len(split_text(prefix + ending, limit)) > max_parts:
         ending = SHORT_ENDING
-    low, high, best = 0, min(420 - len(ending), len(text)), ending
+    low, high, best = 0, min(420 - len(ending), len(text)), 0
     while low <= high:
         middle = (low + high) // 2
-        candidate = text[:middle].rstrip() + ending
-        if len(split_text(prefix + candidate, limit)) <= max_parts:
-            best, low = candidate, middle + 1
+        if len(split_text(prefix + text[:middle].rstrip() + ending, limit)) <= max_parts:
+            best, low = middle, middle + 1
         else:
             high = middle - 1
-    return best, split_text(prefix + best, limit)
+    best = clean_cut(text, best)
+    shown = text[:best].rstrip() + ending
+    return shown, split_text(prefix + shown, limit)
+
+
+def clean_cut(text: str, end: int) -> int:
+    """Cut after a full sentence if that keeps most of the text, else after a whole word."""
+    if end >= len(text):
+        return end
+    sentences = [m.end() for m in re.finditer(r"[.!?…](?=\s)", text[: end + 1])]
+    if sentences and sentences[-1] >= end * 0.5:
+        return sentences[-1]
+    space = text.rfind(" ", 0, end + 1)
+    return space if space > 0 else end
 
 
 def split_text(text: str, limit: int = 110, label: str = "") -> list[str]:
