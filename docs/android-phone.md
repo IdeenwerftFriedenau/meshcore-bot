@@ -276,3 +276,14 @@ Handyansicht angenommen. Android gibt die Rufnummer nicht immer frei; eine
 gewählte Nummer wird deshalb nicht als bestätigte Gegenstelle ausgegeben.
 Alle Telefon-Endpunkte benötigen dieselbe Sitzung, CSRF-Prüfung und den
 privaten Zugang wie die Fernbedienung. Ton/Mikrofon bleiben separat schaltbar.
+
+Bei WirePlumber 0.4 ist die mitgelieferte `phone-audio-wireplumber.lua` auch für
+beide HFP-SCO-Richtungen erforderlich: Sie stellt ausschließlich die
+`headset-audio-gateway`-Quelle und -Senke als `Audio/Source` und `Audio/Sink`
+bereit und unterbindet deren automatische Verbindung mit Standardgeräten.
+Ohne diese Regeln können Telefon-Audioströme am Browser vorbeilaufen oder die
+Pi-Systemausgabe zum Telefon zurückschleifen. Nach einer Änderung die
+WirePlumber-Benutzerinstanz nur ohne laufendes Telefonat neu starten und die
+Browser-Audioverbindung neu aufbauen. Im laufenden Testtelefonat müssen beide
+Richtungen bereit sein und `received_samples` sowie `sent_samples` steigen;
+Browser-Mikrofonpegel allein bestätigt noch keine Gesprächsübertragung.
