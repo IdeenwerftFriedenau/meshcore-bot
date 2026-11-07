@@ -234,3 +234,30 @@ def test_answer_cache_seconds_validated():
     config.research.answer_cache_seconds = 99999
     with pytest.raises(ValueError):
         config.validate()
+
+
+@pytest.mark.parametrize(
+    ("raw", "clean"),
+    [
+        ("Hier die Details:\n\n*   **Politik:** Verhandlungen.\n*   **Wirtschaft:** Mäc Geiz.",
+         "Hier die Details: Politik: Verhandlungen. Wirtschaft: Mäc Geiz."),
+        ("17. Mai ist ein Sonntag.", "17. Mai ist ein Sonntag."),
+        ("## Titel\n1. Eins\n2. Zwei", "Titel Eins Zwei"),
+    ],
+)
+def test_plain_radio_text(raw, clean):
+    from meshcore_ai_bot.engine import plain_radio_text
+
+    assert plain_radio_text(raw) == clean
+
+
+async def test_gateway_rate_limit_gets_clear_message(monkeypatch):
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(assistant_module.asyncio, "sleep", no_wait)
+    config = Config()
+    config.ai._api_key = "synthetic"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(429))) as client:
+        answer = await Assistant(config, Store(":memory:"), client).answer("Erzähl mir etwas über Funkwellen bitte")
+    assert "viele Fragen unterwegs" in answer.text

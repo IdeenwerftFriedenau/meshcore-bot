@@ -151,7 +151,7 @@ class Engine:
                 text, sources = last[1], last[2]
             elif follow == "source":
                 text = (
-                    "Quellen: " + " | ".join(short_url(url) for url in last[2][:3])
+                    "Quellen: " + " | ".join(short_url(url) for url in last[2][:2])
                     if last and last[2]
                     else "Für meine letzte Antwort habe ich keine Online-Quelle benutzt."
                 )
@@ -187,6 +187,7 @@ class Engine:
         # Historical injected punctuation must not become a permanent decoration.
         if not drawing:
             text = re.sub(r"[!?:;]{4,}", ".", text)
+            text = plain_radio_text(text)
         history_text, parts = fit_reply(
             prefix, text, self.config.radio.packet_bytes, self.config.radio.reply_max_packets
         )
@@ -252,3 +253,15 @@ class Engine:
 def short_url(url: str) -> str:
     """Radio packets are small: drop the scheme and a leading www."""
     return re.sub(r"^https://(?:www\.)?", "", url).rstrip("/")
+
+
+def plain_radio_text(text: str) -> str:
+    """Markdown costs bytes on air: drop emphasis, bullets and headings, keep the words."""
+    if "**" not in text and "__" not in text and "\n" not in text.strip():
+        return text
+    text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), text)
+    if "\n" in text.strip():
+        text = re.sub(r"(?m)^\s*(?:[*\-•]|\d{1,2}\.)\s+", "", text)
+        text = re.sub(r"(?m)^#{1,6}\s+", "", text)
+    text = re.sub(r"\s*\n\s*", " ", text.strip())
+    return re.sub(r" {2,}", " ", text)

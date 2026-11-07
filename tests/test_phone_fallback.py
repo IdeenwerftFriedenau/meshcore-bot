@@ -70,6 +70,8 @@ async def test_success_authentication_and_rate_limits_do_not_use_phone(monkeypat
         answer = await Assistant(c, store, client).answer("Schreibe einen kurzen Hinweis zur Funkrunde.")
         if status == 200:
             assert answer.text == "Primary answer"
+        elif status == 429:
+            assert "viele Fragen unterwegs" in answer.text
         else:
             assert "nicht erreichbar" in answer.text
     store.close()
