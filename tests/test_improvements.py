@@ -474,3 +474,20 @@ async def test_planes_overhead_with_route():
 def test_flight_tools_offered_with_research():
     names = {s["function"]["name"] for s in schemas(Config())}
     assert {"get_flights", "get_planes_overhead"} <= names
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Welche Flugzeuge fliegen gerade über uns?", ("get_planes_overhead", {})),
+    ("was fliegt da gerade", ("get_planes_overhead", {})),
+    ("welches Flugzeug fliegt gleich am BER ab", ("get_flights", {"direction": "abflug", "query": ""})),
+    ("Wann landet LH 1958 am BER?", ("get_flights", {"direction": "ankunft", "query": "LH 1958"})),
+    ("Status Flug FR146", ("get_flights", {"direction": "abflug", "query": "FR146"})),
+    ("Flüge vom BER nach London", ("get_flights", {"direction": "abflug", "query": "London"})),
+    ("Ankünfte BER aus Lissabon", ("get_flights", {"direction": "ankunft", "query": "Lissabon"})),
+    ("Wie funktioniert ein Flugzeug?", None),
+    ("Wann fährt der nächste Bus am Knausplatz", None),
+    ("Was ist LoRa?", None),
+])
+def test_flight_questions_go_to_live_data(question, expected):
+    from meshcore_ai_bot.assistant import flight_request
+    assert flight_request(question) == expected

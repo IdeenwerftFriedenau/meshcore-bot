@@ -626,6 +626,9 @@ async def planes_overhead(client: httpx.AsyncClient, lat: float, lon: float, pla
             route = f"{name} {airline}".strip() + (f", {origin} → {target}" if origin and target else "")
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             route = ""
+        rescue = re.fullmatch(r"CHX(\d{1,3})", callsign)
+        if rescue and not route:
+            route = f"Rettungshubschrauber Christoph {rescue.group(1)}"
         height = f", {round(altitude / 100) * 100:g} m hoch" if isinstance(altitude, (int, float)) else ""
         entries.append(f"{route or callsign}{height}, {distance ** 0.5:.0f} km entfernt")
     return {"text": f"Flugzeuge bei {place} (OpenSky): " + "; ".join(entries) + ".",

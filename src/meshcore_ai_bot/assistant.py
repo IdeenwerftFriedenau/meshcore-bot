@@ -115,6 +115,9 @@ class Assistant:
         wx = wx_request(question, self.config.weather.location)
         if wx:
             return await self._tool_answer("get_weather", wx)
+        flight = flight_request(question) if self.config.research.enabled and not self.offline else None
+        if flight:
+            return await self._tool_answer(*flight)
         places = local_place_request(question, self.config.station.location)
         if places:
             return await self._tool_answer("find_local_places", places)
@@ -524,6 +527,35 @@ def product_release_question(question: str) -> str | None:
     if not re.search(r"\b(?:stand|release|angek[üu]ndigt|neu|infos?|datum|verf[üu]gbar)\b", question, re.I):
         return None
     return "Zum MeshPager habe ich gerade keine verlässliche aktuelle Release-Quelle. Ich möchte dazu nichts erfinden."
+
+
+PLANES = re.compile(
+    r"(flugzeug\w*|flieger|maschinen?|jets?|hubschrauber)\b.*\b(über|ueber|am himmel|gerade|jetzt|hier|da oben)"
+    r"|was fliegt (da|hier|gerade|über|ueber)", re.I)
+FLIGHT_NO = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{1,4}[A-Z]?\b")
+BER = re.compile(r"\bBER\b|flughafen|airport|schönefeld|schoenefeld", re.I)
+ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landung|kommt .*an\b|ankommen", re.I)
+DEPART = re.compile(r"abflug|abflüge|abfluege|fliegt .*ab\b|abfliegen|startet|starten|flüge|fluege|flug\b", re.I)
+
+
+def flight_request(question: str) -> tuple[str, dict] | None:
+    """Flight questions go straight to the live data: the model tends to answer an older question instead."""
+    text = " ".join(question.split())
+    if PLANES.search(text) and not BER.search(text):
+        return "get_planes_overhead", {}
+    number = FLIGHT_NO.search(text)
+    if not BER.search(text) and not (number and re.search(r"\bflug", text, re.I)):
+        return None
+    if not (ARRIVE.search(text) or DEPART.search(text) or number):
+        return None
+    direction = "ankunft" if ARRIVE.search(text) else "abflug"
+    query = number.group(0) if number else ""
+    if not query:
+        place = re.search(r"\b(?:nach|aus|von)\s+([A-ZÄÖÜ][\wäöüß-]{2,30})", text)
+        query = place.group(1) if place and place.group(1).upper() != "BER" else ""
+        if place and re.match(r"\b(?:aus|von)\b", place.group(0)):
+            direction = "ankunft"
+    return "get_flights", {"direction": direction, "query": query}
 
 
 def berlin_activity_reply(question: str) -> str | None:
