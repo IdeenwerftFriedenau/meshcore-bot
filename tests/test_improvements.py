@@ -10,7 +10,7 @@ import pytest
 import meshcore_ai_bot.assistant as assistant_module
 from meshcore_ai_bot.assistant import Assistant, answer_cache_key, kiwix_topic
 from meshcore_ai_bot.config import Channel, Config
-from meshcore_ai_bot.engine import Engine, short_url
+from meshcore_ai_bot.engine import Engine, source_name, source_names
 from meshcore_ai_bot.protocol import Incoming, followup_command, radio_check
 from meshcore_ai_bot.store import Store
 from meshcore_ai_bot.tools import Tools, schemas
@@ -68,7 +68,7 @@ async def test_more_continues_cut_answer_and_source_names_links():
 
         engine.receive(Incoming("#fragdenbot", "Alice", "Quelle?", now + 3))
         await engine.process_one()
-        assert "Quellen: rbb24.de/friedenau.html" in "".join(sent_texts(store))
+        assert "Quelle: rbb24" in "".join(sent_texts(store))
         assert asked == ["Erzähl was über Friedenau"]
     finally:
         store.close()
@@ -96,8 +96,12 @@ async def test_more_without_rest_asks_the_ai_for_details():
         store.close()
 
 
-def test_short_url():
-    assert short_url("https://www.tagesschau.de/inland/x-100.html") == "tagesschau.de/inland/x-100.html"
+def test_source_names_instead_of_links():
+    assert source_name("https://www.tagesschau.de/inland/x-100.html") == "tagesschau"
+    assert source_name("https://de.wikipedia.org/wiki/Hans_Baluschek") == "Wikipedia (Hans Baluschek)"
+    assert source_name("https://www.swr.de/swraktuell/liveblog-100.html") == "swr.de"
+    assert source_names(["https://www.rbb24.de/a.html", "https://www.rbb24.de/b.html",
+                         "https://www.tagesschau.de/c.html"]) == "Quellen: rbb24, tagesschau"
 
 
 async def test_departures_from_transport_rest():
@@ -270,13 +274,6 @@ def test_repeater_catalogue_wildcards_list_everything(query):
     tools = Tools(Config(), store, None)
     result = tools.catalogue(query)
     assert result.get("count", 0) >= 1, result
-
-
-def test_long_source_links_are_shortened_without_splitting():
-    url = ("https://www.rbb24.de/panorama/beitrag/2026/11/"
-           "berlin-brandenburg-veranstaltungen-gedenken-neunter-november-mauerfall-reichspogrome.html")
-    short = short_url(url)
-    assert short.startswith("rbb24.de/…berlin-brandenburg") and len(short) <= 70
 
 
 @pytest.mark.parametrize(

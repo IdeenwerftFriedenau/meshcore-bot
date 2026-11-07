@@ -151,7 +151,7 @@ class Engine:
                 text, sources = last[1], last[2]
             elif follow == "source":
                 text = (
-                    "Quellen: " + " | ".join(short_url(url) for url in last[2][:2])
+                    source_names(last[2])
                     if last and last[2]
                     else "Für meine letzte Antwort habe ich keine Online-Quelle benutzt."
                 )
@@ -250,15 +250,33 @@ class Engine:
         return True
 
 
-def short_url(url: str, limit: int = 70) -> str:
-    """Radio packets are small: drop the scheme and www, shorten long paths so a link never splits."""
-    url = re.sub(r"^https?://(?:www\.)?", "", url).rstrip("/")
-    if len(url) <= limit:
-        return url
-    host, _, path = url.partition("/")
-    tail = path.rsplit("/", 1)[-1]
-    room = max(10, limit - len(host) - 3)
-    return host + "/…" + (tail if len(tail) <= room else tail[: room - 1] + "…")
+KNOWN_SOURCES = {
+    "tagesschau.de": "tagesschau",
+    "rbb24.de": "rbb24",
+    "bvg.transport.rest": "BVG/VBB",
+    "open-meteo.com": "Open-Meteo",
+    "openstreetmap.org": "OpenStreetMap",
+}
+
+
+def source_name(url: str) -> str:
+    """Links cannot be clicked on air: name where the facts came from instead."""
+    from urllib.parse import unquote, urlsplit
+
+    parts = urlsplit(url)
+    host = (parts.hostname or "").removeprefix("www.")
+    if host.endswith("wikipedia.org"):
+        title = unquote(parts.path.rsplit("/", 1)[-1]).replace("_", " ").strip()
+        return f"Wikipedia ({title})" if title and len(title) <= 40 else "Wikipedia"
+    for known, name in KNOWN_SOURCES.items():
+        if host == known or host.endswith("." + known):
+            return name
+    return host or "unbekannt"
+
+
+def source_names(urls: list[str]) -> str:
+    names = list(dict.fromkeys(source_name(url) for url in urls))[:3]
+    return ("Quelle: " if len(names) == 1 else "Quellen: ") + ", ".join(names)
 
 
 def plain_radio_text(text: str) -> str:
