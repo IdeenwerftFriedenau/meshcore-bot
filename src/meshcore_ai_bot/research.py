@@ -12,7 +12,7 @@ import re
 import socket
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import quote, urljoin, urlsplit
@@ -126,7 +126,7 @@ class Research:
 
     # Public transport -------------------------------------------------------------------------------
 
-    async def departures(self, stop: str) -> dict:
+    async def departures(self, stop: str, trains: bool = False) -> dict:
         base = self.config.research.transit_url.rstrip("/")
         stop = stop.strip()
         if not base:
@@ -149,7 +149,9 @@ class Research:
             self.client,
             "GET",
             f"{base}/stops/{place['id']}/departures",
-            params={"duration": 30, "results": 8, "remarks": "false"},
+            params={"duration": 90 if trains else 30, "results": 8, "remarks": "false",
+                    **({"bus": "false", "tram": "false", "subway": "false", "suburban": "false", "ferry": "false"}
+                       if trains else {})},
             headers=HEADERS,
             timeout=12,
             limit=1_000_000,
@@ -172,12 +174,15 @@ class Research:
             delay = row.get("delay")
             late = f" (+{round(delay / 60)})" if type(delay) is int and delay >= 60 else ""
             gone = " fällt aus" if row.get("cancelled") else ""
-            entries.append(f"{clock} {line} → {direction}{late}{gone}")
+            track = plain(row.get("platform")) if trains else ""
+            track = f" Gl. {track}" if track else ""
+            entries.append(f"{clock} {line} → {direction}{track}{late}{gone}")
             if len(entries) >= 6:
                 break
         name = plain(place.get("name")) or stop
         if not entries:
-            return {"text": f"{name}: In den nächsten 30 Minuten keine Abfahrten gefunden.", "sources": []}
+            window = "90 Minuten keine Zugabfahrten" if trains else "30 Minuten keine Abfahrten"
+            return {"text": f"{name}: In den nächsten {window} gefunden.", "sources": []}
         return {
             "text": f"Abfahrten {name} (Echtzeit, BVG/VBB): " + "; ".join(entries) + ".",
             "sources": ["https://www.bvg.de/de/verbindungen/echtzeit-abfahrten"],
@@ -512,3 +517,116 @@ def page_text(body: str) -> tuple[str, str]:
     article = " ".join(" ".join(parser.article).split())
     text = article if len(article) > 300 else " ".join(" ".join(parser.parts).split())
     return short(parser.title, 120), text
+
+
+# Flights ---------------------------------------------------------------------------------------------
+
+BER_FLIGHTS = "https://ber.berlin-airport.de/de/fliegen/abfluege-ankuenfte/api.flights.json"
+BER_PAGE = "https://ber.berlin-airport.de/de/fliegen/abfluege-ankuenfte.html"
+OPENSKY = "https://opensky-network.org/api/states/all"
+ADSBDB = "https://api.adsbdb.com/v0/callsign/"
+
+
+def flight_number(value: str) -> str:
+    """'fr1144', 'FR 1144' -> 'FR1144' for the BER search; other text stays as typed."""
+    compact = re.sub(r"\s+", "", value).upper()
+    return compact if re.fullmatch(r"[A-Z0-9]{2}\d{1,4}[A-Z]?", compact) else value.strip()
+
+
+async def ber_flights(client: httpx.AsyncClient, timezone: str, arrivals: bool = False, query: str = "") -> dict:
+    """Next departures/arrivals at BER from the airport website's own data feed."""
+    tz = ZoneInfo(timezone)
+    now = datetime.now(tz)
+    search = flight_number(query)[:40]
+    start = now.replace(hour=0, minute=0, second=0) if search else now.replace(second=0)
+    tomorrow = (now + timedelta(days=1)).date().isoformat()
+    data = await read_json(
+        client,
+        "GET",
+        BER_FLIGHTS,
+        params={
+            "arrivalDeparture": "A" if arrivals else "D",
+            "dateFrom": start.strftime("%Y-%m-%dT%H:%M:%S"),
+            "dateUntil": tomorrow,
+            "search": search,
+            "lang": "de",
+            "page": 1,
+            "terminal": "",
+        },
+        headers=HEADERS,
+        timeout=12,
+        limit=2_000_000,
+    )
+    items = ((data or {}).get("data") or {}).get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise httpx.TransportError("Unexpected BER data")
+    kind = "Ankünfte" if arrivals else "Abflüge"
+    entries = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            planned = datetime.fromisoformat(str(item.get("scheduled_time"))).astimezone(tz)
+        except ValueError:
+            continue
+        expected = item.get("arr_estimated_time") if arrivals else item.get("dep_estimated_time")
+        late = ""
+        try:
+            if expected:
+                diff = round((datetime.fromisoformat(str(expected)) - planned).total_seconds() / 60)
+                late = f" (+{diff})" if diff >= 5 else ""
+        except ValueError:
+            pass
+        place = plain(item.get("dep_airport_name") if arrivals else item.get("arr_airport_name"))
+        number = " ".join(plain(item.get("flight_number")).split())
+        status = plain(item.get("flight_status_label"))
+        gate = plain(item.get("gate")) if not arrivals and search else ""
+        bits = [f"{planned:%H:%M} {number} {'aus' if arrivals else '→'} {place}{late}"]
+        if status and status.casefold() not in {"geplant", "planmäßig"}:
+            bits.append(status)
+        if gate:
+            bits.append(f"Gate {gate}")
+        entries.append(", ".join(bits))
+        if len(entries) >= (3 if search else 5):
+            break
+    if not entries:
+        hint = f" zu „{query.strip()}“" if search else ""
+        return {"text": f"BER: keine {kind}{hint} bis morgen gefunden.", "sources": [BER_PAGE]}
+    return {"text": f"BER {kind} (Live): " + "; ".join(entries) + ".", "sources": [BER_PAGE]}
+
+
+async def planes_overhead(client: httpx.AsyncClient, lat: float, lon: float, place: str) -> dict:
+    """Aircraft currently in the air near the station (OpenSky), with route if adsbdb knows it."""
+    box = {"lamin": lat - 0.15, "lamax": lat + 0.15, "lomin": lon - 0.25, "lomax": lon + 0.25}
+    data = await read_json(client, "GET", OPENSKY, params=box, headers=HEADERS, timeout=12, limit=2_000_000)
+    states = data.get("states") if isinstance(data, dict) else None
+    planes = []
+    for row in states or []:
+        if not isinstance(row, list) or len(row) < 14 or row[8] or row[5] is None or row[6] is None:
+            continue
+        callsign = plain(row[1]).replace(" ", "")
+        if not callsign:
+            continue
+        distance = ((row[6] - lat) * 111) ** 2 + ((row[5] - lon) * 68) ** 2
+        planes.append((distance, callsign, row[13] or row[7]))
+    planes.sort()
+    if not planes:
+        return {"text": f"Gerade kein Flugzeug mit Rufzeichen in der Luft über {place}.",
+                "sources": ["https://opensky-network.org/"]}
+    entries = []
+    for distance, callsign, altitude in planes[:3]:
+        route = ""
+        try:
+            info = await read_json(client, "GET", ADSBDB + quote(callsign), headers=HEADERS, timeout=8, limit=200_000)
+            flight = ((info or {}).get("response") or {}).get("flightroute") or {}
+            origin = plain((flight.get("origin") or {}).get("municipality"))
+            target = plain((flight.get("destination") or {}).get("municipality"))
+            airline = plain((flight.get("airline") or {}).get("name"))
+            name = plain(flight.get("callsign_iata")) or callsign
+            route = f"{name} {airline}".strip() + (f", {origin} → {target}" if origin and target else "")
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            route = ""
+        height = f", {round(altitude / 100) * 100:g} m hoch" if isinstance(altitude, (int, float)) else ""
+        entries.append(f"{route or callsign}{height}, {distance ** 0.5:.0f} km entfernt")
+    return {"text": f"Flugzeuge bei {place} (OpenSky): " + "; ".join(entries) + ".",
+            "sources": ["https://opensky-network.org/", "https://www.adsbdb.com/"]}

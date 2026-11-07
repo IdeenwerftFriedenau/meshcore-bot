@@ -413,3 +413,64 @@ def test_dry_day_is_not_called_rain():
     assert day_description(daily, 0) == "bewölkt, trocken"
     daily["precipitation_sum"] = [2.5]
     assert day_description(daily, 0) == "Regen"
+
+
+async def test_trains_only_with_platform():
+    def respond(request):
+        if request.url.path == "/locations":
+            return httpx.Response(200, json=[{"type": "stop", "id": "900003201", "name": "S+U Berlin Hauptbahnhof"}])
+        assert request.url.params["bus"] == "false" and request.url.params["duration"] == "90"
+        return httpx.Response(200, json={"departures": [
+            {"when": "2026-11-07T16:48:00+01:00", "delay": 300, "direction": "Karlsruhe, Hauptbahnhof",
+             "line": {"name": "ICE 379"}, "platform": "3"},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run(
+            "get_departures", {"stop": "Berlin Hbf", "trains": "ja"}
+        )
+    assert "16:48 ICE 379 → Karlsruhe, Hauptbahnhof Gl. 3 (+5)" in result["text"]
+
+
+async def test_ber_departures_and_flight_number():
+    seen = []
+
+    def respond(request):
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"data": {"items": [{
+            "flight_number": "FR  146", "scheduled_time": "2026-11-07T16:40:00+01:00",
+            "dep_estimated_time": "2026-11-07T17:00:00+01:00", "arr_airport_name": "London Stansted",
+            "dep_airport_name": "Berlin", "flight_status_label": "Ende Einstieg", "gate": "B40",
+        }]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(Config(), Store(":memory:"), client)
+        result = await tools.run("get_flights", {"direction": "abflug", "query": "fr 146"})
+        arrivals = await tools.run("get_flights", {"direction": "ankunft"})
+    assert seen[0]["search"] == "FR146" and seen[0]["arrivalDeparture"] == "D"
+    assert result["text"] == "BER Abflüge (Live): 16:40 FR 146 → London Stansted (+20), Ende Einstieg, Gate B40."
+    assert seen[1]["arrivalDeparture"] == "A" and arrivals["text"].startswith("BER Ankünfte (Live): 16:40 FR 146 aus Berlin")
+
+
+async def test_planes_overhead_with_route():
+    def respond(request):
+        if "opensky" in request.url.host:
+            return httpx.Response(200, json={"states": [
+                ["3c6743", "DLH6LJ  ", "Germany", 0, 0, 13.35, 52.48, 3900.0, False, 200, 90, 0, None, 4012.0],
+                ["abc", "", "X", 0, 0, 13.3, 52.4, 100.0, False, 0, 0, 0, None, None],
+                ["def", "GRND1", "X", 0, 0, 13.3, 52.4, None, True, 0, 0, 0, None, None],
+            ]})
+        return httpx.Response(200, json={"response": {"flightroute": {
+            "callsign_iata": "LH6LJ", "airline": {"name": "Lufthansa"},
+            "origin": {"municipality": "London"}, "destination": {"municipality": "Frankfurt am Main"}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run("get_planes_overhead", {})
+    assert result["text"].startswith("Flugzeuge bei ")
+    assert "LH6LJ Lufthansa, London → Frankfurt am Main, 4000 m hoch, 2 km entfernt" in result["text"]
+    assert "GRND1" not in result["text"]
+
+
+def test_flight_tools_offered_with_research():
+    names = {s["function"]["name"] for s in schemas(Config())}
+    assert {"get_flights", "get_planes_overhead"} <= names

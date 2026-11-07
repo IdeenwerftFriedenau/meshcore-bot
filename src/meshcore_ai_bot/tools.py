@@ -12,7 +12,7 @@ import httpx
 
 from .config import Config
 from .http import read_json
-from .research import Research
+from .research import Research, ber_flights, planes_overhead
 from .store import Store
 
 
@@ -94,9 +94,28 @@ RESEARCH_SCHEMAS = {
     ),
     "get_departures": tool(
         "get_departures",
-        "Nächste Abfahrten (Echtzeit) von Bus, Tram, U- und S-Bahn an einer Haltestelle in Berlin/Brandenburg.",
-        {"stop": {"type": "string", "description": "Haltestellenname, z.B. 'S Friedenau' oder 'Breslauer Platz'"}},
+        "Nächste Abfahrten (Echtzeit) an einer Haltestelle oder einem Bahnhof in Berlin/Brandenburg, auch DB-Züge "
+        "(ICE, IC, RE, RB). Für Fragen nach Zügen trains='ja' setzen, dann nur Bahn mit Gleis.",
+        {
+            "stop": {"type": "string", "description": "Haltestellenname, z.B. 'S Friedenau' oder 'Berlin Hbf'"},
+            "trains": {"type": "string", "description": "'ja' für nur Züge (Fern- und Regionalverkehr)"},
+        },
         ["stop"],
+    ),
+    "get_flights": tool(
+        "get_flights",
+        "Live-Abflüge oder -Ankünfte am Flughafen BER, optional gefiltert nach Flugnummer, Ziel oder Airline.",
+        {
+            "direction": {"type": "string", "description": "'abflug' oder 'ankunft'"},
+            "query": {"type": "string", "description": "Flugnummer, Stadt oder Airline, leer für die nächsten Flüge"},
+        },
+        [],
+    ),
+    "get_planes_overhead": tool(
+        "get_planes_overhead",
+        "Welche Flugzeuge gerade in der Nähe der Station in der Luft sind, mit Route und Höhe.",
+        {},
+        [],
     ),
     "read_webpage": tool(
         "read_webpage",
@@ -117,6 +136,7 @@ def schemas(config: Config) -> list[dict]:
         result += [RESEARCH_SCHEMAS["search_news"], RESEARCH_SCHEMAS["search_wikipedia"]]
         if research.transit_url:
             result.append(RESEARCH_SCHEMAS["get_departures"])
+        result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -169,7 +189,8 @@ class Tools:
             if self.config.research.read_pages:
                 allowed["read_webpage"] = {"url"}
             if self.config.research.transit_url:
-                allowed["get_departures"] = {"stop"}
+                allowed["get_departures"] = {"stop", "trains"}
+            allowed.update(get_flights={"direction", "query"}, get_planes_overhead=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -188,8 +209,24 @@ class Tools:
             query = arguments["query"]
             return await research.cached(name, query, 3600, lambda: research.wikipedia(query))
         if name == "get_departures":
-            stop = arguments["stop"]
-            return await research.cached(name, stop, 30, lambda: research.departures(stop))
+            stop = arguments.get("stop", "")
+            trains = arguments.get("trains", "").strip().casefold() in {"ja", "true", "1", "yes"}
+            return await research.cached(
+                name, f"{stop}|{trains}", 30, lambda: research.departures(stop, trains)
+            )
+        if name == "get_flights":
+            arrivals = arguments.get("direction", "").strip().casefold().startswith(("an", "arr"))
+            query = arguments.get("query", "")
+            return await research.cached(
+                name, f"{arrivals}|{query}", 60,
+                lambda: ber_flights(self.client, self.config.station.timezone, arrivals, query),
+            )
+        if name == "get_planes_overhead":
+            weather = self.config.weather
+            return await research.cached(
+                name, "", 60,
+                lambda: planes_overhead(self.client, weather.latitude, weather.longitude, weather.location),
+            )
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())
         if name == "get_weather":
