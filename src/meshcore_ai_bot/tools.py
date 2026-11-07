@@ -12,6 +12,7 @@ import httpx
 
 from .config import Config
 from .http import read_json
+from .research import Research
 from .store import Store
 
 
@@ -70,23 +71,81 @@ SCHEMAS = [
     ),
 ]
 
+RESEARCH_SCHEMAS = {
+    "web_search": tool(
+        "web_search",
+        "Allgemeine Websuche (lokale Metasuche). Für Fakten, Termine, Preise, Produkte, Vereine, Öffnungszeiten "
+        "und alles Aktuelle. Kurze Suchbegriffe auf Deutsch.",
+        {"query": {"type": "string"}},
+        ["query"],
+    ),
+    "search_news": tool(
+        "search_news",
+        "Aktuelle Nachrichten von tagesschau und rbb24 suchen. Leere Suche liefert die Top-Meldungen; "
+        "'Berlin' oder 'Brandenburg' liefert regionale Meldungen.",
+        {"query": {"type": "string"}},
+        [],
+    ),
+    "search_wikipedia": tool(
+        "search_wikipedia",
+        "Wikipedia-Artikel suchen und die Kurzfassung lesen. Für Begriffe, Personen, Orte, Geschichte und Technik.",
+        {"query": {"type": "string"}},
+        ["query"],
+    ),
+    "read_webpage": tool(
+        "read_webpage",
+        "Text einer Webseite lesen, deren HTTPS-Adresse aus einem Suchergebnis oder der Frage stammt.",
+        {"url": {"type": "string"}},
+        ["url"],
+    ),
+}
+
+
+def schemas(config: Config) -> list[dict]:
+    """The tools the model may call with this configuration."""
+    result = list(SCHEMAS)
+    research = config.research
+    if research.enabled:
+        if research.searxng_url:
+            result.append(RESEARCH_SCHEMAS["web_search"])
+        result += [RESEARCH_SCHEMAS["search_news"], RESEARCH_SCHEMAS["search_wikipedia"]]
+        if research.read_pages:
+            result.append(RESEARCH_SCHEMAS["read_webpage"])
+    return result
+
 
 class Tools:
     def __init__(self, config: Config, store: Store, client: httpx.AsyncClient, *, offline: bool = False):
         self.config, self.store, self.client, self.offline = config, store, client, offline
         self.cache: dict[str, tuple[float, dict]] = {}
+        self.research = Research(config, client)
 
-    async def run(self, name: str, arguments: dict) -> dict:
+    async def run(self, name: str, arguments: dict, *, allowed_urls: set[str] | None = None) -> dict:
         allowed = {
             "get_weather": {"location", "period"},
             "get_repeater_status": {"name"},
             "list_repeaters": {"query"},
             "find_local_places": {"query", "location"},
         }
+        if self.config.research.enabled and not self.offline:
+            allowed.update(search_news={"query"}, search_wikipedia={"query"})
+            if self.config.research.searxng_url:
+                allowed["web_search"] = {"query"}
+            if self.config.research.read_pages:
+                allowed["read_webpage"] = {"url"}
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
-        if any(not isinstance(v, str) or len(v) > 160 for v in arguments.values()):
+        limit = 600 if name == "read_webpage" else 160
+        if any(not isinstance(v, str) or len(v) > limit for v in arguments.values()):
             raise ValueError("Invalid tool argument")
+        if name == "web_search":
+            return await self.research.web_search(**arguments)
+        if name == "search_news":
+            return await self.research.news(**arguments)
+        if name == "search_wikipedia":
+            return await self.research.wikipedia(**arguments)
+        if name == "read_webpage":
+            return await self.research.read_page(arguments["url"], allowed_urls or set())
         if name == "get_weather":
             return await self.weather(**arguments)
         if name == "get_repeater_status":

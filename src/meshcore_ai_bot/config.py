@@ -100,6 +100,22 @@ class Places:
 
 
 @dataclass
+class Research:
+    """Free online research. Fetched text is source material, never instructions."""
+
+    enabled: bool = True
+    wikipedia_language: str = "de"
+    news_feeds: list[str] = field(default_factory=lambda: ["https://www.rbb24.de/aktuell/index.xml/feed=rss.xml"])
+    # Optional self-hosted SearXNG on loopback, e.g. "http://127.0.0.1:8888". Empty disables web_search.
+    searxng_url: str = ""
+    # Optional local Kiwix server with a Wikipedia ZIM, e.g. "http://127.0.0.1:8081". Used when offline.
+    kiwix_url: str = ""
+    read_pages: bool = True
+    max_results: int = 5
+    max_rounds: int = 3
+
+
+@dataclass
 class Broadcasts:
     warnings_enabled: bool = False
     dwd_enabled: bool = True
@@ -162,6 +178,7 @@ class Config:
     storage: Storage = field(default_factory=Storage)
     weather: Weather = field(default_factory=Weather)
     places: Places = field(default_factory=Places)
+    research: Research = field(default_factory=Research)
     broadcasts: Broadcasts = field(default_factory=Broadcasts)
     channels: list[Channel] = field(default_factory=lambda: [Channel("#fragdenbot", "all")])
 
@@ -177,6 +194,7 @@ class Config:
             (self.ai, ["allow_local_http"]),
             (self.weather, ["enabled"]),
             (self.places, ["enabled"]),
+            (self.research, ["enabled", "read_pages"]),
             (self.storage, ["memory_enabled"]),
             (
                 self.broadcasts,
@@ -201,6 +219,8 @@ class Config:
             (self.ai.max_tokens, 32, 2048, "max_tokens"),
             (self.ai.timeout_seconds, 1, 180, "timeout_seconds"),
             (self.places.max_results, 1, 3, "places.max_results"),
+            (self.research.max_results, 1, 8, "research.max_results"),
+            (self.research.max_rounds, 1, 4, "research.max_rounds"),
             (self.broadcasts.warning_poll_seconds, 300, 86400, "warning_poll_seconds"),
             (self.broadcasts.news_poll_seconds, 300, 86400, "news_poll_seconds"),
             (self.radio.reply_max_packets, 1, 5, "reply_max_packets"),
@@ -218,6 +238,15 @@ class Config:
                 raise ValueError("packet_bytes, history_turns and max_tokens must be integers")
         if type(self.places.max_results) is not int:
             raise ValueError("places.max_results must be an integer")
+        if type(self.research.max_results) is not int or type(self.research.max_rounds) is not int:
+            raise ValueError("research.max_results and research.max_rounds must be integers")
+        if not re.fullmatch(r"[a-z]{2,3}", self.research.wikipedia_language):
+            raise ValueError("research.wikipedia_language must be a language code like de")
+        for url in self.research.news_feeds:
+            validate_url(url)
+        for local in (self.research.searxng_url, self.research.kiwix_url):
+            if local:
+                validate_loopback_url(local)
         for name in (
             "reply_max_packets",
             "broadcast_max_packets",
@@ -318,7 +347,7 @@ def validate_loopback_url(value: str) -> None:
     except ValueError:
         local = False
     if not local:
-        raise ValueError("Offline fallback must use a numeric loopback address")
+        raise ValueError("Local services must use a numeric loopback address")
 
 
 def validate_url(value: str, allow_local_http: bool = False) -> None:
@@ -364,7 +393,10 @@ def load_config(path: str | Path) -> Config:
     path = Path(path).expanduser().resolve()
     with path.open("rb") as stream:
         raw = tomllib.load(stream)
-    known = {"station", "radio", "ai", "storage", "weather", "places", "broadcasts", "channels", "asa", "dashboard"}
+    known = {
+        "station", "radio", "ai", "storage", "weather", "places", "research",
+        "broadcasts", "channels", "asa", "dashboard",
+    }
     if set(raw) - known:
         raise ValueError("Unknown configuration section")
     config = Config(
@@ -376,6 +408,7 @@ def load_config(path: str | Path) -> Config:
         storage=_section(Storage, raw.get("storage", {})),
         weather=_section(Weather, raw.get("weather", {})),
         places=_section(Places, raw.get("places", {})),
+        research=_section(Research, raw.get("research", {})),
         broadcasts=_section(Broadcasts, raw.get("broadcasts", {})),
         channels=[
             _section(Channel, ch) for ch in raw.get("channels", [{"name": "#fragdenbot", "mode": "all"}])
