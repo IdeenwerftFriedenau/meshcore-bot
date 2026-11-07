@@ -261,3 +261,12 @@ async def test_gateway_rate_limit_gets_clear_message(monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(429))) as client:
         answer = await Assistant(config, Store(":memory:"), client).answer("Erzähl mir etwas über Funkwellen bitte")
     assert "viele Fragen unterwegs" in answer.text
+
+
+@pytest.mark.parametrize("query", ["*", "alle", ""])
+def test_repeater_catalogue_wildcards_list_everything(query):
+    store = Store(":memory:")
+    store.update_repeaters([{"public_key": "ab" * 32, "adv_name": "Friedenau Rep", "type": 2, "last_advert": 1}], 1)
+    tools = Tools(Config(), store, None)
+    result = tools.catalogue(query)
+    assert result.get("count", 0) >= 1, result

@@ -312,6 +312,8 @@ class Tools:
         return {"text": text, "sources": ["https://open-meteo.com/"], "checked_at": now}
 
     def catalogue(self, query: str = "") -> dict:
+        if query.strip().casefold() in {"*", "alle", "all", "repeater", "repeaters"}:
+            query = ""
         rows = [r for r in self.store.repeaters() if not query or norm(query) in norm(r["name"])]
         if not rows:
             return {
