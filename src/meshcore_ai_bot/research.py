@@ -600,6 +600,8 @@ async def planes_overhead(client: httpx.AsyncClient, lat: float, lon: float, pla
     box = {"lamin": lat - 0.15, "lamax": lat + 0.15, "lomin": lon - 0.25, "lomax": lon + 0.25}
     data = await read_json(client, "GET", OPENSKY, params=box, headers=HEADERS, timeout=12, limit=2_000_000)
     states = data.get("states") if isinstance(data, dict) else None
+    if not isinstance(data, dict) or "states" not in data:
+        raise httpx.TransportError("OpenSky gave no data")
     planes = []
     for row in states or []:
         if not isinstance(row, list) or len(row) < 14 or row[8] or row[5] is None or row[6] is None:

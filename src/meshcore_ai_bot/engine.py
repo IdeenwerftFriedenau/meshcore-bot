@@ -172,7 +172,7 @@ class Engine:
             else:
                 if follow == "more":
                     topic = last[3] if last and last[3] else "deiner letzten Antwort"
-                    question = f"Erzähl mir bitte mehr Details zu: {topic}"
+                    question = f"Erzähl mir bitte weitere, neue Details zu: {topic}. Wiederhole nichts aus deiner letzten Antwort."
                 answer = await self.assistant.answer(question, history)
                 text, sources = answer.text, list(getattr(answer, "sources", None) or [])
                 if follow == "more" and last:
