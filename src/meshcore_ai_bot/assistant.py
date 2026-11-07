@@ -153,7 +153,7 @@ class Assistant:
             *history,
             {"role": "user", "content": question},
         ]
-        sources = list(mesh["sources"])
+        sources: list[str] = []
         allowed_urls = urls_in(question)
         rounds = self.config.research.max_rounds if self.config.research.enabled else 2
         researched = False
@@ -175,7 +175,7 @@ class Assistant:
                         ("Lokale KI: " if local else "") + text.strip()
                         if len(text) <= 4000
                         else "Die Antwort ist zu lang. Bitte grenze die Frage ein.",
-                        [] if local else list(dict.fromkeys(sources))[:5],
+                        [] if local else list(dict.fromkeys(sources + mesh["sources"]))[:5],
                     )
                     limited = result.get("_limited") is True
                     if researched and not (local or limited) and cache_key and self.config.research.answer_cache_seconds:

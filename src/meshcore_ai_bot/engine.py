@@ -81,8 +81,8 @@ class Engine:
         self.store.enforce_limits(time.time())
         self.pacer = pacer or Pacer(config, store.last_tx())
         self.own_names: set[str] = set()
-        # Per channel and sender: (expires, text not yet sent, sources) for "mehr" and "Quelle?".
-        self.followups: dict[tuple[str, str], tuple[float, str, list[str]]] = {}
+        # Per channel and sender: (expires, text not yet sent, sources, question) for "mehr" and "Quelle?".
+        self.followups: dict[tuple[str, str], tuple[float, str, list[str], str]] = {}
 
     def receive(self, message: Incoming, now: float | None = None) -> str:
         now = time.time() if now is None else now
@@ -171,9 +171,12 @@ class Engine:
                 )
             else:
                 if follow == "more":
-                    question = "Erzähl mir bitte mehr Details zu deiner letzten Antwort."
+                    topic = last[3] if last and last[3] else "deiner letzten Antwort"
+                    question = f"Erzähl mir bitte mehr Details zu: {topic}"
                 answer = await self.assistant.answer(question, history)
                 text, sources = answer.text, list(getattr(answer, "sources", None) or [])
+                if follow == "more" and last:
+                    sources = list(dict.fromkeys(sources + last[2]))[:5]
         except Exception:
             # A plugin bug must not kill the daemon or expose a traceback on air.
             log.exception("Answer generation failed for message %s", row["id"][:12])
@@ -193,10 +196,12 @@ class Engine:
             else:
                 if len(self.followups) >= 256:
                     self.followups = {k: v for k, v in self.followups.items() if v[0] >= now}
+                topic = last[3] if follow == "more" and last else question
                 self.followups[key] = (
                     now + self.config.storage.reply_ttl_seconds,
                     remaining_text(text, history_text),
                     sources,
+                    topic[:200],
                 )
         completed = time.time()
         self.store.answer(

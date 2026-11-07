@@ -91,7 +91,7 @@ async def test_more_without_rest_asks_the_ai_for_details():
         await engine.process_one()
         engine.receive(Incoming("#fragdenbot", "Alice", "mehr", now + 1))
         await engine.process_one()
-        assert asked[1].startswith("Erzähl mir bitte mehr Details")
+        assert asked[1] == "Erzähl mir bitte mehr Details zu: Was ist LoRa?"
     finally:
         store.close()
 
