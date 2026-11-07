@@ -66,17 +66,61 @@ async def test_capture_silence_while_phone_idle_then_exact_pcm_frames(audio):
     capture.stop()
 
 
+def routing_objects(own_name, target):
+    def node(identifier, name):
+        return {'id': identifier, 'type': 'PipeWire:Interface:Node', 'info': {'props': {'node.name': name}}}
+    def port(identifier, owner, direction, channel, monitor=False):
+        return {'id': identifier, 'type': 'PipeWire:Interface:Port', 'info': {'props': {
+            'node.id': owner, 'port.direction': direction, 'audio.channel': channel, 'port.monitor': monitor}}}
+    return [node(1, target), node(2, own_name), node(3, 'alsa-default'),
+            port(10, 1, 'out', 'FL'), port(11, 1, 'out', 'FR'),
+            port(12, 1, 'in', 'FL'), port(13, 1, 'in', 'FR'),
+            port(14, 1, 'out', 'MONO', True), port(15, 3, 'out', 'MONO'),
+            port(20, 2, 'in', 'MONO'), port(21, 2, 'out', 'MONO')]
+
+
+def test_pcm_links_exclude_monitors_defaults_and_missing_nodes(audio):
+    module, _, _ = audio
+    objects = routing_objects('bridge', 'phone')
+    assert module.pcm_links(objects, 'bridge', 'phone', 'record') == [('10', '20')]
+    assert module.pcm_links(objects, 'bridge', 'phone', 'playback') == [('21', '12'), ('21', '13')]
+    assert module.pcm_links(objects, 'bridge', 'missing', 'record') == []
+
+
+def test_hfp_stream_classes_require_exact_sco_factory_and_profile(audio):
+    module, _, _ = audio
+    def stream(name, media, factory, profile='headset-audio-gateway'):
+        return {'info': {'props': {'node.name': name, 'media.class': media,
+                'factory.name': factory, 'api.bluez5.profile': profile}}}
+    objects = [stream('bluez_input.AA_BB_CC_DD_EE_FF.0', 'Stream/Output/Audio', 'api.bluez5.sco.source'),
+               stream('bluez_output.AA_BB_CC_DD_EE_FF.1', 'Stream/Input/Audio', 'api.bluez5.sco.sink'),
+               stream('bluez_input.11_22_33_44_55_66.0', 'Stream/Output/Audio', 'api.bluez5.sco.source')]
+    assert len(module.audio_nodes(objects, 'AA:BB:CC:DD:EE:FF')) == 2
+    objects[0]['info']['props']['api.bluez5.profile'] = 'a2dp-source'
+    objects[1]['info']['props']['factory.name'] = 'unknown'
+    assert module.audio_nodes(objects, 'AA:BB:CC:DD:EE:FF') == {}
+
+
 async def test_pcm_process_is_targeted_and_never_writes_recording_files(audio, monkeypatch):
     module, _, _ = audio
-    calls = []
+    calls, commands = [], []
     async def spawn(*args, **kwargs):
         calls.append((args, kwargs))
+        return SimpleNamespace(returncode=None)
+    async def command(*args):
+        commands.append(args)
+        if args[0].endswith('pw-dump'):
+            name = calls[0][0][-2].split('node.name = ')[1].split()[0]
+            return json.dumps(routing_objects(name, 'bluez_input.AA_BB_CC_DD_EE_FF.0')).encode()
+        return b''
     monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(module, 'command', command)
     await module.pcm_process('record', 'bluez_input.AA_BB_CC_DD_EE_FF.0')
     args, options = calls[0]
-    assert args[args.index('--target') + 1] == 'bluez_input.AA_BB_CC_DD_EE_FF.0'
-    assert 'node.dont-fallback = true' in args[-2]
+    assert args[args.index('--target') + 1] == '0'
+    assert 'node.dont-fallback = true' in args[-2] and 'node.autoconnect = false' in args[-2]
     assert args[-1] == '-' and options['stdout'] == asyncio.subprocess.PIPE
+    assert commands[-1] == ('/usr/bin/pw-link', '10', '20')
 
 
 async def test_real_webrtc_audio_negotiation_owner_isolation_and_stop(audio):
@@ -163,3 +207,14 @@ async def test_expired_lease_releases_connection(audio, monkeypatch):
     monkeypatch.setattr(module.asyncio, 'sleep', quick_sleep)
     await bridge.watchdog(row)
     assert closed == [row]
+
+
+async def test_pcm_cleanup_drains_full_stdout_without_hanging(audio):
+    import sys
+    module, _, _ = audio
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, '-c', 'import os,time; os.write(1, bytes(500000)); time.sleep(60)',
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    await asyncio.sleep(.05)
+    await asyncio.wait_for(module.terminate_pcm(process), 5)
+    assert process.returncode is not None

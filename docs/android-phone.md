@@ -279,8 +279,12 @@ privaten Zugang wie die Fernbedienung. Ton/Mikrofon bleiben separat schaltbar.
 
 Bei WirePlumber 0.4 ist die mitgelieferte `phone-audio-wireplumber.lua` auch für
 beide HFP-SCO-Richtungen erforderlich: Sie stellt ausschließlich die
-`headset-audio-gateway`-Quelle und -Senke als `Audio/Source` und `Audio/Sink`
-bereit und unterbindet deren automatische Verbindung mit Standardgeräten.
+`headset-audio-gateway`-Quelle und -Senke ohne automatische Verbindung mit
+Standardgeräten bereit. PipeWire 1.0 erzwingt für diese Knoten Stream-Klassen;
+die Brücke erkennt sie über Profil, SCO-Factory und das private Telefonprofil.
+Ihre PCM-Prozesse starten ohne automatische Verbindung und werden ausschließlich
+über die konkreten Port-IDs mit diesem Telefon verbunden. Monitorports werden
+nicht verwendet; beim Ende der PCM-Prozesse verschwinden auch deren Links.
 Ohne diese Regeln können Telefon-Audioströme am Browser vorbeilaufen oder die
 Pi-Systemausgabe zum Telefon zurückschleifen. Nach einer Änderung die
 WirePlumber-Benutzerinstanz nur ohne laufendes Telefonat neu starten und die

@@ -77,6 +77,12 @@ def audio_nodes(objects, address):
         media = props.get("media.class")
         if media in ("Audio/Source", "Audio/Sink"):
             found[media] = name
+        elif props.get("api.bluez5.profile") == "headset-audio-gateway":
+            # PipeWire 1.0 SCO factories publish streams even if policy overrides media.class.
+            if media == "Stream/Output/Audio" and props.get("factory.name") == "api.bluez5.sco.source":
+                found["Audio/Source"] = name
+            elif media == "Stream/Input/Audio" and props.get("factory.name") == "api.bluez5.sco.sink":
+                found["Audio/Sink"] = name
     return found
 
 
@@ -191,31 +197,81 @@ class Capture(AudioStreamTrack):
         super().stop()
 
 
+def pcm_links(objects, own_name, target, mode):
+    """Link only named phone/bridge ports; never use a sink monitor or defaults."""
+    nodes = {obj.get("info", {}).get("props", {}).get("node.name"): str(obj["id"])
+             for obj in objects if obj.get("type", "").endswith(":Node")}
+    if own_name not in nodes or target not in nodes:
+        return []
+
+    def ports(name, direction):
+        found = []
+        for obj in objects:
+            props = obj.get("info", {}).get("props", {})
+            if (obj.get("type", "").endswith(":Port")
+                    and str(props.get("node.id")) == nodes[name]
+                    and props.get("port.direction") == direction
+                    and str(props.get("port.monitor", False)).lower() != "true"):
+                found.append((str(props.get("audio.channel", "")), str(obj["id"])))
+        return [identifier for _, identifier in sorted(found)]
+
+    if mode == "record":
+        outputs, inputs = ports(target, "out"), ports(own_name, "in")
+        return [(outputs[0], inputs[0])] if outputs and inputs else []
+    outputs, inputs = ports(own_name, "out"), ports(target, "in")
+    return [(outputs[0], port) for port in inputs] if outputs and inputs else []
+
+
 async def pcm_process(mode, target):
-    # Explicit target and disabled fallback avoid leaking microphone audio to a wrong device.
+    # Start disconnected and explicitly link SCO ports. A remote HFP gateway is
+    # represented as streams, which session policy cannot target like devices.
+    name = "meshcore-phone-" + mode + "-" + secrets.token_hex(8)
     args = [
         "/usr/bin/pw-cat",
         "--record" if mode == "record" else "--playback",
-        "--target",
-        target,
-        "--rate",
-        str(RATE),
-        "--channels",
-        "1",
-        "--format",
-        "s16",
-        "--latency",
-        "40ms",
+        "--target", "0",
+        "--rate", str(RATE),
+        "--channels", "1",
+        "--format", "s16",
+        "--latency", "40ms",
         "--properties",
-        "{ media.role = Communication node.dont-fallback = true node.dont-reconnect = true }",
+        "{ node.name = " + name + " media.role = Communication node.autoconnect = false "
+        "node.dont-fallback = true node.dont-reconnect = true }",
         "-",
     ]
-    return await asyncio.create_subprocess_exec(
+    process = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE if mode == "playback" else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE if mode == "record" else asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
+    try:
+        for _ in range(30):
+            if process.returncode is not None:
+                break
+            objects = json.loads(await command("/usr/bin/pw-dump"))
+            links = pcm_links(objects, name, target, mode)
+            if links:
+                for output, input_port in links:
+                    await command("/usr/bin/pw-link", output, input_port)
+                return process
+            await asyncio.sleep(0.1)
+        raise ValueError("Telefon-Audioports nicht verfügbar")
+    except BaseException:
+        await terminate_pcm(process)
+        raise
+
+
+async def terminate_pcm(process):
+    # Draining pipes is necessary: wait() can hang after exit with buffered PCM.
+    if process.returncode is None:
+        process.terminate()
+    try:
+        await asyncio.wait_for(process.communicate(), 2)
+    except TimeoutError:
+        if process.returncode is None:
+            process.kill()
+        await asyncio.wait_for(process.communicate(), 2)
 
 
 class Bridge:
@@ -370,13 +426,7 @@ class Bridge:
 
     async def stop_processes(self, row):
         for process in row["processes"]:
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), 2)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
+            await terminate_pcm(process)
         row["processes"] = []
 
 
