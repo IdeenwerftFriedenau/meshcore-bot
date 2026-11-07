@@ -43,7 +43,8 @@ def _mention_pattern(names: list[str], hashtags: bool = False) -> re.Pattern:
 def radio_check(text: str) -> str | None:
     if text.strip().casefold() in {"help", "/help", "hilfe", "befehle", "?"}:
         return (
-            "Hilfe: wx, wx morgen, ping. In #bot mit @Ideenwerft ansprechen; in #fragdenbot einfach fragen."
+            "Hilfe: wx, wx morgen, ping, mehr, Quelle? In #bot mit @Ideenwerft ansprechen; "
+            "in #fragdenbot einfach fragen."
         )
     body = re.sub(r"[?!.,:;]+$", "", " ".join(text.casefold().split())).strip()
     if re.fullmatch(r"ping(?: ping){0,2}(?: ?(?:[0-9]{1,3}|1 2 3))?", body):
@@ -129,14 +130,40 @@ def allows_send(config: Config, channel_name: str, stream: str) -> bool:
     return enabled.get(stream, False) and stream in channel.broadcasts
 
 
+MORE_ENDING = " … (weiter mit „mehr“)"
+SHORT_ENDING = " …"
+
+
+def followup_command(question: str) -> str | None:
+    """'mehr' continues the last answer, 'Quelle?' names its sources."""
+    body = re.sub(r"[?!.,:;]+$", "", " ".join(question.casefold().split())).strip()
+    if body in {"mehr", "weiter", "mehr bitte", "bitte mehr", "weiter bitte", "erzähl mehr", "mehr details"}:
+        return "more"
+    if re.fullmatch(r"(?:und )?(?:die |deine )?(?:quelle|quellen|link|links)(?: bitte)?|woher weißt du das|woher weisst du das", body):
+        return "source"
+    return None
+
+
+def remaining_text(full: str, shown: str) -> str:
+    """The part of a fitted reply that did not go out on air."""
+    if shown == full:
+        return ""
+    for ending in (MORE_ENDING, SHORT_ENDING):
+        if shown.endswith(ending):
+            head = shown[: -len(ending)]
+            if full.startswith(head):
+                return full[len(head):].strip()
+    return ""
+
+
 def fit_reply(prefix: str, text: str, limit: int, max_parts: int) -> tuple[str, list[str]]:
     """Keep line breaks, including drawings, within a hard packet and character budget."""
     parts = split_text(prefix + text, limit)
     if len(text) <= 420 and len(parts) <= max_parts:
         return text, parts
-    ending = " … Mehr Details? Frag nach."
+    ending = MORE_ENDING
     if len(split_text(prefix + ending, limit)) > max_parts:
-        ending = " …"
+        ending = SHORT_ENDING
     low, high, best = 0, min(420 - len(ending), len(text)), ending
     while low <= high:
         middle = (low + high) // 2

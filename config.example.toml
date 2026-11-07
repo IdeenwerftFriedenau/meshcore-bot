@@ -73,8 +73,14 @@ news_feeds = ["https://www.rbb24.de/aktuell/index.xml/feed=rss.xml"]
 # Optionale Offline-Wikipedia über einen lokalen Kiwix-Server; springt ein, wenn die Online-Wikipedia fehlt.
 # kiwix_url = "http://127.0.0.1:8081"
 read_pages = true
+# Echtzeit-Abfahrten (BVG/VBB, kostenlos); leer schaltet get_departures ab.
+transit_url = "https://v6.bvg.transport.rest"
 max_results = 5
 max_rounds = 3
+# Gleiche recherchierte Frage innerhalb dieser Sekunden ohne neue KI-Anfrage beantworten; 0 = aus.
+answer_cache_seconds = 600
+# Optional anderes Modell für die Runden nach einer Recherche, z.B. "google/gemini-2.5-pro".
+# model = ""
 
 [broadcasts]
 # Disabled until deliberately enabled. Never allowed in #bot or #fragdenbot by default.

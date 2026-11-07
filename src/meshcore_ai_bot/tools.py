@@ -92,6 +92,12 @@ RESEARCH_SCHEMAS = {
         {"query": {"type": "string"}},
         ["query"],
     ),
+    "get_departures": tool(
+        "get_departures",
+        "Nächste Abfahrten (Echtzeit) von Bus, Tram, U- und S-Bahn an einer Haltestelle in Berlin/Brandenburg.",
+        {"stop": {"type": "string", "description": "Haltestellenname, z.B. 'S Friedenau' oder 'Breslauer Platz'"}},
+        ["stop"],
+    ),
     "read_webpage": tool(
         "read_webpage",
         "Text einer Webseite lesen, deren HTTPS-Adresse aus einem Suchergebnis oder der Frage stammt.",
@@ -109,6 +115,8 @@ def schemas(config: Config) -> list[dict]:
         if research.searxng_url:
             result.append(RESEARCH_SCHEMAS["web_search"])
         result += [RESEARCH_SCHEMAS["search_news"], RESEARCH_SCHEMAS["search_wikipedia"]]
+        if research.transit_url:
+            result.append(RESEARCH_SCHEMAS["get_departures"])
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -133,17 +141,26 @@ class Tools:
                 allowed["web_search"] = {"query"}
             if self.config.research.read_pages:
                 allowed["read_webpage"] = {"url"}
+            if self.config.research.transit_url:
+                allowed["get_departures"] = {"stop"}
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
         if any(not isinstance(v, str) or len(v) > limit for v in arguments.values()):
             raise ValueError("Invalid tool argument")
+        research = self.research
         if name == "web_search":
-            return await self.research.web_search(**arguments)
+            query = arguments["query"]
+            return await research.cached(name, query, 1800, lambda: research.web_search(query))
         if name == "search_news":
-            return await self.research.news(**arguments)
+            query = arguments.get("query", "")
+            return await research.cached(name, query, 600, lambda: research.news(query))
         if name == "search_wikipedia":
-            return await self.research.wikipedia(**arguments)
+            query = arguments["query"]
+            return await research.cached(name, query, 3600, lambda: research.wikipedia(query))
+        if name == "get_departures":
+            stop = arguments["stop"]
+            return await research.cached(name, stop, 30, lambda: research.departures(stop))
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())
         if name == "get_weather":

@@ -12,7 +12,16 @@ from collections.abc import Awaitable, Callable
 from .assistant import Assistant
 from .config import Config
 from .memory import control
-from .protocol import Incoming, allows_send, fit_reply, ignored_reason, may_remember, question_for
+from .protocol import (
+    Incoming,
+    allows_send,
+    fit_reply,
+    followup_command,
+    ignored_reason,
+    may_remember,
+    question_for,
+    remaining_text,
+)
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -72,6 +81,8 @@ class Engine:
         self.store.enforce_limits(time.time())
         self.pacer = pacer or Pacer(config, store.last_tx())
         self.own_names: set[str] = set()
+        # Per channel and sender: (expires, text not yet sent, sources) for "mehr" and "Quelle?".
+        self.followups: dict[tuple[str, str], tuple[float, str, list[str]]] = {}
 
     def receive(self, message: Incoming, now: float | None = None) -> str:
         now = time.time() if now is None else now
@@ -127,9 +138,25 @@ class Engine:
             if memory_on
             else []
         )
+        key = (row["channel"], row["sender"].casefold())
+        last = self.followups.get(key)
+        if last and last[0] < now:
+            last = None
+        sources: list[str] = []
+        command = follow = None
         try:
             command = control(question)
-            if command == "forget":
+            follow = followup_command(question)
+            if follow == "more" and last and last[1]:
+                text, sources = last[1], last[2]
+            elif follow == "source":
+                text = (
+                    "Quellen: " + " | ".join(short_url(url) for url in last[2][:3])
+                    if last and last[2]
+                    else "Für meine letzte Antwort habe ich keine Online-Quelle benutzt."
+                )
+                sources = last[2] if last else []
+            elif command == "forget":
                 self.store.forget_memory(row["sender"], now, exclude=row["id"])
                 text = "Deine Erinnerungen sind gelöscht; ich merke mir nichts Neues. Mit 'memory an' aktivierst du es wieder."
             elif command == "enable":
@@ -143,8 +170,10 @@ class Engine:
                     else "In diesem Memory-Bereich habe ich keine nutzbaren Erinnerungen an dich."
                 )
             else:
+                if follow == "more":
+                    question = "Erzähl mir bitte mehr Details zu deiner letzten Antwort."
                 answer = await self.assistant.answer(question, history)
-                text = answer.text
+                text, sources = answer.text, list(getattr(answer, "sources", None) or [])
         except Exception:
             # A plugin bug must not kill the daemon or expose a traceback on air.
             log.exception("Answer generation failed for message %s", row["id"][:12])
@@ -158,6 +187,17 @@ class Engine:
         history_text, parts = fit_reply(
             prefix, text, self.config.radio.packet_bytes, self.config.radio.reply_max_packets
         )
+        if follow != "source":
+            if command == "forget":
+                self.followups = {k: v for k, v in self.followups.items() if k[1] != key[1]}
+            else:
+                if len(self.followups) >= 256:
+                    self.followups = {k: v for k, v in self.followups.items() if v[0] >= now}
+                self.followups[key] = (
+                    now + self.config.storage.reply_ttl_seconds,
+                    remaining_text(text, history_text),
+                    sources,
+                )
         completed = time.time()
         self.store.answer(
             row["id"],
@@ -202,3 +242,8 @@ class Engine:
         self.store.finish(packet["id"], state, time.time())
         log.info("Packet %s channel=%s state=%s", packet["id"][:12], packet["channel"], state)
         return True
+
+
+def short_url(url: str) -> str:
+    """Radio packets are small: drop the scheme and a leading www."""
+    return re.sub(r"^https://(?:www\.)?", "", url).rstrip("/")

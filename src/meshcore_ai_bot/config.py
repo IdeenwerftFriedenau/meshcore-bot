@@ -111,8 +111,14 @@ class Research:
     # Optional local Kiwix server with a Wikipedia ZIM, e.g. "http://127.0.0.1:8081". Used when offline.
     kiwix_url: str = ""
     read_pages: bool = True
+    # Free public-transport departures (BVG/VBB, transport.rest). Empty disables get_departures.
+    transit_url: str = "https://v6.bvg.transport.rest"
     max_results: int = 5
     max_rounds: int = 3
+    # Seconds to reuse a researched answer for the same question; 0 disables.
+    answer_cache_seconds: int = 600
+    # Optional model name for the rounds after a research tool call; empty uses ai.model.
+    model: str = ""
 
 
 @dataclass
@@ -244,6 +250,10 @@ class Config:
             raise ValueError("research.wikipedia_language must be a language code like de")
         for url in self.research.news_feeds:
             validate_url(url)
+        if self.research.transit_url:
+            validate_url(self.research.transit_url)
+        if type(self.research.answer_cache_seconds) is not int or not 0 <= self.research.answer_cache_seconds <= 3600:
+            raise ValueError("research.answer_cache_seconds must be between 0 and 3600")
         for local in (self.research.searxng_url, self.research.kiwix_url):
             if local:
                 validate_loopback_url(local)

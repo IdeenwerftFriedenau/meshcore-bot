@@ -55,6 +55,23 @@ class Research:
         # Loopback services (SearXNG, Kiwix) bypass any proxy settings; tests may inject a client.
         self.local_client: httpx.AsyncClient | None = None
         self._kiwix_book: tuple[float, str] | None = None
+        self._cache: dict[tuple[str, str], tuple[float, dict]] = {}
+
+    async def cached(self, kind: str, query: str, ttl: float, fetch) -> dict:
+        """Short-lived result cache: repeated questions do not hit the sources again."""
+        key = (kind, " ".join(query.casefold().split()))
+        now = time.monotonic()
+        known = self._cache.get(key)
+        if known and now - known[0] < ttl:
+            return known[1]
+        result = await fetch()
+        if result.get("sources"):
+            if len(self._cache) >= 128:
+                self._cache = {k: v for k, v in self._cache.items() if now - v[0] < 600}
+                if len(self._cache) >= 128:
+                    self._cache.clear()
+            self._cache[key] = (now, result)
+        return result
 
     async def _local_json(self, url: str, **kwargs):
         if self.local_client is not None:
@@ -106,6 +123,65 @@ class Research:
         if not lines:
             return {"text": f"Die Websuche fand nichts Brauchbares zu „{query}“.", "sources": []}
         return {"text": " | ".join(lines), "sources": sources}
+
+    # Public transport -------------------------------------------------------------------------------
+
+    async def departures(self, stop: str) -> dict:
+        base = self.config.research.transit_url.rstrip("/")
+        stop = stop.strip()
+        if not base:
+            return {"text": "Die Abfahrtsauskunft ist hier nicht eingerichtet.", "sources": []}
+        if not stop:
+            return {"text": "Von welcher Haltestelle?", "sources": []}
+        places = await read_json(
+            self.client,
+            "GET",
+            base + "/locations",
+            params={"query": stop, "results": 1, "stops": "true", "addresses": "false", "poi": "false"},
+            headers=HEADERS,
+            timeout=12,
+            limit=500_000,
+        )
+        place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else None
+        if not place or not re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))):
+            return {"text": f"Keine Haltestelle „{stop}“ gefunden.", "sources": []}
+        data = await read_json(
+            self.client,
+            "GET",
+            f"{base}/stops/{place['id']}/departures",
+            params={"duration": 30, "results": 8, "remarks": "false"},
+            headers=HEADERS,
+            timeout=12,
+            limit=1_000_000,
+        )
+        rows = data.get("departures", []) if isinstance(data, dict) else data
+        tz = ZoneInfo(self.config.station.timezone)
+        entries = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            when = row.get("when") or row.get("plannedWhen")
+            line = plain((row.get("line") or {}).get("name"))
+            direction = plain(row.get("direction"))
+            if not when or not line:
+                continue
+            try:
+                clock = datetime.fromisoformat(str(when)).astimezone(tz).strftime("%H:%M")
+            except ValueError:
+                continue
+            delay = row.get("delay")
+            late = f" (+{round(delay / 60)})" if type(delay) is int and delay >= 60 else ""
+            gone = " fällt aus" if row.get("cancelled") else ""
+            entries.append(f"{clock} {line} → {direction}{late}{gone}")
+            if len(entries) >= 6:
+                break
+        name = plain(place.get("name")) or stop
+        if not entries:
+            return {"text": f"{name}: In den nächsten 30 Minuten keine Abfahrten gefunden.", "sources": []}
+        return {
+            "text": f"Abfahrten {name} (Echtzeit, BVG/VBB): " + "; ".join(entries) + ".",
+            "sources": ["https://www.bvg.de/de/verbindungen/echtzeit-abfahrten"],
+        }
 
     # Wikipedia ---------------------------------------------------------------------------------------
 
