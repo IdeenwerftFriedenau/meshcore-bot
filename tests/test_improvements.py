@@ -270,3 +270,47 @@ def test_repeater_catalogue_wildcards_list_everything(query):
     tools = Tools(Config(), store, None)
     result = tools.catalogue(query)
     assert result.get("count", 0) >= 1, result
+
+
+def test_long_source_links_are_shortened_without_splitting():
+    url = ("https://www.rbb24.de/panorama/beitrag/2026/11/"
+           "berlin-brandenburg-veranstaltungen-gedenken-neunter-november-mauerfall-reichspogrome.html")
+    short = short_url(url)
+    assert short.startswith("rbb24.de/…berlin-brandenburg") and len(short) <= 70
+
+
+@pytest.mark.parametrize(
+    ("question", "text", "clean"),
+    [
+        ("Was ist wichtig?", "Das, was dir Sinn stiftet. Nenne mir dein Sternzeichen für ein Horoskop.",
+         "Das, was dir Sinn stiftet."),
+        ("Horoskop bitte", "Nenne mir dein Sternzeichen.", "Nenne mir dein Sternzeichen."),
+    ],
+)
+def test_unasked_zodiac_question_is_dropped(question, text, clean):
+    from meshcore_ai_bot.assistant import drop_unasked_zodiac
+
+    assert drop_unasked_zodiac(question, text) == clean
+
+
+async def test_rate_limit_after_research_still_returns_found_facts(monkeypatch):
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(assistant_module.asyncio, "sleep", no_wait)
+    config = Config()
+    config.ai._api_key = "synthetic"
+    config.ai.requests_per_minute = 60
+    payloads = []
+    tool_answer = research_ai(payloads)
+
+    def respond(request):
+        if request.url.host == "openrouter.ai" and len(payloads) >= 1:
+            payloads.append(None)
+            return httpx.Response(429)
+        return tool_answer(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        answer = await Assistant(config, Store(":memory:"), client).answer("Was gibt es Neues in Berlin?")
+    assert answer.text.startswith("Kurz aus meiner Recherche:") and "Meldung" in answer.text
+    assert "https://t.de/m" in answer.sources

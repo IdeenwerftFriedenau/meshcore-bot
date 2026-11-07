@@ -250,9 +250,15 @@ class Engine:
         return True
 
 
-def short_url(url: str) -> str:
-    """Radio packets are small: drop the scheme and a leading www."""
-    return re.sub(r"^https://(?:www\.)?", "", url).rstrip("/")
+def short_url(url: str, limit: int = 70) -> str:
+    """Radio packets are small: drop the scheme and www, shorten long paths so a link never splits."""
+    url = re.sub(r"^https?://(?:www\.)?", "", url).rstrip("/")
+    if len(url) <= limit:
+        return url
+    host, _, path = url.partition("/")
+    tail = path.rsplit("/", 1)[-1]
+    room = max(10, limit - len(host) - 3)
+    return host + "/…" + (tail if len(tail) <= room else tail[: room - 1] + "…")
 
 
 def plain_radio_text(text: str) -> str:

@@ -162,6 +162,7 @@ class Assistant:
         allowed_urls = urls_in(question)
         rounds = self.config.research.max_rounds if self.config.research.enabled else 2
         researched = False
+        facts: list[str] = []
         try:
             for turn in range(rounds + 1):
                 model = self.config.research.model if researched and self.config.research.model else None
@@ -176,8 +177,9 @@ class Assistant:
                     if not isinstance(text, str) or not text.strip():
                         raise ValueError("Empty model answer")
                     local = result.get("_local_fallback") is True
+                    text = drop_unasked_zodiac(question, text.strip()) or text.strip()
                     answer = Answer(
-                        ("Lokale KI: " if local else "") + text.strip()
+                        ("Lokale KI: " if local else "") + text
                         if len(text) <= 4000
                         else "Die Antwort ist zu lang. Bitte grenze die Frage ein.",
                         [] if local else list(dict.fromkeys(sources + mesh["sources"]))[:5],
@@ -208,6 +210,8 @@ class Assistant:
                             "sources": [],
                         }
                     outputs.append(output)
+                    if function.get("name") in RESEARCH_TOOLS:
+                        facts.append(str(output.get("text", ""))[:1200])
                     sources.extend(output.get("sources", []))
                     allowed_urls.update(output.get("sources", []))
                     allowed_urls.update(urls_in(output.get("text", "")))
@@ -234,6 +238,13 @@ class Assistant:
             status = exc.response.status_code
             log.warning("AI gateway answered HTTP %s", status)
             if status == 429:
+                found = " ".join(facts).strip()
+                if found:
+                    return Answer(
+                        "Kurz aus meiner Recherche: "
+                        + (found if len(found) <= 400 else found[:400].rsplit(" ", 1)[0] + " …"),
+                        list(dict.fromkeys(sources))[:5],
+                    )
                 return Answer("Gerade sind viele Fragen unterwegs. Versuch es bitte in einer Minute noch einmal.")
             return Answer(
                 "Mein Antwortdienst ist gerade nicht erreichbar. Versuch es bitte später noch einmal."
@@ -294,12 +305,13 @@ class Assistant:
                 # Do not disclose body/key, bypass rate limits or retry failed authentication.
                 if attempt or exc.response.status_code not in {429, 502, 503, 504}:
                     raise
-                retry = exc.response.headers.get("Retry-After", "2")
+                fallback = "6" if exc.response.status_code == 429 else "2"
+                retry = exc.response.headers.get("Retry-After", fallback)
                 try:
                     delay = float(retry)
                 except ValueError:
-                    delay = 2
-                if not 0 <= delay <= 5:
+                    delay = float(fallback)
+                if not 0 <= delay <= 10:
                     raise
                 await asyncio.sleep(delay)
             except httpx.TransportError:
@@ -436,6 +448,17 @@ SIGNS = {
     "widder", "stier", "zwilling", "krebs", "loewe", "löwe", "jungfrau", "waage", "skorpion",
     "schuetze", "schütze", "steinbock", "wassermann", "fische",
 }
+
+
+ZODIAC_WISH = re.compile(r"horoskop|sternzeichen|tierkreis|astrolog", re.I)
+
+
+def drop_unasked_zodiac(question: str, text: str) -> str:
+    """The model sometimes ends unrelated answers with a star-sign question; drop that sentence."""
+    if ZODIAC_WISH.search(question) or "sternzeichen" not in text.casefold():
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(s for s in sentences if "sternzeichen" not in s.casefold()).strip()
 
 
 def stale_horoscope_nudge(item: dict) -> bool:
