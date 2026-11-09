@@ -889,3 +889,11 @@ def test_way_back_starts_without_the_old_arrival_time():
     history = [{"role": "user", "content": "ich muss morgen um acht am Heidelberger Platz sein von s Friedenau"}]
     back = journey_request("und zurück?", "S Friedenau", history, datetime(2026, 11, 9, 22, 0))
     assert back == {"origin": "Heidelberger Platz", "destination": "s Friedenau"}
+
+
+def test_place_search_keeps_food_and_place_apart():
+    from meshcore_ai_bot.assistant import local_place_request
+    assert local_place_request("Wo kann ich in Schöneberg Pizza essen?", "Berlin-Friedenau") == {
+        "query": "Pizzeria", "location": "Schöneberg"}
+    assert local_place_request("Gibt es ein gutes Café in Friedenau?", "Berlin-Friedenau") == {
+        "query": "Café", "location": "Friedenau"}

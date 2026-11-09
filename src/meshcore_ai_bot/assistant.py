@@ -1031,12 +1031,13 @@ def local_place_request(question: str, default_location: str) -> dict | None:
     """Keep recommendation searches compact and avoid passing unrelated radio text onward."""
     lowered = question.casefold()
     categories = [
-        (r"\b(caf[eé]|kaffee)\b", "Café"),
-        (r"\b(restaurant|essen|abendessen|mittagessen)\b", "Restaurant"),
+        # specific food first: "Pizza essen" is a pizzeria, not any restaurant
         (r"\b(pizza|pizzeria)\b", "Pizzeria"),
         (r"\b(sushi)\b", "Sushi-Restaurant"),
         (r"\b(d[oö]ner|kebab|kebap)\b", "Döner Kebab"),
         (r"\b(h[aä]hnchen|huhn|chicken)\b", "Hähnchen-Restaurant"),
+        (r"\b(caf[eé]|kaffee)\b", "Café"),
+        (r"\b(restaurant|essen|abendessen|mittagessen)\b", "Restaurant"),
         (r"\b(b[aä]cker|b[aä]ckerei)\b", "Bäckerei"),
         (r"\b(apotheke)\b", "Apotheke"),
         (r"\b(supermarkt|lebensmittel)\b", "Supermarkt"),
@@ -1053,6 +1054,11 @@ def local_place_request(question: str, default_location: str) -> dict | None:
     match = re.search(r"\b(?:in|bei|nahe)\s+([\wäöüß .-]{2,60})", question, re.I)
     if match:
         candidate = match.group(1).strip(" ?!.,")
+        # "in Schöneberg Pizza essen" -> "Schöneberg": drop the food and verb words after the place
+        candidate = " ".join(w for w in candidate.split() if not re.fullmatch(
+            r"pizza|pizzeria|sushi|d[oö]ner|kebab|kebap|essen|trinken|kaufen|gehen|finden|frühstücken|"
+            r"caf[eé]|kaffee|restaurant|bar|kneipe|apotheke|supermarkt|b[aä]ckerei|gut|gute[nrs]?|eine?n?",
+            w.casefold().strip(" ?!.,")))
         if candidate and not re.search(r"\b(?:der|die|das|mir|einem|einer)\b", candidate, re.I):
             location = candidate
     return {"query": query, "location": location}
