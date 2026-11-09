@@ -132,7 +132,8 @@ RESEARCH_SCHEMAS = {
         "get_grill_stands",
         "Wo und wann die GaumenSchmaus-Hähnchenwagen (Grillhähnchen) stehen, nächste zuerst, live vom Hähnchen-Radar.",
         {"day": {"type": "string", "description": "heute, morgen, übermorgen, ein Wochentag oder leer für den nächsten Termin"},
-         "place": {"type": "string", "description": "optional Markt, Straße oder PLZ, z.B. 'Schlangenbader'"}},
+         "place": {"type": "string", "description": "optional Markt, Straße oder PLZ, z.B. 'Schlangenbader'"},
+         "near": {"type": "string", "description": "optional Ortsteil oder Ort, um den gesucht wird, z.B. 'Steglitz'"}},
         [],
     ),
     "read_webpage": tool(
@@ -194,6 +195,17 @@ class Tools:
             self.last_good[kind] = (datetime.now(UTC).timestamp(), result)
         return result
 
+    async def _berlin_place(self, name: str) -> tuple[float, float, str] | None:
+        """A district or town in Berlin/Brandenburg, e.g. 'Steglitz' -> its coordinates."""
+        data = await read_json(
+            self.client, "GET", "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": name.strip(), "count": 10, "language": "de", "countryCode": "DE"}, timeout=10,
+        )
+        for row in data.get("results") or []:
+            if row.get("admin1") in {"Berlin", "Brandenburg", "Land Berlin"}:
+                return row["latitude"], row["longitude"], row.get("name") or name.strip()
+        return None
+
     async def run(self, name: str, arguments: dict, *, allowed_urls: set[str] | None = None) -> dict:
         allowed = {
             "get_weather": {"location", "period"},
@@ -211,7 +223,7 @@ class Tools:
                 allowed["get_departures"] = {"stop", "trains"}
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
-                           get_grill_stands={"day", "place"})
+                           get_grill_stands={"day", "place", "near"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -262,11 +274,18 @@ class Tools:
             )
         if name == "get_grill_stands":
             weather = self.config.weather
-            day, place = arguments.get("day", ""), arguments.get("place", "")
+            day, place, near = arguments.get("day", ""), arguments.get("place", ""), arguments.get("near", "")
+            lat, lon, label = weather.latitude, weather.longitude, ""
+            home = f"{norm(weather.location)} {norm(self.config.station.location)} hier berlin"
+            if near.strip() and norm(near) not in home:
+                found = await self._berlin_place(near)
+                if not found:
+                    return {"text": f"Den Ort „{near.strip()}“ finde ich in Berlin/Brandenburg nicht.", "sources": []}
+                lat, lon, label = found
             return await research.cached(
-                name, f"{day}|{place}", 300,
-                lambda: grill_stands(self.client, weather.latitude, weather.longitude,
-                                     self.config.station.timezone, day, place),
+                name, f"{day}|{place}|{lat:.3f}|{lon:.3f}", 300,
+                lambda: grill_stands(self.client, lat, lon, self.config.station.timezone, day, place,
+                                     near=label),
             )
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())

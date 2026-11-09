@@ -1040,7 +1040,7 @@ def berlin_activity_reply(question: str) -> str | None:
     )
 
 
-GRILL = re.compile(r"gaumen\s?-?schma|h(?:ä|a|ae)hnchen\s?-?(?:wagen|mobil|griller|stand|radar|grill)|grillh(?:ä|a|ae)hnchen"
+GRILL = re.compile(r"gaumen\s?-?s[ch]{0,2}m?a|h(?:ä|a|ae)hnchen\s?-?(?:wagen|mobil|griller|stand|radar|grill)|grillh(?:ä|a|ae)hnchen"
                    r"|h(?:ä|a|ae)hnchengrill|broiler", re.I)
 GRILL_DAY = re.compile(r"\b(heute|übermorgen|uebermorgen|morgen|montag|dienstag|mittwoch|donnerstag|freitag|samstag"
                        r"|sonntag)s?\b", re.I)
@@ -1070,11 +1070,19 @@ def grill_request(question: str, history: list[dict] | None = None) -> dict | No
                       r"\s*[A-ZÄÖÜ0-9][\wäöüß.-]*(?:\s+[A-ZÄÖÜ0-9][\wäöüß.-]*)?)", text, re.I)
     if match:
         candidate = match.group(1).strip(" ?!.,")
-        if candidate and not GRILL_DAY.fullmatch(candidate) and not GRILL.search(candidate) and not re.fullmatch(
+        if candidate and not GRILL_DAY.match(candidate) and not GRILL.search(candidate) and not re.fullmatch(
                 r"(?:wochenende|abend|mittag|nachmittag|vormittag|früh|frueh)", candidate, re.I) and not re.match(
                 r"(?:n[äa]e?he|umgebung|mir|uns|hier|friedenau)\b", candidate, re.I):
             place = candidate
-    return {"day": day.group(1).casefold() if day else "", "place": place}
+    result = {"day": day.group(1).casefold() if day else "", "place": place}
+    near = re.search(r"\b(?:in|von|nahe|um)\s+(?!der\b|die\b|dem\b|den\b|mir\b|uns\b|n[äa]e?he\b|umgebung\b)"
+                     r"([a-zäöüß][\wäöüß-]{2,}(?:\s+[a-zäöüß][\wäöüß-]{2,})?)", text.strip(" ?!."), re.I)
+    if near and not place:
+        words = [w for w in near.group(1).split() if not GRILL_WHEN.fullmatch(w) and not GRILL.search(w)
+                 and not re.fullmatch(r"h(?:ä|a|ae)hnchen|wagen|der|die|das|ist|gibt|es|von|vom|bei|in", w, re.I)]
+        if words:
+            result["near"] = " ".join(words)
+    return result
 
 
 def local_place_request(question: str, default_location: str) -> dict | None:
