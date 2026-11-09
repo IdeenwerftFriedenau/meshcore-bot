@@ -118,6 +118,13 @@ class Assistant:
         weather = weather_question(question, self.config.weather.location) if self.config.weather.enabled else None
         if weather:
             return await self._weather_answer(question, weather)
+        transit = (
+            transit_request(question)
+            if self.config.research.enabled and self.config.research.transit_url and not self.offline
+            else None
+        )
+        if transit:
+            return await self._tool_answer("get_departures", transit)
         flight = flight_request(question) if self.config.research.enabled and not self.offline else None
         if flight:
             return await self._tool_answer(*flight)
@@ -671,6 +678,37 @@ def weather_verdict(question: str, day: dict) -> str:
     if re.search(r"schnee|schneit", question, re.I) and day.get("code") is not None:
         return "Ja, Schnee ist möglich." if day["code"] in (71, 73, 75, 77, 85, 86) else "Nein, kein Schnee in Sicht."
     return ""
+
+
+TRANSIT_WORDS = re.compile(
+    r"\b(z(u|ü|ue)ge?|bahn(en)?|s-?bahn|u-?bahn|bus(se)?|tram|straßenbahn|strassenbahn|ice|ic|re\d*|rb\d*|fex"
+    r"|abfahrt\w*)\b", re.I)
+TRAIN_WORDS = re.compile(r"\b(z(u|ü|ue)ge?|ice|ic|re\d*|rb\d*|fex|regionalbahn|regionalzug|fernverkehr)\b", re.I)
+STOP = re.compile(r"\b(?:ab|von|vom|am|an der|an dem|beim|bei|abfahrt(?:en)?)\s+(.+?)(?:\s+(?:nach|richtung|in richtung)\b.*)?$",
+                  re.I)
+
+
+def transit_request(question: str) -> dict | None:
+    """'Nächster Zug ab S Friedenau' -> departures, without the model picking the wrong filter."""
+    text = " ".join(question.split()).strip(" ?!.")
+    if len(text) > 100 or not TRANSIT_WORDS.search(text):
+        return None
+    if not re.search(r"n(ä|ae)chste|wann (f(ä|ae)hrt|kommt|geht)|abfahrt|\b(ab|von|vom)\b", text, re.I):
+        return None
+    if re.search(r"flug|flieg|was ist|was sind|erklär|warum|wieso|ticket|preis|kosten|wie lange|dauer|verbindung|umsteig", text, re.I):
+        return None
+    matches = list(STOP.finditer(text))
+    match = matches[-1] if matches else None
+    if not match:
+        return None
+    stop = re.sub(r"^(der|die|dem|den|haltestelle|bahnhof)\s+", "", match.group(1).strip(), flags=re.I)
+    stop = " ".join(stop.split()[:4])
+    if not stop or stop.casefold() in {"berlin", "hier", "uns", "jetzt", "heute"}:
+        return None
+    args = {"stop": stop}
+    if TRAIN_WORDS.search(text):
+        args["trains"] = "ja"
+    return args
 
 
 PLANES = re.compile(

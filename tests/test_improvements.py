@@ -593,3 +593,39 @@ def test_hour_exact_sun_and_rain():
               "precipitation": [h["mm"] for h in hours], "precipitation_probability": [h["prob"] for h in hours]}
     assert windows({"hourly": hourly}, target, "sun") == " (10–13 Uhr)"
     assert windows({"hourly": hourly}, target, "rain") == ", Regen vor allem 15–17 Uhr"
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("naechster zug ab s friedenau", {"stop": "s friedenau", "trains": "ja"}),
+    ("wann kommt der nächste Bus am Knausplatz", {"stop": "Knausplatz"}),
+    ("Züge ab Berlin Hbf", {"stop": "Berlin Hbf", "trains": "ja"}),
+    ("nächste Abfahrt Breslauer Platz", {"stop": "Breslauer Platz"}),
+    ("Wann fährt der nächste ICE von Berlin Hbf nach Hamburg", {"stop": "Berlin Hbf", "trains": "ja"}),
+    ("Was ist ein Zug?", None),
+    ("Was kostet ein Ticket von Spandau nach Hamburg", None),
+    ("Wie lange fährt man von Spandau nach Hamburg mit dem Zug", None),
+])
+def test_transit_questions_go_to_departures(question, expected):
+    from meshcore_ai_bot.assistant import transit_request
+    assert transit_request(question) == expected
+
+
+async def test_train_at_sbahn_only_station_falls_back_to_sbahn():
+    calls = []
+
+    def respond(request):
+        if request.url.path == "/locations":
+            return httpx.Response(200, json=[{"type": "stop", "id": "900061101", "name": "S Friedenau (Berlin)"}])
+        calls.append(request.url.params.get("suburban"))
+        if request.url.params.get("suburban") == "false":
+            return httpx.Response(200, json={"departures": []})
+        return httpx.Response(200, json={"departures": [
+            {"when": "2026-11-09T12:25:00+01:00", "direction": "S Frohnau (Berlin)", "line": {"name": "S1"}, "platform": "1"},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run(
+            "get_departures", {"stop": "S Friedenau", "trains": "ja"}
+        )
+    assert calls == ["false", None]
+    assert "12:25 S1 → S Frohnau (Berlin) Gl. 1" in result["text"]

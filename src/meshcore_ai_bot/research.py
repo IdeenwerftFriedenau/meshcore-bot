@@ -126,7 +126,7 @@ class Research:
 
     # Public transport -------------------------------------------------------------------------------
 
-    async def departures(self, stop: str, trains: bool = False) -> dict:
+    async def departures(self, stop: str, trains: bool = False, suburban: bool = False) -> dict:
         base = self.config.research.transit_url.rstrip("/")
         stop = stop.strip()
         if not base:
@@ -150,7 +150,8 @@ class Research:
             "GET",
             f"{base}/stops/{place['id']}/departures",
             params={"duration": 90 if trains else 30, "results": 8, "remarks": "false",
-                    **({"bus": "false", "tram": "false", "subway": "false", "suburban": "false", "ferry": "false"}
+                    **({"bus": "false", "tram": "false", "subway": "false", "ferry": "false",
+                        **({} if suburban else {"suburban": "false"})}
                        if trains else {})},
             headers=HEADERS,
             timeout=12,
@@ -180,6 +181,9 @@ class Research:
             if len(entries) >= 6:
                 break
         name = plain(place.get("name")) or stop
+        if not entries and trains and not suburban:
+            # A 'Zug' at an S-Bahn-only station such as S Friedenau is the S-Bahn.
+            return await self.departures(stop, trains=True, suburban=True)
         if not entries:
             window = "90 Minuten keine Zugabfahrten" if trains else "30 Minuten keine Abfahrten"
             return {"text": f"{name}: In den nächsten {window} gefunden.", "sources": []}
