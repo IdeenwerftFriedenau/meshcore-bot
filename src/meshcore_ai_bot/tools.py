@@ -12,7 +12,7 @@ import httpx
 
 from .config import Config
 from .http import read_json
-from .research import Research, ber_flights, planes_overhead
+from .research import Research, ber_flights, grill_stands, planes_overhead
 from .store import Store
 
 
@@ -128,6 +128,13 @@ RESEARCH_SCHEMAS = {
         {"area": {"type": "string", "description": "'berlin' für ganz Berlin, 'rettung' nur Rettungshubschrauber, leer für die Station"}},
         [],
     ),
+    "get_grill_stands": tool(
+        "get_grill_stands",
+        "Wo und wann die GaumenSchmaus-Hähnchenwagen (Grillhähnchen) stehen, nächste zuerst, live vom Hähnchen-Radar.",
+        {"day": {"type": "string", "description": "heute, morgen, übermorgen, ein Wochentag oder leer für den nächsten Termin"},
+         "place": {"type": "string", "description": "optional Markt, Straße oder PLZ, z.B. 'Schlangenbader'"}},
+        [],
+    ),
     "read_webpage": tool(
         "read_webpage",
         "Text einer Webseite lesen, deren HTTPS-Adresse aus einem Suchergebnis oder der Frage stammt.",
@@ -147,7 +154,8 @@ def schemas(config: Config) -> list[dict]:
         result += [RESEARCH_SCHEMAS["search_news"], RESEARCH_SCHEMAS["search_wikipedia"]]
         if research.transit_url:
             result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
-        result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"]]
+        result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"],
+                   RESEARCH_SCHEMAS["get_grill_stands"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -202,7 +210,8 @@ class Tools:
             if self.config.research.transit_url:
                 allowed["get_departures"] = {"stop", "trains"}
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
-            allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"})
+            allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
+                           get_grill_stands={"day", "place"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -250,6 +259,14 @@ class Tools:
                 name, area, 60,
                 lambda: planes_overhead(
                     self.client, weather.latitude, weather.longitude, weather.location, wide, rescue),
+            )
+        if name == "get_grill_stands":
+            weather = self.config.weather
+            day, place = arguments.get("day", ""), arguments.get("place", "")
+            return await research.cached(
+                name, f"{day}|{place}", 300,
+                lambda: grill_stands(self.client, weather.latitude, weather.longitude,
+                                     self.config.station.timezone, day, place),
             )
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())

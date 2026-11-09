@@ -777,3 +777,124 @@ async def planes_overhead(
         entries.append(f"{route or callsign}{height}, {distance ** 0.5:.0f} km entfernt")
     return {"text": f"Flugzeuge bei {place} (OpenSky): " + "; ".join(entries) + ".",
             "sources": ["https://opensky-network.org/", "https://www.adsbdb.com/"]}
+
+
+# Grill trucks (GaumenSchmaus Hähnchen-Radar) ----------------------------------------------------------
+
+GRILL_API = "https://api.haehnchengriller.de/haehnchengriller/getLocations/v3/"
+GRILL_PAGE = "https://standorte.gaumenschmaus.de/liste"
+GRILL_COMPANIES = "2,5,6,7,8,9,10,11,12,13,14,27,30"  # the brands the GaumenSchmaus web app shows
+WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+DAY_CODES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _fold(text: str) -> str:
+    text = text.casefold().replace("ß", "ss").replace("str.", "strasse")
+    for a, b in (("ä", "a"), ("ö", "o"), ("ü", "u"), ("ae", "a"), ("oe", "o"), ("ue", "u")):
+        text = text.replace(a, b)
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _day_label(day, today) -> str:
+    offset = (day - today).days
+    name = WEEKDAYS[day.weekday()]
+    prefix = {0: "Heute", 1: "Morgen", 2: "Übermorgen"}.get(offset)
+    return f"{prefix} ({name[:2]} {day:%d.%m.})" if prefix else f"{name} {day:%d.%m.}"
+
+
+async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: str,
+                       day: str = "", place: str = "", now: datetime | None = None) -> dict:
+    """Where the GaumenSchmaus chicken trucks stand on a day, nearest first, or when one is at a place next.
+
+    day: heute, morgen, übermorgen, a weekday name or "" (next day with a stand).
+    place: optional market, street or post code to look for, e.g. "Schlangenbader".
+    """
+    now = now or datetime.now(ZoneInfo(tz)).replace(tzinfo=None)
+    today = now.date()
+    word = _fold(day)
+    offsets: list[int]
+    if word in {"", "naechste", "nachste", "wann", "wieder"}:
+        offsets = list(range(1 if now.hour >= 19 else 0, 8))  # late in the evening "wann?" means from tomorrow
+    elif word.startswith("heute"):
+        offsets = [0]
+    elif word.startswith("ubermorgen"):
+        offsets = [2]
+    elif word.startswith("morgen"):
+        offsets = [1]
+    else:
+        index = next((i for i, name in enumerate(WEEKDAYS) if word.startswith(_fold(name)[:2])), None)
+        if index is None:
+            offsets = list(range(0, 8))
+        else:
+            first = (index - today.weekday()) % 7
+            offsets = [first] if not place else [first, first + 7]
+    if place and len(offsets) == 1:
+        offsets += [o for o in range(offsets[0] + 1, offsets[0] + 8)]  # "not there that day" -> next date
+    wanted = [w for w in _fold(place).split() if len(w) > 2 and w not in {"rewe", "netto", "edeka", "markt",
+                                                                            "strasse", "berlin"}]
+    brand = [w for w in _fold(place).split() if w in {"rewe", "netto", "edeka"}]
+
+    async def fetch(date) -> list[dict]:
+        code = "today" if date == today else DAY_CODES[date.weekday()]
+        url = f"{GRILL_API}{lat:.4f}/{lon:.4f}/{code}/2.13.2w/meshcore-bot/web?companies={GRILL_COMPANIES}"
+        data = await read_json(client, "GET", url, headers=HEADERS, timeout=12, limit=1_000_000)
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected grill data")
+        rows = []
+        iso = date.isoformat()
+        for row in data.get("locations") or []:
+            if not isinstance(row, dict):
+                continue
+            days = row.get("t") or []
+            if days and date.isoweekday() not in days:
+                continue
+            closed = bool(row.get("v") and row.get("w") and str(row["v"]) <= iso <= str(row["w"]))
+            rows.append({
+                "name": plain(row.get("b")), "street": " ".join(filter(None, [plain(row.get("e")),
+                                                                              plain(row.get("f"))])),
+                "zip": plain(row.get("d")), "km": row.get("i"), "from": plain(row.get("p")),
+                "until": plain(row.get("q")), "closed": closed, "note": plain(row.get("x")),
+            })
+        rows.sort(key=lambda r: r["km"] if isinstance(r["km"], (int, float)) else 999)
+        return rows
+
+    def line(row, date) -> str:
+        hours = f", {row['from']}–{row['until']}" if row["from"] and row["until"] else ""
+        if date == today and row["until"] and now.strftime("%H:%M") > row["until"]:
+            hours += " (heute schon zu)"
+        far = f", {row['km']} km" if isinstance(row["km"], (int, float)) else ""
+        return f"{row['name']} {row['street']}{far}{hours}"
+
+    def matches(row) -> bool:
+        text = _fold(f"{row['name']} {row['street']} {row['zip']}")
+        return all(w in text for w in wanted) and all(b in text for b in brand)
+
+    source = [GRILL_PAGE]
+    first_label, missed = "", "nicht dort"
+    for offset in offsets:
+        date = today + timedelta(days=offset)
+        rows = await fetch(date)
+        label = _day_label(date, today)
+        first_label = first_label or label
+        if place:
+            hits = [r for r in rows if matches(r)]
+            open_hits = [r for r in hits if not r["closed"]]
+            if open_hits:
+                lead = "" if offset == offsets[0] else f"{first_label} {missed}. Nächster Termin "
+                return {"text": f"GaumenSchmaus {lead}{label}: " + line(open_hits[0], date) + ".",
+                        "sources": source}
+            if hits and offset == offsets[0]:
+                missed = "fällt aus" + (f" ({short(hits[0]['note'], 80)})" if hits[0]["note"] else "")
+            continue
+        open_rows = [r for r in rows if not r["closed"]]
+        if open_rows:
+            near = "; ".join(line(r, date) for r in open_rows[:3])
+            if near.count("(heute schon zu)") == len(open_rows[:3]) > 1:
+                near = near.replace(" (heute schon zu)", "") + " – heute aber schon geschlossen"
+            return {"text": f"GaumenSchmaus {label}, am nächsten: {near}.", "sources": source}
+        if len(offsets) == 1:
+            return {"text": f"GaumenSchmaus {label}: kein Grillwagen in der Nähe.", "sources": source}
+    if place:
+        return {"text": f"GaumenSchmaus: keinen Stand zu „{place.strip()}“ in den nächsten Tagen gefunden.",
+                "sources": source}
+    return {"text": "GaumenSchmaus: in den nächsten Tagen kein Grillwagen in der Nähe gefunden.", "sources": source}

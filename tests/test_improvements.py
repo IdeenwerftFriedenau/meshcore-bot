@@ -915,3 +915,75 @@ def test_question_about_a_stand_day_is_no_place_list():
     assert local_place_request("ist morgen wieder Zeit für Gaumenschmaus Hähnchen in der Nähe", "Friedenau") is None
     assert local_place_request("Wo gibt es Hähnchen in der Nähe?", "Friedenau") == {
         "query": "Hähnchen-Restaurant", "location": "Friedenau"}
+
+
+# GaumenSchmaus chicken trucks -------------------------------------------------------------------------
+
+def _grill_rows(code: str) -> list[dict]:
+    rows = {
+        "today": [{"b": "REWE", "e": "Germaniastraße", "f": "12", "d": "12099", "i": 4, "p": "10:30",
+                   "q": "18:30", "t": [1, 5], "v": None, "w": None, "x": ""}],
+        "tue": [{"b": "REWE", "e": "Schlangenbaderstraße", "f": "25", "d": "14197", "i": 2, "p": "10:30",
+                 "q": "18:30", "t": [2], "v": None, "w": None, "x": ""},
+                {"b": "ROLLER", "e": "Goerzalle", "f": None, "d": "14167", "i": 7, "p": "10:30",
+                 "q": "18:30", "t": [1, 2, 3, 4, 5], "v": "2026-11-10", "w": "2026-11-10", "x": "Urlaub"}],
+        "fri": [{"b": "REWE", "e": "Germaniastraße", "f": "12", "d": "12099", "i": 4, "p": "10:30",
+                 "q": "18:30", "t": [1, 5], "v": None, "w": None, "x": ""}],
+    }
+    return rows.get(code, [])
+
+
+async def _grill(day: str, place: str = "", hour: int = 12) -> str:
+    from datetime import datetime
+
+    import httpx
+
+    from meshcore_ai_bot.research import grill_stands
+
+    def respond(request):
+        code = request.url.path.split("/")[6]
+        rows = _grill_rows(code)
+        return httpx.Response(200, json={"status": "OK", "locations": rows} if rows else {"status": "ERROR"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await grill_stands(client, 52.47, 13.33, "Europe/Berlin", day, place,
+                                    now=datetime(2026, 11, 9, hour, 0))  # a Monday
+    assert result["sources"] == ["https://standorte.gaumenschmaus.de/liste"]
+    return result["text"]
+
+
+async def test_grill_tomorrow_lists_nearest_and_skips_cancelled():
+    text = await _grill("morgen")
+    assert text.startswith("GaumenSchmaus Morgen (Di 10.11.), am nächsten: REWE Schlangenbaderstraße 25, 2 km")
+    assert "Goerzalle" not in text  # cancelled that day
+
+
+async def test_grill_place_finds_next_date():
+    text = await _grill("heute", "Schlangenbader")
+    assert text == ("GaumenSchmaus Heute (Mo 09.11.) nicht dort. Nächster Termin Morgen (Di 10.11.): "
+                    "REWE Schlangenbaderstraße 25, 2 km, 10:30–18:30.")
+    assert "Freitag 13.11.: REWE Germaniastraße 12" in await _grill("morgen", "Germaniastraße")
+
+
+async def test_grill_cancelled_place_says_why_and_no_day():
+    text = await _grill("morgen", "Goerzalle")
+    assert text.startswith("GaumenSchmaus Morgen (Di 10.11.) fällt aus (Urlaub). Nächster Termin")
+    assert await _grill("samstag") == "GaumenSchmaus Samstag 14.11.: kein Grillwagen in der Nähe."
+    assert "heute aber schon" not in await _grill("heute", hour=12)
+    assert "(heute schon zu)" in await _grill("heute", hour=20)
+
+
+def test_grill_questions_route_to_trucks():
+    from meshcore_ai_bot.assistant import fix_typos, grill_request, local_place_request
+
+    question = fix_typos("ist morgen wieder zeit fur gaumenschmauss hahnchen")
+    assert grill_request(question) == {"day": "morgen", "place": ""}
+    assert grill_request("Wann steht der Hähnchenwagen wieder am REWE Schlangenbader?") == {
+        "day": "", "place": "REWE Schlangenbader"}
+    assert grill_request("gaumenschmaus am freitag") == {"day": "freitag", "place": ""}
+    assert grill_request("und am freitag?", [{"role": "user", "content": "gaumenschmaus morgen"}]) == {
+        "day": "freitag", "place": ""}
+    assert grill_request("wo gibt es hähnchen in schöneberg") is None
+    assert grill_request("hähnchen rezept für morgen") is None
+    assert grill_request("und morgen?", [{"role": "user", "content": "wetter heute"}]) is None
+    assert local_place_request("wo gibt es hähnchen in schöneberg", "Friedenau")["query"] == "Hähnchen-Restaurant"
