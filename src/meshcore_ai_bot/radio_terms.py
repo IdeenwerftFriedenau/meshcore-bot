@@ -107,26 +107,26 @@ TERMS = {
     "HF": "Kurzwelle / Hochfrequenz, je nach Kontext",
     "VHF": "Ultrakurzwelle",
     "UHF": "Dezimeterwellenbereich",
-    "SWR": "Stehwellenverhältnis",
-    "SNR": "Signal-Rausch-Verhältnis",
-    "RSSI": "Empfangspegelanzeige",
-    "FT8": "digitale Betriebsart für schwache Signale",
+    "SWR": "Stehwellenverhältnis, zeigt wie gut Antenne und Funkgerät zusammenpassen; nahe 1 ist gut",
+    "SNR": "Signal-Rausch-Verhältnis in dB; je höher, desto klarer hebt sich das Signal vom Rauschen ab. LoRa kommt sogar unter 0 dB noch durch",
+    "RSSI": "Empfangsstärke in dBm; -60 ist sehr stark, um -120 wird es für LoRa knapp",
+    "FT8": "digitale Amateurfunk-Betriebsart, die noch sehr schwache Signale in 15-Sekunden-Takten dekodiert",
     "FT4": "digitale Kurznachrichten-Betriebsart",
     "WSPR": "digitale Funkbake zur Ausbreitungsbeobachtung",
     "RTTY": "Funkfernschreiben",
     "PSK": "Phasenumtastung",
     "FSK": "Frequenzumtastung",
     "AFSK": "Ton-Frequenzumtastung",
-    "APRS": "Automatic Packet Reporting System",
-    "DMR": "Digital Mobile Radio",
+    "APRS": "Automatic Packet Reporting System, Amateurfunk-Netz für Positionen, Wetter und Kurznachrichten",
+    "DMR": "Digital Mobile Radio, digitaler Sprechfunk, auch im Amateurfunk über Repeater und Internet verbunden",
     "DSTAR": "digitale Amateurfunk-Sprach- und Datenübertragung",
     "DV": "digitale Sprachübertragung",
     "DVBS": "digitaler Satellitenrundfunk",
     "EME": "Erde-Mond-Erde-Verbindung",
     "LOS": "Sichtverbindung",
     "NLOS": "keine direkte Sichtverbindung",
-    "LORA": "LoRa-Funkmodulation",
-    "ISM": "Frequenzbereiche für industrielle, wissenschaftliche und medizinische Anwendungen",
+    "LORA": "Long Range, eine Funktechnik für große Reichweite bei wenig Strom. MeshCore schickt damit Textnachrichten von Gerät zu Gerät, in Europa auf 868 MHz",
+    "ISM": "lizenzfreie Frequenzbereiche, z.B. 868 MHz, die jeder mit begrenzter Sendeleistung nutzen darf; dort funkt auch MeshCore",
     "BBS": "Mailboxsystem",
     "DIGI": "Digipeater / digitale Weiterleitung",
     "RPT": "Rapport / Wiederholung / Repeater, je nach Kontext",
@@ -148,6 +148,7 @@ TERMS = {
     "OV": "Ortsverband",
     "DARC": "Deutscher Amateur-Radio-Club",
 }
+DISPLAY = {"LORA": "LoRa"}
 # Whole tokens only: do not reinterpret callsigns, e.g. DL1WX, URLs or ordinary
 # German words such as "am", "de", "k" as abbreviations without radio context.
 TOKENS = re.compile(r"(?<![\w/@.-])(?:[A-Za-z][A-Za-z0-9]*|73|88|55)(?![\w/.-])")
@@ -306,7 +307,7 @@ def short_radio_reply(
         )
         if match and match.group(1).upper() in TERMS:
             code = match.group(1).upper()
-            answer = code + " bedeutet: " + TERMS[code] + "."
+            answer = DISPLAY.get(code, code) + ": " + TERMS[code] + "."
     sources = []
     if (
         not answer

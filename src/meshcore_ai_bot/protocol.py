@@ -43,7 +43,8 @@ def _mention_pattern(names: list[str], hashtags: bool = False) -> re.Pattern:
 def radio_check(text: str) -> str | None:
     if text.strip().casefold() in {"help", "/help", "hilfe", "befehle", "?"}:
         return (
-            "Hilfe: wx, wx morgen, ping. In #bot mit @Ideenwerft ansprechen; in #fragdenbot einfach fragen."
+            "Hilfe: wx, wx morgen, ping, mehr, Quelle? In #bot mit @Ideenwerft ansprechen; "
+            "in #fragdenbot einfach fragen."
         )
     body = re.sub(r"[?!.,:;]+$", "", " ".join(text.casefold().split())).strip()
     if re.fullmatch(r"ping(?: ping){0,2}(?: ?(?:[0-9]{1,3}|1 2 3))?", body):
@@ -82,6 +83,12 @@ def question_for(message: Incoming, config: Config, now: float) -> str | None:
     if channel.mode == "off":
         return None
     body = message.text.strip()
+    addressed = re.match(r"\s*@\[([^\]]+)\]", body)
+    if addressed:
+        own = {n.strip().casefold() for n in [config.station.name, *config.station.own_names, *(channel.mentions or [])]}
+        if addressed.group(1).strip().casefold() not in own:
+            # A chat line addressed to another person is not a question for the bot.
+            return None
     if channel.mode == "keyword":
         pattern = r"(?<!\w)" + re.escape(channel.keyword) + r"(?!\w)"
         if not re.search(pattern, body, re.I):
@@ -129,23 +136,69 @@ def allows_send(config: Config, channel_name: str, stream: str) -> bool:
     return enabled.get(stream, False) and stream in channel.broadcasts
 
 
+MORE_ENDING = " …\u00a0(weiter\u00a0mit\u00a0„mehr“)"  # no-break spaces keep the hint in one packet
+SHORT_ENDING = " …"
+
+
+def followup_command(question: str) -> str | None:
+    """'mehr' continues the last answer, 'Quelle?' names its sources."""
+    body = re.sub(r"[?!.,:;]+$", "", " ".join(question.casefold().split())).strip()
+    if body in {"mehr", "weiter", "mehr bitte", "bitte mehr", "weiter bitte", "erzähl mehr", "mehr details"}:
+        return "more"
+    if re.fullmatch(r"(?:und )?(?:die |deine |welche |was ist die |was ist deine )?(?:quelle|quellen|link|links)(?: bitte)?", body):
+        return "source"
+    info = r"(?:info|infos|information|informationen|nachricht|nachrichten|meldung|meldungen|zahl|zahlen|angabe|angaben|daten)"
+    if re.fullmatch(
+        r"(?:und )?woher (?:weißt|weisst|hast|kennst) du (?:das|dies|es|(?:die|diese|deine) " + info + ")"
+        r"|(?:und )?woher (?:stammt|kommt|ist) (?:das|dies|(?:die|diese|deine) " + info + ")"
+        r"|wo (?:steht|stand|hast du) das(?: gelesen| her)?",
+        body,
+    ):
+        return "source"
+    return None
+
+
+def remaining_text(full: str, shown: str) -> str:
+    """The part of a fitted reply that did not go out on air."""
+    if shown == full:
+        return ""
+    for ending in (MORE_ENDING, SHORT_ENDING):
+        if shown.endswith(ending):
+            head = shown[: -len(ending)]
+            if full.startswith(head):
+                return full[len(head):].strip()
+    return ""
+
+
 def fit_reply(prefix: str, text: str, limit: int, max_parts: int) -> tuple[str, list[str]]:
     """Keep line breaks, including drawings, within a hard packet and character budget."""
     parts = split_text(prefix + text, limit)
     if len(text) <= 420 and len(parts) <= max_parts:
         return text, parts
-    ending = " … Mehr Details? Frag nach."
+    ending = MORE_ENDING
     if len(split_text(prefix + ending, limit)) > max_parts:
-        ending = " …"
-    low, high, best = 0, min(420 - len(ending), len(text)), ending
+        ending = SHORT_ENDING
+    low, high, best = 0, min(420 - len(ending), len(text)), 0
     while low <= high:
         middle = (low + high) // 2
-        candidate = text[:middle].rstrip() + ending
-        if len(split_text(prefix + candidate, limit)) <= max_parts:
-            best, low = candidate, middle + 1
+        if len(split_text(prefix + text[:middle].rstrip() + ending, limit)) <= max_parts:
+            best, low = middle, middle + 1
         else:
             high = middle - 1
-    return best, split_text(prefix + best, limit)
+    best = clean_cut(text, best)
+    shown = text[:best].rstrip() + ending
+    return shown, split_text(prefix + shown, limit)
+
+
+def clean_cut(text: str, end: int) -> int:
+    """Cut after a full sentence if that keeps most of the text, else after a whole word."""
+    if end >= len(text):
+        return end
+    sentences = [m.end() for m in re.finditer(r"[.!?…](?=\s)", text[: end + 1])]
+    if sentences and sentences[-1] >= end * 0.5:
+        return sentences[-1]
+    space = text.rfind(" ", 0, end + 1)
+    return space if space > 0 else end
 
 
 def split_text(text: str, limit: int = 110, label: str = "") -> list[str]:

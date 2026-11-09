@@ -12,7 +12,16 @@ from collections.abc import Awaitable, Callable
 from .assistant import Assistant
 from .config import Config
 from .memory import control
-from .protocol import Incoming, allows_send, fit_reply, ignored_reason, may_remember, question_for
+from .protocol import (
+    Incoming,
+    allows_send,
+    fit_reply,
+    followup_command,
+    ignored_reason,
+    may_remember,
+    question_for,
+    remaining_text,
+)
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -72,6 +81,8 @@ class Engine:
         self.store.enforce_limits(time.time())
         self.pacer = pacer or Pacer(config, store.last_tx())
         self.own_names: set[str] = set()
+        # Per channel and sender: (expires, text not yet sent, sources, question) for "mehr" and "Quelle?".
+        self.followups: dict[tuple[str, str], tuple[float, str, list[str], str]] = {}
 
     def receive(self, message: Incoming, now: float | None = None) -> str:
         now = time.time() if now is None else now
@@ -127,9 +138,25 @@ class Engine:
             if memory_on
             else []
         )
+        key = (row["channel"], row["sender"].casefold())
+        last = self.followups.get(key)
+        if last and last[0] < now:
+            last = None
+        sources: list[str] = []
+        command = follow = None
         try:
             command = control(question)
-            if command == "forget":
+            follow = followup_command(question)
+            if follow == "more" and last and last[1]:
+                text, sources = last[1], last[2]
+            elif follow == "source":
+                text = (
+                    source_names(last[2])
+                    if last and last[2]
+                    else "Für meine letzte Antwort habe ich keine Online-Quelle benutzt."
+                )
+                sources = last[2] if last else []
+            elif command == "forget":
                 self.store.forget_memory(row["sender"], now, exclude=row["id"])
                 text = "Deine Erinnerungen sind gelöscht; ich merke mir nichts Neues. Mit 'memory an' aktivierst du es wieder."
             elif command == "enable":
@@ -143,8 +170,13 @@ class Engine:
                     else "In diesem Memory-Bereich habe ich keine nutzbaren Erinnerungen an dich."
                 )
             else:
+                if follow == "more":
+                    topic = last[3] if last and last[3] else "deiner letzten Antwort"
+                    question = f"Erzähl mir bitte weitere, neue Details zu: {topic}. Wiederhole nichts aus deiner letzten Antwort."
                 answer = await self.assistant.answer(question, history)
-                text = answer.text
+                text, sources = answer.text, list(getattr(answer, "sources", None) or [])
+                if follow == "more" and last:
+                    sources = list(dict.fromkeys(sources + last[2]))[:5]
         except Exception:
             # A plugin bug must not kill the daemon or expose a traceback on air.
             log.exception("Answer generation failed for message %s", row["id"][:12])
@@ -155,9 +187,23 @@ class Engine:
         # Historical injected punctuation must not become a permanent decoration.
         if not drawing:
             text = re.sub(r"[!?:;]{4,}", ".", text)
+            text = plain_radio_text(text)
         history_text, parts = fit_reply(
             prefix, text, self.config.radio.packet_bytes, self.config.radio.reply_max_packets
         )
+        if follow != "source":
+            if command == "forget":
+                self.followups = {k: v for k, v in self.followups.items() if k[1] != key[1]}
+            else:
+                if len(self.followups) >= 256:
+                    self.followups = {k: v for k, v in self.followups.items() if v[0] >= now}
+                topic = last[3] if follow == "more" and last else question
+                self.followups[key] = (
+                    now + self.config.storage.reply_ttl_seconds,
+                    remaining_text(text, history_text),
+                    sources,
+                    topic[:200],
+                )
         completed = time.time()
         self.store.answer(
             row["id"],
@@ -202,3 +248,66 @@ class Engine:
         self.store.finish(packet["id"], state, time.time())
         log.info("Packet %s channel=%s state=%s", packet["id"][:12], packet["channel"], state)
         return True
+
+
+KNOWN_SOURCES = {
+    "tagesschau.de": "tagesschau",
+    "rbb24.de": "rbb24",
+    "bvg.transport.rest": "BVG/VBB",
+    "open-meteo.com": "Open-Meteo",
+    "openstreetmap.org": "OpenStreetMap",
+    "swr.de": "SWR",
+    "ndr.de": "NDR",
+    "wdr.de": "WDR",
+    "br.de": "BR",
+    "mdr.de": "MDR",
+    "hr.de": "HR",
+    "zdf.de": "ZDF",
+    "zdfheute.de": "ZDF",
+    "deutschlandfunk.de": "Deutschlandfunk",
+    "dw.com": "DW",
+    "berlin.de": "berlin.de",
+    "tagesspiegel.de": "Tagesspiegel",
+    "berliner-zeitung.de": "Berliner Zeitung",
+    "morgenpost.de": "Berliner Morgenpost",
+    "spiegel.de": "Spiegel",
+    "zeit.de": "Zeit",
+    "sueddeutsche.de": "SZ",
+    "faz.net": "FAZ",
+    "heise.de": "heise",
+    "golem.de": "Golem",
+    "meshcore.co.uk": "MeshCore",
+    "github.com": "GitHub",
+}
+
+
+def source_name(url: str) -> str:
+    """Links cannot be clicked on air: name where the facts came from instead."""
+    from urllib.parse import unquote, urlsplit
+
+    parts = urlsplit(url)
+    host = (parts.hostname or "").removeprefix("www.")
+    if host.endswith("wikipedia.org"):
+        title = unquote(parts.path.rsplit("/", 1)[-1]).replace("_", " ").strip()
+        return f"Wikipedia ({title})" if title and len(title) <= 40 else "Wikipedia"
+    for known, name in KNOWN_SOURCES.items():
+        if host == known or host.endswith("." + known):
+            return name
+    return host or "unbekannt"
+
+
+def source_names(urls: list[str]) -> str:
+    names = list(dict.fromkeys(source_name(url) for url in urls))[:3]
+    return ("Quelle: " if len(names) == 1 else "Quellen: ") + ", ".join(names)
+
+
+def plain_radio_text(text: str) -> str:
+    """Markdown costs bytes on air: drop emphasis, bullets and headings, keep the words."""
+    if "**" not in text and "__" not in text and "\n" not in text.strip():
+        return text
+    text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), text)
+    if "\n" in text.strip():
+        text = re.sub(r"(?m)^\s*(?:[*\-•]|\d{1,2}\.)\s+", "", text)
+        text = re.sub(r"(?m)^#{1,6}\s+", "", text)
+    text = re.sub(r"\s*\n\s*", " ", text.strip())
+    return re.sub(r" {2,}", " ", text)

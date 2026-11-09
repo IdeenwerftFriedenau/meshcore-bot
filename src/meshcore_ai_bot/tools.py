@@ -12,6 +12,7 @@ import httpx
 
 from .config import Config
 from .http import read_json
+from .research import Research, ber_flights, planes_overhead
 from .store import Store
 
 
@@ -70,25 +71,193 @@ SCHEMAS = [
     ),
 ]
 
+RESEARCH_SCHEMAS = {
+    "web_search": tool(
+        "web_search",
+        "Allgemeine Websuche (lokale Metasuche). Für Fakten, Termine, Preise, Produkte, Vereine, Öffnungszeiten "
+        "und alles Aktuelle. Kurze Suchbegriffe auf Deutsch.",
+        {"query": {"type": "string"}},
+        ["query"],
+    ),
+    "search_news": tool(
+        "search_news",
+        "Aktuelle Nachrichten von tagesschau und rbb24 suchen. Leere Suche liefert die Top-Meldungen; "
+        "'Berlin' oder 'Brandenburg' liefert regionale Meldungen.",
+        {"query": {"type": "string"}},
+        [],
+    ),
+    "search_wikipedia": tool(
+        "search_wikipedia",
+        "Wikipedia-Artikel suchen und die Kurzfassung lesen. Für Begriffe, Personen, Orte, Geschichte und Technik.",
+        {"query": {"type": "string"}},
+        ["query"],
+    ),
+    "get_departures": tool(
+        "get_departures",
+        "Nächste Abfahrten (Echtzeit) an einer Haltestelle oder einem Bahnhof in Berlin/Brandenburg, auch DB-Züge "
+        "(ICE, IC, RE, RB). Für Fragen nach Zügen trains='ja' setzen, dann nur Bahn mit Gleis.",
+        {
+            "stop": {"type": "string", "description": "Haltestellenname, z.B. 'S Friedenau' oder 'Berlin Hbf'"},
+            "trains": {"type": "string", "description": "'ja' für nur Züge (Fern- und Regionalverkehr)"},
+        },
+        ["stop"],
+    ),
+    "get_journey": tool(
+        "get_journey",
+        "Verbindungen mit Bus und Bahn in Berlin/Brandenburg von A nach B (wie eine Fahrplan-App), Echtzeit.",
+        {"origin": {"type": "string", "description": "Start-Haltestelle"},
+         "destination": {"type": "string", "description": "Ziel-Haltestelle"},
+         "when": {"type": "string", "description": "optional Ortszeit YYYY-MM-DDTHH:MM"},
+         "arrive": {"type": "string", "description": "'ja', wenn when die gewünschte Ankunftszeit ist"},
+         "only": {"type": "string", "description": "optional nur ein Verkehrsmittel: bus, tram, subway, suburban"}},
+        ["origin", "destination"],
+    ),
+    "get_flights": tool(
+        "get_flights",
+        "Live-Abflüge oder -Ankünfte am Flughafen BER, optional gefiltert nach Flugnummer, Ziel oder Airline.",
+        {
+            "direction": {"type": "string", "description": "'abflug' oder 'ankunft'"},
+            "query": {"type": "string", "description": "Flugnummer, Stadt oder Airline, leer für die nächsten Flüge"},
+        },
+        [],
+    ),
+    "get_planes_overhead": tool(
+        "get_planes_overhead",
+        "Welche Flugzeuge gerade in der Nähe der Station (oder mit area='berlin' über ganz Berlin) in der Luft sind.",
+        {"area": {"type": "string", "description": "'berlin' für ganz Berlin, 'rettung' nur Rettungshubschrauber, leer für die Station"}},
+        [],
+    ),
+    "read_webpage": tool(
+        "read_webpage",
+        "Text einer Webseite lesen, deren HTTPS-Adresse aus einem Suchergebnis oder der Frage stammt.",
+        {"url": {"type": "string"}},
+        ["url"],
+    ),
+}
+
+
+def schemas(config: Config) -> list[dict]:
+    """The tools the model may call with this configuration."""
+    result = list(SCHEMAS)
+    research = config.research
+    if research.enabled:
+        if research.searxng_url:
+            result.append(RESEARCH_SCHEMAS["web_search"])
+        result += [RESEARCH_SCHEMAS["search_news"], RESEARCH_SCHEMAS["search_wikipedia"]]
+        if research.transit_url:
+            result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
+        result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"]]
+        if research.read_pages:
+            result.append(RESEARCH_SCHEMAS["read_webpage"])
+    return result
+
 
 class Tools:
     def __init__(self, config: Config, store: Store, client: httpx.AsyncClient, *, offline: bool = False):
         self.config, self.store, self.client, self.offline = config, store, client, offline
         self.cache: dict[str, tuple[float, dict]] = {}
+        self.research = Research(config, client)
+        self.last_good: dict[str, tuple[float, dict]] = {}
 
-    async def run(self, name: str, arguments: dict) -> dict:
+    def last_known(self, kind: str, max_age: float = 12 * 3600) -> dict | None:
+        """Last successful news or weather result, for answers while the Internet is gone."""
+        known = self.last_good.get(kind)
+        if not known or datetime.now(UTC).timestamp() - known[0] > max_age:
+            return None
+        stamp = datetime.fromtimestamp(known[0], ZoneInfo(self.config.station.timezone)).strftime("%H:%M")
+        return {"text": f"Stand {stamp}: " + known[1]["text"], "sources": known[1].get("sources", [])}
+
+    async def _remember(self, kind: str, fetch) -> dict:
+        try:
+            result = await fetch()
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            result = None
+        # News sources report an outage as text without sources instead of raising.
+        if result is None or (kind == "news" and not result.get("sources")):
+            stale = self.last_known(kind)
+            if stale is None:
+                if result is None:
+                    raise httpx.TransportError("Source unreachable")
+                return result
+            stale["text"] = "Gerade keine Verbindung. " + stale["text"]
+            return stale
+        if result.get("sources"):
+            self.last_good[kind] = (datetime.now(UTC).timestamp(), result)
+        return result
+
+    async def run(self, name: str, arguments: dict, *, allowed_urls: set[str] | None = None) -> dict:
         allowed = {
             "get_weather": {"location", "period"},
             "get_repeater_status": {"name"},
             "list_repeaters": {"query"},
             "find_local_places": {"query", "location"},
         }
+        if self.config.research.enabled and not self.offline:
+            allowed.update(search_news={"query"}, search_wikipedia={"query"})
+            if self.config.research.searxng_url:
+                allowed["web_search"] = {"query"}
+            if self.config.research.read_pages:
+                allowed["read_webpage"] = {"url"}
+            if self.config.research.transit_url:
+                allowed["get_departures"] = {"stop", "trains"}
+                allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only"}
+            allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
-        if any(not isinstance(v, str) or len(v) > 160 for v in arguments.values()):
+        limit = 600 if name == "read_webpage" else 160
+        if any(not isinstance(v, str) or len(v) > limit for v in arguments.values()):
             raise ValueError("Invalid tool argument")
+        research = self.research
+        if name == "web_search":
+            query = arguments["query"]
+            return await research.cached(name, query, 1800, lambda: research.web_search(query))
+        if name == "search_news":
+            query = arguments.get("query", "")
+            return await self._remember(
+                "news", lambda: research.cached(name, query, 600, lambda: research.news(query))
+            )
+        if name == "search_wikipedia":
+            query = arguments["query"]
+            return await research.cached(name, query, 3600, lambda: research.wikipedia(query))
+        if name == "get_departures":
+            stop = arguments.get("stop", "")
+            trains = arguments.get("trains", "").strip().casefold() in {"ja", "true", "1", "yes"}
+            return await research.cached(
+                name, f"{stop}|{trains}", 30, lambda: research.departures(stop, trains)
+            )
+        if name == "get_journey":
+            origin, destination = arguments.get("origin", ""), arguments.get("destination", "")
+            when, only = arguments.get("when", ""), arguments.get("only", "")
+            arrive = arguments.get("arrive", "").strip().casefold() in {"ja", "true", "yes", "1"}
+            return await research.cached(
+                name, f"{origin}|{destination}|{when}|{arrive}|{only}", 60,
+                lambda: research.journey(origin, destination, when, arrive, only),
+            )
+        if name == "get_flights":
+            arrivals = arguments.get("direction", "").strip().casefold().startswith(("an", "arr"))
+            query = arguments.get("query", "")
+            return await research.cached(
+                name, f"{arrivals}|{query}", 60,
+                lambda: ber_flights(self.client, self.config.station.timezone, arrivals, query),
+            )
+        if name == "get_planes_overhead":
+            weather = self.config.weather
+            area = arguments.get("area", "").strip().casefold()
+            wide, rescue = area == "berlin", area == "rettung"
+            return await research.cached(
+                name, area, 60,
+                lambda: planes_overhead(
+                    self.client, weather.latitude, weather.longitude, weather.location, wide, rescue),
+            )
+        if name == "read_webpage":
+            return await self.research.read_page(arguments["url"], allowed_urls or set())
         if name == "get_weather":
-            return await self.weather(**arguments)
+            local = norm(arguments.get("location", "")) in {
+                "", "hier", norm(self.config.weather.location), norm(self.config.station.location)
+            }
+            if not local:
+                return await self.weather(**arguments)
+            return await self._remember("weather", lambda: self.weather(**arguments))
         if name == "get_repeater_status":
             return self.repeater(**arguments)
         if name == "find_local_places":
@@ -194,13 +363,18 @@ class Tools:
                     "forecast_days": 7,
                     "wind_speed_unit": "kmh",
                     "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_gusts_10m",
-                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max",
+                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max,sunshine_duration",
+                    "hourly": "sunshine_duration,precipitation,precipitation_probability",
                 },
             )
             forecast["_name"] = name
             if len(self.cache) >= 64:
                 self.cache.clear()
             self.cache[key] = (now, forecast)
+        if period == "week":
+            result = week_outlook(name, forecast["daily"], self.config.station.timezone, now)
+            result["hours"] = hourly_rows(forecast.get("hourly") or {})
+            return result
         if period == "now":
             current = forecast["current"]
             text = f"{name} jetzt: {current['temperature_2m']:g} °C, {weather_description(current['weather_code'])}."
@@ -227,15 +401,33 @@ class Tools:
             i = daily["time"].index(target)
             text = (
                 f"{name} {target}: {daily['temperature_2m_min'][i]:g}–{daily['temperature_2m_max'][i]:g} °C, "
-                f"{weather_description(daily['weather_code'][i])}. Niederschlagsrisiko max. "
+                f"{day_description(daily, i)}{sunshine(daily, i)}{windows(forecast, target, 'sun')}. Niederschlagsrisiko max. "
                 f"{measurement(daily, 'precipitation_probability_max', ' %', i)}, "
-                f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag. "
+                f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag"
+                f"{windows(forecast, target, 'rain')}. "
                 f"Wind bis {measurement(daily, 'wind_speed_10m_max', ' km/h', i)}, "
                 f"Böen bis {measurement(daily, 'wind_gusts_10m_max', ' km/h', i)}."
             )
-        return {"text": text, "sources": ["https://open-meteo.com/"], "checked_at": now}
+        result = {"text": text, "sources": ["https://open-meteo.com/"], "checked_at": now}
+        if period not in {"now", ""} and "daily" in forecast and "i" in locals():
+            daily = forecast["daily"]
+
+            def pick(key):
+                values = daily.get(key)
+                value = values[i] if isinstance(values, list) and i < len(values) else None
+                return value if type(value) in {int, float} else None
+
+            result["day"] = {
+                "sun_h": None if pick("sunshine_duration") is None else pick("sunshine_duration") / 3600,
+                "rain_prob": pick("precipitation_probability_max"),
+                "rain_mm": pick("precipitation_sum"),
+                "code": pick("weather_code"),
+            }
+        return result
 
     def catalogue(self, query: str = "") -> dict:
+        if query.strip().casefold() in {"*", "alle", "all", "repeater", "repeaters"}:
+            query = ""
         rows = [r for r in self.store.repeaters() if not query or norm(query) in norm(r["name"])]
         if not rows:
             return {
@@ -304,6 +496,122 @@ def measurement(data, key, unit, index=None):
     if index is not None:
         value = value[index] if isinstance(value, list) and index < len(value) else None
     return f"{value:g}{unit}" if type(value) in {int, float} else "k. A."
+
+
+WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+
+def week_outlook(name: str, daily: dict, timezone: str, checked_at: float) -> dict:
+    """Seven days in short form plus per-day numbers, for 'wann scheint die Sonne wieder?'."""
+    today = datetime.now(ZoneInfo(timezone)).date()
+    days, parts = [], []
+    for i, stamp in enumerate(daily.get("time") or []):
+        try:
+            date = datetime.fromisoformat(stamp).date()
+        except ValueError:
+            continue
+        if date < today:
+            continue
+
+        def pick(key, i=i):
+            values = daily.get(key)
+            value = values[i] if isinstance(values, list) and i < len(values) else None
+            return value if type(value) in {int, float} else None
+
+        sun = pick("sunshine_duration")
+        day = {
+            "date": date, "sun_h": None if sun is None else sun / 3600, "rain_prob": pick("precipitation_probability_max"),
+            "rain_mm": pick("precipitation_sum"), "code": pick("weather_code"),
+        }
+        days.append(day)
+        label = "heute" if date == today else "morgen" if (date - today).days == 1 else WEEKDAYS[date.weekday()][:2]
+        sun_text = "?" if day["sun_h"] is None else f"{round(day['sun_h']):g}"
+        parts.append(f"{label} {sun_text}h")
+    return {
+        "text": f"{name}, Sonnenstunden: " + ", ".join(parts) + ".",
+        "sources": ["https://open-meteo.com/"],
+        "checked_at": checked_at,
+        "days": days,
+    }
+
+
+def hourly_rows(hourly: dict) -> list[dict]:
+    """Open-Meteo hourly arrays -> rows with local time, sunshine seconds and rain."""
+    rows = []
+    times = hourly.get("time") or []
+    for n, stamp in enumerate(times):
+        try:
+            when = datetime.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            continue
+
+        def pick(key, n=n):
+            values = hourly.get(key)
+            value = values[n] if isinstance(values, list) and n < len(values) else None
+            return value if type(value) in {int, float} else None
+
+        rows.append({"time": when, "sun_s": pick("sunshine_duration"), "mm": pick("precipitation"),
+                     "prob": pick("precipitation_probability")})
+    return rows
+
+
+def sunny_hour(row: dict) -> bool:
+    return (row.get("sun_s") or 0) >= 1800
+
+
+def rainy_hour(row: dict) -> bool:
+    return (row.get("mm") or 0) >= 0.2 or ((row.get("prob") or 0) >= 70 and (row.get("mm") or 0) > 0)
+
+
+def hour_windows(rows: list[dict], test) -> list[tuple[int, int]]:
+    """Consecutive matching hours as (start, end) clock hours, end exclusive."""
+    spans: list[list[int]] = []
+    for row in rows:
+        if not test(row):
+            continue
+        hour = row["time"].hour
+        if spans and spans[-1][1] == hour:
+            spans[-1][1] = hour + 1
+        else:
+            spans.append([hour, hour + 1])
+    return [(a, b) for a, b in spans]
+
+
+def windows(forecast: dict, target: str, kind: str) -> str:
+    """' (10–13 Uhr)' for sun or ', Regen vor allem 15–18 Uhr' for rain on the requested day."""
+    rows = [r for r in hourly_rows(forecast.get("hourly") or {}) if r["time"].date().isoformat() == target]
+    spans = hour_windows(rows, sunny_hour if kind == "sun" else rainy_hour)
+    if not spans:
+        return ""
+    spans = sorted(spans, key=lambda s: s[0] - s[1])[:2]
+    text = " und ".join(f"{a}–{b}" for a, b in sorted(spans)) + " Uhr"
+    return f" ({text})" if kind == "sun" else f", Regen vor allem {text}"
+
+
+def sunshine(daily: dict, i: int) -> str:
+    """Sunshine hours answer 'wird es sonnig?' – the weather code alone cannot."""
+    values = daily.get("sunshine_duration")
+    value = values[i] if isinstance(values, list) and i < len(values) else None
+    if type(value) not in {int, float}:
+        return ""
+    hours = value / 3600
+    return ", kaum Sonne" if hours < 0.5 else f", etwa {round(hours):g} Std. Sonne"
+
+
+def day_description(daily: dict, i: int) -> str:
+    """No 'Regen' when the same forecast says 0 mm and 0 % – that reads as a contradiction on air."""
+    text = weather_description(daily["weather_code"][i])
+    try:
+        dry = not daily["precipitation_sum"][i] and not daily["precipitation_probability_max"][i]
+    except (KeyError, IndexError, TypeError):
+        dry = False
+    if dry and text in {"Nieselregen", "Regen", "Schnee", "Gewitter"}:
+        return "bewölkt, trocken"
+    try:
+        sunny = (daily["sunshine_duration"][i] or 0) >= 2 * 3600
+    except (KeyError, IndexError, TypeError):
+        sunny = False
+    return "Sonne und Schauer" if sunny and text in {"Nieselregen", "Regen"} else text
 
 
 def weather_description(code: int) -> str:
