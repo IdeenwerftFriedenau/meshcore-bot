@@ -119,7 +119,10 @@ class Assistant:
         if wx:
             return await self._tool_answer("get_weather", wx)
         routed = fix_typos(question)  # radio users type fast on tiny keyboards
-        weather = weather_question(routed, self.config.weather.location) if self.config.weather.enabled else None
+        weather = None
+        if self.config.weather.enabled:
+            weather = weather_question(routed, self.config.weather.location) or weather_followup(
+                routed, history, self.config.weather.location)
         if weather:
             return await self._weather_answer(routed, weather)
         trip = (
@@ -296,10 +299,15 @@ class Assistant:
 
     async def _weather_answer(self, question: str, args: dict) -> Answer:
         """Weather straight from the data with a short verdict; the gateway model mixes up questions."""
-        try:
-            result = await self.tools.run("get_weather", args)
-        except (httpx.HTTPError, ValueError, TypeError, KeyError):
-            return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
+        result = None
+        for attempt in range(2):  # Open-Meteo sometimes answers 429 or stalls once
+            try:
+                result = await self.tools.run("get_weather", args)
+                break
+            except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                if attempt:
+                    return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
+                await asyncio.sleep(1.5)
         if result.get("days"):
             when = hourly_when(question, result.get("hours") or [], self.config.station.timezone) or weather_when(
                 question, result["days"]
@@ -655,6 +663,24 @@ def weather_question(question: str, default_location: str) -> dict | None:
     return {"location": location, "period": period}
 
 
+def weather_followup(question: str, history: list[dict], default_location: str) -> dict | None:
+    """'und morgen?' / 'und in Potsdam?' right after a weather question stays a weather question."""
+    text = " ".join(question.split()).strip(" ?!.")
+    if len(text) > 40 or not re.match(r"(und|wie ist es|wie sieht es)\b", text, re.I):
+        return None
+    earlier = [str(item.get("content", "")) for item in history if item.get("role") == "user"]
+    if not earlier:
+        return None
+    previous = weather_question(fix_typos(earlier[-1]), default_location)
+    if not previous:
+        return None
+    period = weather_question(f"wetter {text}", default_location) or {}
+    place = re.search(r"\b(?:in|für|fuer|bei)\s+(\S.+)$", text, re.I)
+    location = place.group(1).strip()[:1].upper() + place.group(1).strip()[1:] if place else previous["location"]
+    has_period = re.search(r"morgen|heute|woche|wochenende|jetzt|gerade|nachher|abend", text, re.I)
+    return {"location": location, "period": period.get("period") if has_period else previous["period"]}
+
+
 MESH_TOPIC = re.compile(r"mesh|repeater|lora|companion|knoten|node|funk|firmware|kanal|channel|advert|t1000|heltec|rak", re.I)
 def hourly_when(question: str, hours: list[dict], timezone: str) -> str:
     """Hour-exact answer for 'wann scheint die Sonne wieder / wann regnet es / wann hört es auf'."""
@@ -725,24 +751,33 @@ def weather_when(question: str, days: list[dict]) -> str:
 
 
 def weather_verdict(question: str, day: dict) -> str:
-    """Short yes/no lead for 'wird es sonnig/regnet es' from the forecast numbers."""
+    """Short lead for 'wird es sonnig/regnet es' from the forecast numbers.
+
+    Rain is judged by the expected amount first: a high shower risk with 0 mm is not "Ja, Regen".
+    A statement ("morgen wird es nicht regnen") gets no Ja/Nein, which would read as agreeing or not.
+    """
     sun, prob, mm = day.get("sun_h"), day.get("rain_prob"), day.get("rain_mm")
+    lead = ""
     if re.search(r"sonnig|sonne", question, re.I) and sun is not None:
-        if sun >= 4:
-            return "Ja, ziemlich sonnig."
-        if sun >= 1.5:
-            return "Teils sonnig."
-        return "Eher nicht sonnig."
-    if re.search(r"regn|regen|schirm|nass", question, re.I) and (prob is not None or mm is not None):
+        lead = "Ja, ziemlich sonnig." if sun >= 4 else "Teils sonnig." if sun >= 1.5 else "Eher nicht sonnig."
+    elif re.search(r"regn|regen|schirm|nass|trocken", question, re.I) and (prob is not None or mm is not None):
         prob, mm = prob or 0, mm or 0
-        if prob >= 60 or mm >= 1:
-            return "Ja, mit Regen ist zu rechnen."
-        if prob < 25 and mm < 0.3:
-            return "Nein, es bleibt wohl trocken."
-        return "Vielleicht etwas Regen."
-    if re.search(r"schnee|schneit", question, re.I) and day.get("code") is not None:
-        return "Ja, Schnee ist möglich." if day["code"] in (71, 73, 75, 77, 85, 86) else "Nein, kein Schnee in Sicht."
-    return ""
+        if mm >= 1:
+            lead = f"Ja, es wird regnen (etwa {mm:.0f} mm)."
+        elif mm >= 0.2:
+            lead = "Etwas Regen ist möglich, aber nur wenig."
+        elif prob >= 40:
+            lead = f"Eher kein Regen: 0 mm erwartet, nur Schauerrisiko bis {prob:.0f} %."
+        else:
+            lead = "Nein, es bleibt wohl trocken."
+    elif re.search(r"schnee|schneit", question, re.I) and day.get("code") is not None:
+        lead = "Ja, Schnee ist möglich." if day["code"] in (71, 73, 75, 77, 85, 86) else "Nein, kein Schnee in Sicht."
+    asking = question.strip().endswith("?") or re.match(
+        r"\s*(wird|werden|regnet|schneit|scheint|gibt|brauch\w*|ist|bleibt|kommt|wann|wie|soll|muss|kann)\b",
+        question, re.I)
+    if lead and not asking:
+        lead = re.sub(r"^(Ja|Nein), (\w)", lambda m: m.group(2).upper(), lead)
+    return lead
 
 
 TRANSIT_WORDS = re.compile(
@@ -877,6 +912,7 @@ def journey_request(question: str, home: str, history: list[dict] | None = None,
         destination = base[1]
         if re.search(r"zurück|zurueck|rückweg|rueckweg", text, re.I):
             origin, destination = destination, origin or home
+            chain = [text]  # the way back starts fresh: no old arrival time
     elif not TRIP_WORDS.search(text):
         return None
     origin = origin or home
@@ -1004,12 +1040,13 @@ def local_place_request(question: str, default_location: str) -> dict | None:
     """Keep recommendation searches compact and avoid passing unrelated radio text onward."""
     lowered = question.casefold()
     categories = [
-        (r"\b(caf[eé]|kaffee)\b", "Café"),
-        (r"\b(restaurant|essen|abendessen|mittagessen)\b", "Restaurant"),
+        # specific food first: "Pizza essen" is a pizzeria, not any restaurant
         (r"\b(pizza|pizzeria)\b", "Pizzeria"),
         (r"\b(sushi)\b", "Sushi-Restaurant"),
         (r"\b(d[oö]ner|kebab|kebap)\b", "Döner Kebab"),
         (r"\b(h[aä]hnchen|huhn|chicken)\b", "Hähnchen-Restaurant"),
+        (r"\b(caf[eé]|kaffee)\b", "Café"),
+        (r"\b(restaurant|essen|abendessen|mittagessen)\b", "Restaurant"),
         (r"\b(b[aä]cker|b[aä]ckerei)\b", "Bäckerei"),
         (r"\b(apotheke)\b", "Apotheke"),
         (r"\b(supermarkt|lebensmittel)\b", "Supermarkt"),
@@ -1022,10 +1059,18 @@ def local_place_request(question: str, default_location: str) -> dict | None:
     asks = re.search(r"\b(wo|welche|gibt|empfiehl|suche|n[aä]he|in der n[aä]he|finde)\b", lowered)
     if not asks:
         return None
+    if re.search(r"\b(morgen|heute|übermorgen|wann|wieder|zeit f[üu]r|ge[öo]ffnet|offen|montag|dienstag|mittwoch"
+                 r"|donnerstag|freitag|samstag|sonntag|wochenende)\b", lowered):
+        return None  # a question about when a certain stand is there, not a list of places
     location = default_location
     match = re.search(r"\b(?:in|bei|nahe)\s+([\wäöüß .-]{2,60})", question, re.I)
     if match:
         candidate = match.group(1).strip(" ?!.,")
+        # "in Schöneberg Pizza essen" -> "Schöneberg": drop the food and verb words after the place
+        candidate = " ".join(w for w in candidate.split() if not re.fullmatch(
+            r"pizza|pizzeria|sushi|d[oö]ner|kebab|kebap|essen|trinken|kaufen|gehen|finden|frühstücken|"
+            r"caf[eé]|kaffee|restaurant|bar|kneipe|apotheke|supermarkt|b[aä]ckerei|gut|gute[nrs]?|eine?n?",
+            w.casefold().strip(" ?!.,")))
         if candidate and not re.search(r"\b(?:der|die|das|mir|einem|einer)\b", candidate, re.I):
             location = candidate
     return {"query": query, "location": location}

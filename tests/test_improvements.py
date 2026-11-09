@@ -553,7 +553,7 @@ def test_weather_verdicts():
     assert weather_verdict("wird es morgen sonnig", {"sun_h": 0.2}) == "Eher nicht sonnig."
     assert weather_verdict("wird es sonnig", {"sun_h": 5}) == "Ja, ziemlich sonnig."
     assert weather_verdict("regnet es morgen", {"rain_prob": 0, "rain_mm": 0}) == "Nein, es bleibt wohl trocken."
-    assert weather_verdict("brauche ich einen Schirm", {"rain_prob": 80, "rain_mm": 3}) == "Ja, mit Regen ist zu rechnen."
+    assert weather_verdict("brauche ich einen Schirm", {"rain_prob": 80, "rain_mm": 3}) == "Ja, es wird regnen (etwa 3 mm)."
     assert weather_verdict("wie wird das Wetter", {"sun_h": 5}) == ""
 
 
@@ -706,8 +706,8 @@ async def test_journey_from_transport_rest():
             "get_journey", {"origin": "s friedenau", "destination": "postdammer platz"}
         )
     assert result["text"] == (
-        "S Friedenau → S+U Potsdamer Platz Bhf: los 12:30 zu Fuß, 12:36 M76 > S2 ab U Walther-Schreiber-Platz, "
-        "umsteigen S Priesterweg, an 12:56 (26 Min.); 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.)."
+        # the bus trip leaves only 4 minutes earlier but arrives 10 minutes later: not worth airtime
+        "S Friedenau → S+U Potsdamer Platz Bhf: 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.)."
     )
 
 
@@ -869,3 +869,49 @@ async def test_journey_to_a_place_and_without_tram_line():
         tram = await tools.run("get_journey", {"origin": "S Friedenau", "destination": "Alex", "only": "tram"})
     assert seen[0]["to.id"] == "980105411" and seen[0]["to.latitude"] == "52.502" and "to" not in seen[0]
     assert tram["text"] == "S Friedenau → Alex: nur mit Tram keine Verbindung gefunden."
+
+
+def test_weather_follow_up_keeps_the_topic():
+    from meshcore_ai_bot.assistant import weather_followup
+    history = [{"role": "user", "content": "wie wird das wetter morgen"}, {"role": "assistant", "content": "…"}]
+    assert weather_followup("und übermorgen?", history, "Berlin-Friedenau") == {
+        "location": "Berlin-Friedenau", "period": "day_after_tomorrow"}
+    assert weather_followup("und in Potsdam?", history, "Berlin-Friedenau") == {
+        "location": "Potsdam", "period": "tomorrow"}
+    other = [{"role": "user", "content": "Wer war Hans Baluschek?"}]
+    assert weather_followup("und übermorgen?", other, "Berlin-Friedenau") is None
+
+
+def test_way_back_starts_without_the_old_arrival_time():
+    from datetime import datetime
+
+    from meshcore_ai_bot.assistant import journey_request
+    history = [{"role": "user", "content": "ich muss morgen um acht am Heidelberger Platz sein von s Friedenau"}]
+    back = journey_request("und zurück?", "S Friedenau", history, datetime(2026, 11, 9, 22, 0))
+    assert back == {"origin": "Heidelberger Platz", "destination": "s Friedenau"}
+
+
+def test_place_search_keeps_food_and_place_apart():
+    from meshcore_ai_bot.assistant import local_place_request
+    assert local_place_request("Wo kann ich in Schöneberg Pizza essen?", "Berlin-Friedenau") == {
+        "query": "Pizzeria", "location": "Schöneberg"}
+    assert local_place_request("Gibt es ein gutes Café in Friedenau?", "Berlin-Friedenau") == {
+        "query": "Café", "location": "Friedenau"}
+
+
+@pytest.mark.parametrize("question,day,expected", [
+    ("in Berlin wird es morgen nicht regnen.", {"rain_prob": 68, "rain_mm": 0}, "Eher kein Regen: 0 mm erwartet, nur Schauerrisiko bis 68 %."),
+    ("wird es morgen regnen?", {"rain_prob": 90, "rain_mm": 4.2}, "Ja, es wird regnen (etwa 4 mm)."),
+    ("morgen bleibt es trocken", {"rain_prob": 10, "rain_mm": 0}, "Es bleibt wohl trocken."),
+    ("Regnet es morgen", {"rain_prob": 10, "rain_mm": 0}, "Nein, es bleibt wohl trocken."),
+])
+def test_rain_verdict_follows_the_amount(question, day, expected):
+    from meshcore_ai_bot.assistant import weather_verdict
+    assert weather_verdict(question, day) == expected
+
+
+def test_question_about_a_stand_day_is_no_place_list():
+    from meshcore_ai_bot.assistant import local_place_request
+    assert local_place_request("ist morgen wieder Zeit für Gaumenschmaus Hähnchen in der Nähe", "Friedenau") is None
+    assert local_place_request("Wo gibt es Hähnchen in der Nähe?", "Friedenau") == {
+        "query": "Hähnchen-Restaurant", "location": "Friedenau"}
