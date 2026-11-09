@@ -706,8 +706,8 @@ async def test_journey_from_transport_rest():
             "get_journey", {"origin": "s friedenau", "destination": "postdammer platz"}
         )
     assert result["text"] == (
-        "S Friedenau → S+U Potsdamer Platz Bhf: los 12:30 zu Fuß, 12:36 M76 > S2 ab U Walther-Schreiber-Platz, "
-        "umsteigen S Priesterweg, an 12:56 (26 Min.); 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.)."
+        # the bus trip leaves only 4 minutes earlier but arrives 10 minutes later: not worth airtime
+        "S Friedenau → S+U Potsdamer Platz Bhf: 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.)."
     )
 
 
@@ -869,3 +869,23 @@ async def test_journey_to_a_place_and_without_tram_line():
         tram = await tools.run("get_journey", {"origin": "S Friedenau", "destination": "Alex", "only": "tram"})
     assert seen[0]["to.id"] == "980105411" and seen[0]["to.latitude"] == "52.502" and "to" not in seen[0]
     assert tram["text"] == "S Friedenau → Alex: nur mit Tram keine Verbindung gefunden."
+
+
+def test_weather_follow_up_keeps_the_topic():
+    from meshcore_ai_bot.assistant import weather_followup
+    history = [{"role": "user", "content": "wie wird das wetter morgen"}, {"role": "assistant", "content": "…"}]
+    assert weather_followup("und übermorgen?", history, "Berlin-Friedenau") == {
+        "location": "Berlin-Friedenau", "period": "day_after_tomorrow"}
+    assert weather_followup("und in Potsdam?", history, "Berlin-Friedenau") == {
+        "location": "Potsdam", "period": "tomorrow"}
+    other = [{"role": "user", "content": "Wer war Hans Baluschek?"}]
+    assert weather_followup("und übermorgen?", other, "Berlin-Friedenau") is None
+
+
+def test_way_back_starts_without_the_old_arrival_time():
+    from datetime import datetime
+
+    from meshcore_ai_bot.assistant import journey_request
+    history = [{"role": "user", "content": "ich muss morgen um acht am Heidelberger Platz sein von s Friedenau"}]
+    back = journey_request("und zurück?", "S Friedenau", history, datetime(2026, 11, 9, 22, 0))
+    assert back == {"origin": "Heidelberger Platz", "destination": "s Friedenau"}

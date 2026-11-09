@@ -119,7 +119,10 @@ class Assistant:
         if wx:
             return await self._tool_answer("get_weather", wx)
         routed = fix_typos(question)  # radio users type fast on tiny keyboards
-        weather = weather_question(routed, self.config.weather.location) if self.config.weather.enabled else None
+        weather = None
+        if self.config.weather.enabled:
+            weather = weather_question(routed, self.config.weather.location) or weather_followup(
+                routed, history, self.config.weather.location)
         if weather:
             return await self._weather_answer(routed, weather)
         trip = (
@@ -296,10 +299,15 @@ class Assistant:
 
     async def _weather_answer(self, question: str, args: dict) -> Answer:
         """Weather straight from the data with a short verdict; the gateway model mixes up questions."""
-        try:
-            result = await self.tools.run("get_weather", args)
-        except (httpx.HTTPError, ValueError, TypeError, KeyError):
-            return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
+        result = None
+        for attempt in range(2):  # Open-Meteo sometimes answers 429 or stalls once
+            try:
+                result = await self.tools.run("get_weather", args)
+                break
+            except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                if attempt:
+                    return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
+                await asyncio.sleep(1.5)
         if result.get("days"):
             when = hourly_when(question, result.get("hours") or [], self.config.station.timezone) or weather_when(
                 question, result["days"]
@@ -655,6 +663,24 @@ def weather_question(question: str, default_location: str) -> dict | None:
     return {"location": location, "period": period}
 
 
+def weather_followup(question: str, history: list[dict], default_location: str) -> dict | None:
+    """'und morgen?' / 'und in Potsdam?' right after a weather question stays a weather question."""
+    text = " ".join(question.split()).strip(" ?!.")
+    if len(text) > 40 or not re.match(r"(und|wie ist es|wie sieht es)\b", text, re.I):
+        return None
+    earlier = [str(item.get("content", "")) for item in history if item.get("role") == "user"]
+    if not earlier:
+        return None
+    previous = weather_question(fix_typos(earlier[-1]), default_location)
+    if not previous:
+        return None
+    period = weather_question(f"wetter {text}", default_location) or {}
+    place = re.search(r"\b(?:in|für|fuer|bei)\s+(\S.+)$", text, re.I)
+    location = place.group(1).strip()[:1].upper() + place.group(1).strip()[1:] if place else previous["location"]
+    has_period = re.search(r"morgen|heute|woche|wochenende|jetzt|gerade|nachher|abend", text, re.I)
+    return {"location": location, "period": period.get("period") if has_period else previous["period"]}
+
+
 MESH_TOPIC = re.compile(r"mesh|repeater|lora|companion|knoten|node|funk|firmware|kanal|channel|advert|t1000|heltec|rak", re.I)
 def hourly_when(question: str, hours: list[dict], timezone: str) -> str:
     """Hour-exact answer for 'wann scheint die Sonne wieder / wann regnet es / wann hört es auf'."""
@@ -877,6 +903,7 @@ def journey_request(question: str, home: str, history: list[dict] | None = None,
         destination = base[1]
         if re.search(r"zurück|zurueck|rückweg|rueckweg", text, re.I):
             origin, destination = destination, origin or home
+            chain = [text]  # the way back starts fresh: no old arrival time
     elif not TRIP_WORDS.search(text):
         return None
     origin = origin or home

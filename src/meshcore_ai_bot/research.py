@@ -224,6 +224,8 @@ class Research:
             lines.append((first, there, text))
         if arrive and wanted:  # the latest connections that are still on time
             lines = [line for line in lines if line[1] <= wanted][-2:] or lines[:1]
+        else:  # drop a trip that leaves barely earlier but arrives clearly later than another one
+            lines = [a for a in lines if not any(b[1] < a[1] and (b[0] - a[0]).total_seconds() <= 300 for b in lines)]
         lines = sorted(lines[:2], key=lambda line: line[0])
         if not lines:
             return {"text": "Keine passende Verbindung gefunden.", "sources": []}
