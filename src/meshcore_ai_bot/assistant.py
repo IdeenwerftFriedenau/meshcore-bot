@@ -606,7 +606,7 @@ def fix_typos(question: str) -> str:
             fixed = None
         elif lower in TYPO_WORDS:
             fixed = TYPO_WORDS[lower]
-        elif len(lower) >= 5 and lower.isalpha() and lower not in TYPO_VOCAB:
+        elif len(lower) >= 5 and lower.isalpha() and lower not in TYPO_VOCAB and not (index and core[:1].isupper()):
             close = difflib.get_close_matches(lower, TYPO_VOCAB, n=1, cutoff=0.84)
             fixed = close[0] if close else None
         if fixed and fixed != lower:
@@ -761,17 +761,18 @@ TRIP_TIME = re.compile(
     r"|\b(\d{1,2})[:.](\d{2})\b|\b(\d{1,2})\s*uhr\b", re.I)
 TRIP_ARRIVE = re.compile(r"\bsein\b|\bda bin\b|\bdort bin\b|ankunft|ankommen|\bankomme\b|spätestens|spaetestens"
                          r"|\bbis\s+(?:\d|" + "|".join(HOUR_WORDS) + r")\b", re.I)
-TRIP_SKIP = re.compile(r"flug(?!hafen)|flieg|ticket|preis|kosten|\bauto\b|fahrrad|\brad\b|zu fu(ß|ss)|taxi", re.I)
+TRIP_SKIP = re.compile(r"flug(?!hafen|zeit)|flieg|ticket|preis|kosten|\bauto\b|fahrrad|\brad\b|zu fu(ß|ss)|taxi", re.I)
 TRIP_WORDS = re.compile(r"wie komm|komm ich|verbindung|wie fahr|route|\bweg\b|\bvon\b.+\bnach\b|\bsein\b|da bin"
-                        r"|ankunft|\bbus\b|bahn|\bzug\b|tram|öffentlich|oeffentlich|öffis|oeffis|fahr", re.I)
+                        r"|ankunft|\bbus\b|bahn|\bzug\b|tram|öffentlich|oeffentlich|öffis|oeffis|fahr|brauch|dauert"
+                        r"|\b[su]\d{1,2}\b|\b(?:von|vom|ab)\s+hier\b|\blos\b", re.I)
 TRIP_FOLLOW = re.compile(r"früher|frueher|eher|später|spaeter|\bbus\b|busse|tram|straßenbahn|strassenbahn|u-?bahn"
                          r"|s-?bahn|umsteig|uhrzeit|\bwann\b|\bum\s+\S+|da bin|\bsein\b|ankunft|zurück|zurueck"
                          r"|rückweg|rueckweg|andere|alternative|verbindung|\bauch\b", re.I)
 _END = r"(?=\s+(?:nach|zum|zur|zu|bis|mit|um|gegen|damit|und|sein|ankunft|von|vom|ab|abfahrt|morgen|heute|übermorgen)\b|$)"
 TRIP_FROM = re.compile(r"\b(?:von|vom|ab|abfahrt|start)\s+(?!\d|" + "|".join(HOUR_WORDS) + r"\b)(.+?)" + _END, re.I)
 TRIP_TO = [
-    re.compile(r"\b(?:nach|zum|zur|bis zum|bis zur|zu)\s+(?!\d|hause\b)(.+?)" + _END, re.I),
-    re.compile(r"\b(?:am|an der|an|beim|im|in der)\s+(.+?)\s+sein\b", re.I),
+    re.compile(r"\b(?:am|an der|an|beim|im|in der)\s+(.+?)\s+(?:zu\s+)?sein\b", re.I),
+    re.compile(r"\b(?:nach|zum|zur|bis zum|bis zur|zu)\s+(?!\d|hause\b|sein\b)(.+?)" + _END, re.I),
     re.compile(r"\b(?:da|dort)\s+(?:bin|sein|ist)\s+(?:am\s+|an der\s+|beim\s+)?(.+?)" + _END, re.I),
 ]
 VAGUE_PLACES = {"hause", "arbeit", "schule", "uni", "oma", "mama", "papa", "freunden", "dir", "mir", "hin", "da",
@@ -782,12 +783,24 @@ PRODUCTS = [("bus", r"\bbus\b|\bbusse\b|\bbussen\b|\bbuse\b"), ("tram", r"tram|s
 
 def _place(value: str) -> str:
     value = re.sub(r"^(der|die|dem|den|haltestelle|bahnhof)\s+", "", value.strip(" ?!.,"), flags=re.I)
-    value = re.sub(r"\s+(mit|per)\s+.*$|\s+(jetzt|gleich|heute|morgen|früh|frueh|da|hin|sein)$", "", value, flags=re.I)
+    value = re.sub(r"\s+(mit|per)\s+.*$|(\s+(jetzt|gleich|heute|morgen|früh|frueh|da|hin|sein|wann|bitte|noch|denn))+$",
+                   "", value, flags=re.I)
     return " ".join(value.split()[:5])
+
+
+def _clock_words(text: str) -> str:
+    """'halb acht' -> '7:30', 'viertel nach 8' -> '8:15', 'viertel vor neun' -> '8:45'."""
+    def hour(word):
+        return int(word) if word.isdigit() else HOUR_WORDS.get(word.casefold(), 0)
+
+    text = re.sub(r"\bhalb\s+" + _HOUR + r"\b", lambda m: f"{(hour(m.group(1)) - 1) % 24}:30", text, flags=re.I)
+    text = re.sub(r"\bviertel nach\s+" + _HOUR + r"\b", lambda m: f"{hour(m.group(1))}:15", text, flags=re.I)
+    return re.sub(r"\bviertel vor\s+" + _HOUR + r"\b", lambda m: f"{(hour(m.group(1)) - 1) % 24}:45", text, flags=re.I)
 
 
 def _trip_time(text: str, now: datetime) -> tuple[datetime | None, bool]:
     """Wanted time (or None) and whether it is an arrival time."""
+    text = _clock_words(text)
     match = TRIP_TIME.search(text)
     if not match:
         return None, False
@@ -811,7 +824,10 @@ def _trip_time(text: str, now: datetime) -> tuple[datetime | None, bool]:
 
 def _trip_parts(text: str) -> tuple[str, str]:
     origin = destination = ""
-    without_time = TRIP_TIME.sub(" ", text)
+    without_time = TRIP_TIME.sub(" ", _clock_words(text))
+    pair = re.search(r"\b(?:verbindung|route|fahrt)\s+(?:von\s+)?(.+?)\s+(?:-+|–|>+|->|bis)\s+(.+)$", without_time, re.I)
+    if pair:
+        return _place(pair.group(1)), _place(pair.group(2))
     found = TRIP_FROM.search(without_time)
     if found:
         origin = _place(found.group(1))
@@ -893,6 +909,8 @@ def journey_request(question: str, home: str, history: list[dict] | None = None,
         args["arrive"] = "ja"
     if only:
         args["only"] = only
+    if any(re.search(r"ohne umsteig|ohne zu umsteigen|\bdirekt\b", step, re.I) for step in chain):
+        args["direct"] = "ja"
     return args
 
 
