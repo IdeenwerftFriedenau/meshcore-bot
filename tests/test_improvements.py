@@ -567,3 +567,29 @@ async def test_week_outlook_from_forecast(monkeypatch):
     result = week_outlook("Friedenau", daily, "Europe/Berlin", 0)
     assert result["text"].startswith("Friedenau, Sonnenstunden: heute 0h, morgen 0h, ")
     assert len(result["days"]) == 3 and result["days"][2]["sun_h"] == 5
+
+
+def test_hour_exact_sun_and_rain():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from meshcore_ai_bot.assistant import hourly_when
+    from meshcore_ai_bot.tools import hour_windows, sunny_hour, windows
+    now = datetime.now(ZoneInfo("Europe/Berlin")).replace(tzinfo=None, minute=0, second=0, microsecond=0)
+    base = now.replace(hour=0)
+    hours = [{"time": base + timedelta(hours=n), "sun_s": 0, "mm": 0, "prob": 0} for n in range(72)]
+    for n in (24 + 10, 24 + 11, 24 + 12):  # tomorrow 10–13
+        hours[n]["sun_s"] = 3600
+    for n in (24 + 15, 24 + 16):  # tomorrow rain 15–17
+        hours[n]["mm"] = 1.2
+    assert hourly_when("wann scheint die sonne wieder", hours, "Europe/Berlin") == (
+        "Morgen ab 10 Uhr scheint die Sonne, bis etwa 13 Uhr."
+    )
+    assert hourly_when("wann regnet es", hours, "Europe/Berlin") == "Morgen ab 15 Uhr regnet es, bis etwa 17 Uhr."
+    assert hourly_when("wann hört der regen auf", hours, "Europe/Berlin").startswith("Es ist gerade trocken")
+    assert hour_windows(hours[24:48], sunny_hour) == [(10, 13)]
+    target = (base + timedelta(days=1)).date().isoformat()
+    hourly = {"time": [h["time"].isoformat() for h in hours], "sunshine_duration": [h["sun_s"] for h in hours],
+              "precipitation": [h["mm"] for h in hours], "precipitation_probability": [h["prob"] for h in hours]}
+    assert windows({"hourly": hourly}, target, "sun") == " (10–13 Uhr)"
+    assert windows({"hourly": hourly}, target, "rain") == ", Regen vor allem 15–17 Uhr"

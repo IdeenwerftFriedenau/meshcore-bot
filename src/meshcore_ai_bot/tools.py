@@ -343,6 +343,7 @@ class Tools:
                     "wind_speed_unit": "kmh",
                     "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_gusts_10m",
                     "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max,sunshine_duration",
+                    "hourly": "sunshine_duration,precipitation,precipitation_probability",
                 },
             )
             forecast["_name"] = name
@@ -350,7 +351,9 @@ class Tools:
                 self.cache.clear()
             self.cache[key] = (now, forecast)
         if period == "week":
-            return week_outlook(name, forecast["daily"], self.config.station.timezone, now)
+            result = week_outlook(name, forecast["daily"], self.config.station.timezone, now)
+            result["hours"] = hourly_rows(forecast.get("hourly") or {})
+            return result
         if period == "now":
             current = forecast["current"]
             text = f"{name} jetzt: {current['temperature_2m']:g} °C, {weather_description(current['weather_code'])}."
@@ -377,9 +380,10 @@ class Tools:
             i = daily["time"].index(target)
             text = (
                 f"{name} {target}: {daily['temperature_2m_min'][i]:g}–{daily['temperature_2m_max'][i]:g} °C, "
-                f"{day_description(daily, i)}{sunshine(daily, i)}. Niederschlagsrisiko max. "
+                f"{day_description(daily, i)}{sunshine(daily, i)}{windows(forecast, target, 'sun')}. Niederschlagsrisiko max. "
                 f"{measurement(daily, 'precipitation_probability_max', ' %', i)}, "
-                f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag. "
+                f"Niederschlagsmenge {measurement(daily, 'precipitation_sum', ' mm', i)} am Tag"
+                f"{windows(forecast, target, 'rain')}. "
                 f"Wind bis {measurement(daily, 'wind_speed_10m_max', ' km/h', i)}, "
                 f"Böen bis {measurement(daily, 'wind_gusts_10m_max', ' km/h', i)}."
             )
@@ -510,6 +514,59 @@ def week_outlook(name: str, daily: dict, timezone: str, checked_at: float) -> di
     }
 
 
+def hourly_rows(hourly: dict) -> list[dict]:
+    """Open-Meteo hourly arrays -> rows with local time, sunshine seconds and rain."""
+    rows = []
+    times = hourly.get("time") or []
+    for n, stamp in enumerate(times):
+        try:
+            when = datetime.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            continue
+
+        def pick(key, n=n):
+            values = hourly.get(key)
+            value = values[n] if isinstance(values, list) and n < len(values) else None
+            return value if type(value) in {int, float} else None
+
+        rows.append({"time": when, "sun_s": pick("sunshine_duration"), "mm": pick("precipitation"),
+                     "prob": pick("precipitation_probability")})
+    return rows
+
+
+def sunny_hour(row: dict) -> bool:
+    return (row.get("sun_s") or 0) >= 1800
+
+
+def rainy_hour(row: dict) -> bool:
+    return (row.get("mm") or 0) >= 0.2 or ((row.get("prob") or 0) >= 70 and (row.get("mm") or 0) > 0)
+
+
+def hour_windows(rows: list[dict], test) -> list[tuple[int, int]]:
+    """Consecutive matching hours as (start, end) clock hours, end exclusive."""
+    spans: list[list[int]] = []
+    for row in rows:
+        if not test(row):
+            continue
+        hour = row["time"].hour
+        if spans and spans[-1][1] == hour:
+            spans[-1][1] = hour + 1
+        else:
+            spans.append([hour, hour + 1])
+    return [(a, b) for a, b in spans]
+
+
+def windows(forecast: dict, target: str, kind: str) -> str:
+    """' (10–13 Uhr)' for sun or ', Regen vor allem 15–18 Uhr' for rain on the requested day."""
+    rows = [r for r in hourly_rows(forecast.get("hourly") or {}) if r["time"].date().isoformat() == target]
+    spans = hour_windows(rows, sunny_hour if kind == "sun" else rainy_hour)
+    if not spans:
+        return ""
+    spans = sorted(spans, key=lambda s: s[0] - s[1])[:2]
+    text = " und ".join(f"{a}–{b}" for a, b in sorted(spans)) + " Uhr"
+    return f" ({text})" if kind == "sun" else f", Regen vor allem {text}"
+
+
 def sunshine(daily: dict, i: int) -> str:
     """Sunshine hours answer 'wird es sonnig?' – the weather code alone cannot."""
     values = daily.get("sunshine_duration")
@@ -527,7 +584,13 @@ def day_description(daily: dict, i: int) -> str:
         dry = not daily["precipitation_sum"][i] and not daily["precipitation_probability_max"][i]
     except (KeyError, IndexError, TypeError):
         dry = False
-    return "bewölkt, trocken" if dry and text in {"Nieselregen", "Regen", "Schnee", "Gewitter"} else text
+    if dry and text in {"Nieselregen", "Regen", "Schnee", "Gewitter"}:
+        return "bewölkt, trocken"
+    try:
+        sunny = (daily["sunshine_duration"][i] or 0) >= 2 * 3600
+    except (KeyError, IndexError, TypeError):
+        sunny = False
+    return "Sonne und Schauer" if sunny and text in {"Nieselregen", "Regen"} else text
 
 
 def weather_description(code: int) -> str:

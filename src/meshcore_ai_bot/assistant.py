@@ -282,7 +282,9 @@ class Assistant:
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
         if result.get("days"):
-            when = weather_when(question, result["days"])
+            when = hourly_when(question, result.get("hours") or [], self.config.station.timezone) or weather_when(
+                question, result["days"]
+            )
             return Answer((when + " " if when else "") + result["text"], result.get("sources", []))
         verdict = weather_verdict(question, result.get("day") or {})
         return Answer((verdict + " " if verdict else "") + result["text"], result.get("sources", []))
@@ -582,6 +584,37 @@ def weather_question(question: str, default_location: str) -> dict | None:
 
 
 MESH_TOPIC = re.compile(r"mesh|repeater|lora|companion|knoten|node|funk|firmware|kanal|channel|advert|t1000|heltec|rak", re.I)
+def hourly_when(question: str, hours: list[dict], timezone: str) -> str:
+    """Hour-exact answer for 'wann scheint die Sonne wieder / wann regnet es / wann hört es auf'."""
+    from .tools import rainy_hour, sunny_hour
+
+    now = datetime.now(ZoneInfo(timezone)).replace(tzinfo=None, minute=0, second=0, microsecond=0)
+    ahead = [h for h in hours if h["time"] >= now]
+    if not ahead:
+        return ""
+    if re.search(r"sonn", question, re.I):
+        test, verb, now_text = sunny_hour, "scheint die Sonne", "Die Sonne scheint gerade"
+    elif re.search(r"aufhör|aufhoer|h(ö|oe)rt\b.*\bauf\b|trocken", question, re.I):
+        test, verb, now_text = (lambda h: not rainy_hour(h)), "ist es trocken", "Es ist gerade trocken"
+    elif re.search(r"regn|regen", question, re.I):
+        test, verb, now_text = rainy_hour, "regnet es", "Es regnet gerade"
+    else:
+        return ""
+    start = next((n for n, h in enumerate(ahead) if test(h)), None)
+    if start is None:
+        return ""
+    end = start
+    while end + 1 < len(ahead) and test(ahead[end + 1]):
+        end += 1
+    first, last = ahead[start]["time"], ahead[end]["time"]
+    offset = (first.date() - now.date()).days
+    day = "Heute" if offset == 0 else "Morgen" if offset == 1 else f"Am {DAY_NAMES[first.weekday()]} ({first:%d.%m.})"
+    until = f", bis etwa {last.hour + 1} Uhr" if last.date() == first.date() else ""
+    if start == 0:
+        return f"{now_text}{until}."
+    return f"{day} ab {first.hour} Uhr {verb}{until}."
+
+
 DAY_NAMES = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 
 
@@ -607,7 +640,7 @@ def weather_when(question: str, days: list[dict]) -> str:
         if hit:
             return f"{name(hit)} gibt es wieder Sonne, etwa {round(hit['sun_h']):g} Std."
         return "In den nächsten Tagen ist kaum Sonne in Sicht."
-    if re.search(r"aufhör|aufhoer|trocken", question, re.I):
+    if re.search(r"aufhör|aufhoer|h(ö|oe)rt\b.*\bauf\b|trocken", question, re.I):
         hit = next((d for d in days if not wet(d)), None)
         return f"{name(hit)} bleibt es voraussichtlich trocken." if hit else "Vorerst bleibt es nass."
     if re.search(r"regn|regen", question, re.I):
