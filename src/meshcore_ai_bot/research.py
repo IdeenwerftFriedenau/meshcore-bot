@@ -133,8 +133,13 @@ class Research:
         place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else None
         return place if place and re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))) else None
 
-    async def journey(self, origin: str, destination: str) -> dict:
-        """Connections like a journey planner app (BVG/VBB data), short enough for radio."""
+    async def journey(self, origin: str, destination: str, when: str = "", arrive: bool = False,
+                      only: str = "") -> dict:
+        """Connections like a journey planner app (BVG/VBB data), short enough for radio.
+
+        when: local time "YYYY-MM-DDTHH:MM" to leave at (or, with arrive, to be there by); only: one product
+        (bus, tram, subway, suburban) for "nur mit dem Bus".
+        """
         base = self.config.research.transit_url.rstrip("/")
         if not base:
             return {"text": "Die Verbindungsauskunft ist hier nicht eingerichtet.", "sources": []}
@@ -142,12 +147,23 @@ class Research:
         if not start or not goal:
             missing = origin if not start else destination
             return {"text": f"Haltestelle „{missing.strip()}“ nicht gefunden.", "sources": []}
+        tz = ZoneInfo(self.config.station.timezone)
+        params = {"from": start["id"], "to": goal["id"], "results": 3, "stopovers": "false", "remarks": "false"}
+        wanted = None
+        if when:
+            try:
+                wanted = datetime.fromisoformat(when).replace(tzinfo=tz)
+            except ValueError:
+                wanted = None
+        if wanted:
+            params["arrival" if arrive else "departure"] = wanted.isoformat()
+        if only in {"bus", "tram", "subway", "suburban"}:
+            for product in ("suburban", "subway", "tram", "bus", "ferry", "express", "regional"):
+                params[product] = "true" if product == only else "false"
         data = await read_json(
-            self.client, "GET", base + "/journeys",
-            params={"from": start["id"], "to": goal["id"], "results": 3, "stopovers": "false", "remarks": "false"},
+            self.client, "GET", base + "/journeys", params=params,
             headers=HEADERS, timeout=15, limit=3_000_000,
         )
-        tz = ZoneInfo(self.config.station.timezone)
         lines = []
         for item in (data.get("journeys") if isinstance(data, dict) else None) or []:
             legs = [leg for leg in item.get("legs") or [] if isinstance(leg, dict)]
@@ -168,6 +184,8 @@ class Research:
             track = plain(rides[0].get("departurePlatform"))
             board = plain((rides[0].get("origin") or {}).get("name")).replace(" (Berlin)", "")
             text = f"{depart:%H:%M}{late} {' > '.join(names)}"
+            if (depart - first).total_seconds() > 180:  # walk to the first stop
+                text = f"los {first:%H:%M} zu Fuß, " + text
             if board and board != plain(start.get("name")).replace(" (Berlin)", ""):
                 text += f" ab {board}"
             if track:
@@ -175,14 +193,21 @@ class Research:
             if via:
                 text += f", umsteigen {', '.join(via)}"
             minutes = round((last - first).total_seconds() / 60)
-            text += f", an {arrive:%H:%M} ({minutes} Min.)"
-            lines.append(text)
-            if len(lines) >= 2:
-                break
+            text += f", an {max(arrive, last):%H:%M} ({minutes} Min.)"
+            lines.append((first, text))
+        if arrive and wanted:  # the latest connections that are still on time
+            lines = [line for line in lines if line[0] <= wanted][-2:] or lines[-2:]
+        lines = sorted(lines[:2], key=lambda line: line[0])
         if not lines:
-            return {"text": "Keine Verbindung gefunden.", "sources": []}
+            return {"text": "Keine passende Verbindung gefunden.", "sources": []}
         names = f"{plain(start.get('name'))} → {plain(goal.get('name'))}".replace(" (Berlin)", "")
-        return {"text": f"{names}: " + "; ".join(lines) + ".",
+        today = datetime.now(tz).date()
+        offset = (lines[0][0].date() - today).days
+        day = "" if offset == 0 else "morgen, " if offset == 1 else f"{lines[0][0]:%d.%m.}, "
+        aim = f"Ankunft bis {wanted:%H:%M}, " if arrive and wanted else ""
+        kind = {"bus": "nur Bus, ", "tram": "nur Tram, ", "subway": "nur U-Bahn, ", "suburban": "nur S-Bahn, "}.get(only, "")
+        lead = f"{names} ({day}{aim}{kind}".rstrip(", ") + ")" if day or aim or kind else names
+        return {"text": f"{lead}: " + "; ".join(text for _, text in lines) + ".",
                 "sources": ["https://www.bvg.de/de/verbindungen/verbindungssuche"]}
 
     # Public transport -------------------------------------------------------------------------------

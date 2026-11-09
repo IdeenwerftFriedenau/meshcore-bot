@@ -706,8 +706,8 @@ async def test_journey_from_transport_rest():
             "get_journey", {"origin": "s friedenau", "destination": "postdammer platz"}
         )
     assert result["text"] == (
-        "S Friedenau → S+U Potsdamer Platz Bhf: 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.); "
-        "12:36 M76 > S2 ab U Walther-Schreiber-Platz, umsteigen S Priesterweg, an 12:56 (26 Min.)."
+        "S Friedenau → S+U Potsdamer Platz Bhf: los 12:30 zu Fuß, 12:36 M76 > S2 ab U Walther-Schreiber-Platz, "
+        "umsteigen S Priesterweg, an 12:56 (26 Min.); 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.)."
     )
 
 
@@ -751,3 +751,62 @@ def test_typed_questions_take_the_right_route(typed, route):
     found = [("weather", weather_question(text, "Berlin-Friedenau")), ("journey", journey_request(text, "S Friedenau")),
              ("transit", transit_request(text)), ("flight", flight_request(text))]
     assert next((name, value) for name, value in found if value) == route
+
+
+def test_journey_follow_ups_keep_the_conversation():
+    from datetime import datetime
+
+    from meshcore_ai_bot.assistant import CLOSING, journey_request, transit_request
+    now = datetime(2026, 11, 9, 22, 46)
+    history = []
+
+    def ask(text):
+        result = journey_request(text, "S Friedenau", history, now)
+        history.extend([{"role": "user", "content": text}, {"role": "assistant", "content": "…"}])
+        return result
+
+    first = ask("ich muss morgen um acht am Heidelberger Platz sein von s Friedenau mit den öffentlichen Verkehrsmitteln")
+    assert first == {"origin": "s Friedenau", "destination": "Heidelberger Platz",
+                     "when": "2026-11-10T08:00", "arrive": "ja"}
+    assert ask("gehts auch ein bisschen früher")["when"] == "2026-11-10T07:30"
+    assert ask("komm ich auch mit den Bus hin")["only"] == "bus"
+    assert ask("mit umsteigen")["only"] == "bus"
+    late = ask("nein damit ich um 8uhr da bin")
+    assert late["when"] == "2026-11-10T08:00" and late["only"] == "bus" and late["arrive"] == "ja"
+    assert ask("und zurück?")["origin"] == "Heidelberger Platz"
+    assert CLOSING.fullmatch("ok stop") and not CLOSING.fullmatch("ok wie wird das wetter")
+    assert ask("Wetter morgen") is None
+    assert ask("gehts auch früher") is None  # the weather question ended the trip
+    assert ask("Verbindung s Friedenau Rathaus Spandau") is None
+    question = "welchen Bus muss ich nehmen damit ich um 8uhr da bin Heidelberger Platz von s Friedenau"
+    assert transit_request(question) is None
+    assert journey_request(question, "S Friedenau", [], now) == {
+        "origin": "s Friedenau", "destination": "Heidelberger Platz", "when": "2026-11-10T08:00",
+        "arrive": "ja", "only": "bus"}
+    assert journey_request("welchen Bus vom Knausplatz zum Heidelberger Platz mit Ankunft um 8", "S Friedenau",
+                           [], now)["origin"] == "Knausplatz"
+
+
+async def test_journey_with_arrival_time_and_bus_only():
+    seen = {}
+
+    def respond(request):
+        if request.url.path == "/locations":
+            name = request.url.params["query"]
+            return httpx.Response(200, json=[{"type": "stop", "id": "9" + str(len(name)), "name": name.title()}])
+        seen.update(dict(request.url.params))
+        legs = [
+            {"line": {"name": "Bus 186"}, "origin": {"name": "S Friedenau"},
+             "departure": f"2026-11-10T07:{m}:00+01:00", "arrival": f"2026-11-10T07:{int(m) + 12}:00+01:00"}
+            for m in ("20", "35", "47")
+        ]
+        return httpx.Response(200, json={"journeys": [{"legs": [leg]} for leg in legs]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run("get_journey", {
+            "origin": "s friedenau", "destination": "heidelberger platz", "when": "2026-11-10T08:00",
+            "arrive": "ja", "only": "bus"})
+    assert seen["arrival"].startswith("2026-11-10T08:00") and "departure" not in seen
+    assert seen["bus"] == "true" and seen["suburban"] == "false" and seen["subway"] == "false"
+    assert "Ankunft bis 08:00, nur Bus" in result["text"]
+    assert "07:35 Bus 186" in result["text"] and "07:20" not in result["text"]

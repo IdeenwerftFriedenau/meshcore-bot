@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -32,7 +32,7 @@ denn lange Antworten gehen im Funk in Teilen verloren. Details kann die Person m
 Beantworte nur die aktuelle Frage; ältere Fragen aus dem Verlauf nicht noch einmal beantworten.
 Keine Rückfragen am Ende, außer die Frage ist ohne Rückfrage wirklich nicht zu beantworten.
 Bewerte Firmware-Versionen nicht als aktuell oder veraltet und nenne keine weiteren Personen oder Fakten,
-wenn keine Fundstelle sie belegt. Flüge am BER mit get_flights, Flugzeuge über uns mit get_planes_overhead, Züge mit get_departures (trains='ja').
+wenn keine Fundstelle sie belegt. Flüge am BER mit get_flights, Flugzeuge über uns mit get_planes_overhead, Züge mit get_departures (trains='ja'). Verbindungen von A nach B NUR mit get_journey – nie Zeiten oder Linien ausdenken.
 Für Flüge an anderen Flughäfen oder andere Echtzeitdaten ohne Werkzeug sag sofort in einem Satz, dass du sie nicht hast.
 Inversionswetterlage, Überreichweiten und Funkausbreitung sind Erklärfragen: kurz erklären, Wetterdaten nur als Hinweis.
 Persönliche Fakten im Verlauf sind Nutzerdaten und dürfen kanalübergreifend berücksichtigt werden;
@@ -88,6 +88,8 @@ class Assistant:
             for item in (history or [])
             if safe_memory(str(item.get("content", ""))) and not stale_horoscope_nudge(item)
         ]
+        if CLOSING.fullmatch(question.strip()):
+            return Answer("Alles klar.")
         if OVERRIDE.search(question):
             return Answer("Meine Regeln bleiben bestehen. Stell mir gern eine normale Frage.")
         privacy = horoscope_privacy_reply(question)
@@ -121,7 +123,8 @@ class Assistant:
         if weather:
             return await self._weather_answer(routed, weather)
         trip = (
-            journey_request(routed, self.config.station.location)
+            journey_request(routed, self.config.station.location, history,
+                            datetime.now(ZoneInfo(self.config.station.timezone)).replace(tzinfo=None))
             if self.config.research.enabled and self.config.research.transit_url and not self.offline
             else None
         )
@@ -185,7 +188,7 @@ class Assistant:
                 + identity + "\n" + glossary_context(question) + "\n" + mesh["text"],
             },
             *history[-6:],
-            {"role": "user", "content": question if not history else "Neue Frage (nur diese beantworten): " + question},
+            {"role": "user", "content": question if not history else "Neue Nachricht (beantworte nur diese; bezieht sie sich auf vorher, nutze den Verlauf): " + question},
         ]
         sources: list[str] = []
         allowed_urls = urls_in(question)
@@ -458,6 +461,8 @@ class Assistant:
         return " | ".join(parts)[:1200]
 
 
+CLOSING = re.compile(r"(?:(?:ok(?:ay)?|alles klar|stop+|danke(?: dir| schön| schoen)?|passt|super|gut|prima|top|"
+                     r"thx|tnx|merci)[\s,.!]*)+", re.I)
 RESEARCH_TOOLS = {"web_search", "search_news", "search_wikipedia", "read_webpage"}
 OFFLINE_HOLD_SECONDS = 120
 NEWS_WISH = re.compile(r"nachricht|neues|neuigkeit|schlagzeil|news|meldung|was ist los|passiert", re.I)
@@ -748,40 +753,147 @@ STOP = re.compile(r"\b(?:ab|von|vom|am|an der|an dem|beim|bei|abfahrt(?:en)?)\s+
                   re.I)
 
 
-JOURNEY = re.compile(
-    r"(?:wie komm(?:e|t)? (?:ich|man|wir)|verbindung(?:en)?|wie fahr(?:e|t) (?:ich|man)|weg|route|fahrt)?"
-    r".*?\b(?:von|ab)\s+(?P<a>.+?)\s+(?:nach|zum|zur|zu|bis)\s+(?P<b>.+?)$"
-    r"|wie komm(?:e|t)? (?:ich|man|wir)(?: von hier)? (?:nach|zum|zur|zu)\s+(?P<c>.+?)$", re.I)
+HOUR_WORDS = {"eins": 1, "ein": 1, "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "fuenf": 5, "sechs": 6, "sieben": 7,
+              "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwoelf": 12}
+_HOUR = r"(\d{1,2}|" + "|".join(HOUR_WORDS) + r")"
+TRIP_TIME = re.compile(
+    r"\b(?:um|gegen|bis|ab|vor)\s+" + _HOUR + r"(?:[:.](\d{2}))?\s*(?:uhr\b)?"
+    r"|\b(\d{1,2})[:.](\d{2})\b|\b(\d{1,2})\s*uhr\b", re.I)
+TRIP_ARRIVE = re.compile(r"\bsein\b|\bda bin\b|\bdort bin\b|ankunft|ankommen|\bankomme\b|spätestens|spaetestens"
+                         r"|\bbis\s+(?:\d|" + "|".join(HOUR_WORDS) + r")\b", re.I)
+TRIP_SKIP = re.compile(r"flug(?!hafen)|flieg|ticket|preis|kosten|\bauto\b|fahrrad|\brad\b|zu fu(ß|ss)|taxi", re.I)
+TRIP_WORDS = re.compile(r"wie komm|komm ich|verbindung|wie fahr|route|\bweg\b|\bvon\b.+\bnach\b|\bsein\b|da bin"
+                        r"|ankunft|\bbus\b|bahn|\bzug\b|tram|öffentlich|oeffentlich|öffis|oeffis|fahr", re.I)
+TRIP_FOLLOW = re.compile(r"früher|frueher|eher|später|spaeter|\bbus\b|busse|tram|straßenbahn|strassenbahn|u-?bahn"
+                         r"|s-?bahn|umsteig|uhrzeit|\bwann\b|\bum\s+\S+|da bin|\bsein\b|ankunft|zurück|zurueck"
+                         r"|rückweg|rueckweg|andere|alternative|verbindung|\bauch\b", re.I)
+_END = r"(?=\s+(?:nach|zum|zur|zu|bis|mit|um|gegen|damit|und|sein|ankunft|von|vom|ab|abfahrt|morgen|heute|übermorgen)\b|$)"
+TRIP_FROM = re.compile(r"\b(?:von|vom|ab|abfahrt|start)\s+(?!\d|" + "|".join(HOUR_WORDS) + r"\b)(.+?)" + _END, re.I)
+TRIP_TO = [
+    re.compile(r"\b(?:nach|zum|zur|bis zum|bis zur|zu)\s+(?!\d|hause\b)(.+?)" + _END, re.I),
+    re.compile(r"\b(?:am|an der|an|beim|im|in der)\s+(.+?)\s+sein\b", re.I),
+    re.compile(r"\b(?:da|dort)\s+(?:bin|sein|ist)\s+(?:am\s+|an der\s+|beim\s+)?(.+?)" + _END, re.I),
+]
+VAGUE_PLACES = {"hause", "arbeit", "schule", "uni", "oma", "mama", "papa", "freunden", "dir", "mir", "hin", "da",
+                "dort", "hier", "uns", "zuhause", "zu hause", "der", "die", "das"}
+PRODUCTS = [("bus", r"\bbus\b|\bbusse\b|\bbussen\b|\bbuse\b"), ("tram", r"tram|straßenbahn|strassenbahn"),
+            ("subway", r"u-?bahn"), ("suburban", r"s-?bahn")]
 
 
-def journey_request(question: str, home: str) -> dict | None:
-    """'Wie komme ich von S Friedenau nach Potsdamer Platz' -> a journey, straight from the timetable."""
-    text = " ".join(question.split()).strip(" ?!.")
-    if len(text) > 120 or re.search(r"flug(?!hafen)|flieg|ticket|preis|kosten|auto|fahrrad|rad\b|zu fu(ß|ss)", text, re.I):
-        return None
-    if not re.search(r"wie komm|verbindung|wie fahr|route|weg\b|\bvon\b.+\bnach\b", text, re.I):
-        return None
-    match = JOURNEY.search(text)
+def _place(value: str) -> str:
+    value = re.sub(r"^(der|die|dem|den|haltestelle|bahnhof)\s+", "", value.strip(" ?!.,"), flags=re.I)
+    value = re.sub(r"\s+(mit|per)\s+.*$|\s+(jetzt|gleich|heute|morgen|früh|frueh|da|hin|sein)$", "", value, flags=re.I)
+    return " ".join(value.split()[:5])
+
+
+def _trip_time(text: str, now: datetime) -> tuple[datetime | None, bool]:
+    """Wanted time (or None) and whether it is an arrival time."""
+    match = TRIP_TIME.search(text)
     if not match:
+        return None, False
+    raw_hour = match.group(1) or match.group(3) or match.group(5)
+    hour = HOUR_WORDS.get(raw_hour.casefold(), None) if not raw_hour.isdigit() else int(raw_hour)
+    minute = int(match.group(2) or match.group(4) or 0)
+    if hour is None or hour > 24 or minute > 59:
+        return None, False
+    if hour < 12 and re.search(r"abends|\babend\b|nachmittags", text, re.I):
+        hour += 12
+    day = now.date()
+    if re.search(r"übermorgen|uebermorgen", text, re.I):
+        day += timedelta(days=2)
+    elif re.search(r"\bmorgen\b", text, re.I):
+        day += timedelta(days=1)
+    wanted = datetime.combine(day, datetime.min.time()).replace(hour=hour % 24, minute=minute)
+    if wanted < now - timedelta(minutes=5) and not re.search(r"\bheute\b", text, re.I) and day == now.date():
+        wanted += timedelta(days=1)
+    return wanted, bool(TRIP_ARRIVE.search(text))
+
+
+def _trip_parts(text: str) -> tuple[str, str]:
+    origin = destination = ""
+    without_time = TRIP_TIME.sub(" ", text)
+    found = TRIP_FROM.search(without_time)
+    if found:
+        origin = _place(found.group(1))
+    for pattern in TRIP_TO:
+        found = pattern.search(without_time)
+        if found and _place(found.group(1)):
+            destination = _place(found.group(1))
+            break
+    return origin, destination
+
+
+def journey_request(question: str, home: str, history: list[dict] | None = None,
+                    now: datetime | None = None) -> dict | None:
+    """Journey wishes ("wie komme ich von A nach B", "morgen um 8 am X sein") -> live timetable.
+
+    Short follow-ups ("geht's früher?", "auch mit dem Bus?", "damit ich um 8 da bin") continue the last journey
+    from the conversation, so the bot keeps the thread instead of answering something else.
+    """
+    now = now or datetime.now()
+    text = " ".join(question.split()).strip(" ?!.")
+    if len(text) > 160 or TRIP_SKIP.search(text):
         return None
-
-    def clean(value):
-        value = re.sub(r"^(der|die|dem|den|haltestelle|bahnhof)\s+", "", value.strip(), flags=re.I)
-        value = re.sub(r"\s+(mit|per)\s+.*$|\s+(jetzt|gleich|heute|morgen)$", "", value, flags=re.I)
-        return " ".join(value.split()[:5])
-
-    if match.group("c"):
-        origin, destination = home, clean(match.group("c"))
-    else:
-        origin, destination = clean(match.group("a")), clean(match.group("b"))
+    origin, destination = _trip_parts(text)
+    chain = [text]
+    if not destination:
+        if len(text) > 90 or not TRIP_FOLLOW.search(text):
+            return None
+        if re.search(r"verbindung|wie komm", text, re.I) and len(text.split()) > 3:
+            return None  # a new trip whose places we cannot split ourselves; the model asks get_journey
+        earlier = [str(item.get("content", "")) for item in (history or []) if item.get("role") == "user"]
+        base = None
+        for previous in reversed(earlier[-6:]):
+            previous = " ".join(previous.split()).strip(" ?!.")
+            if TRIP_SKIP.search(previous):
+                return None
+            first, goal = _trip_parts(previous)
+            if goal and TRIP_WORDS.search(previous):
+                base = (first, goal)
+                chain.insert(0, previous)
+                break
+            if not TRIP_FOLLOW.search(previous):
+                return None
+            chain.insert(0, previous)
+        if not base:
+            return None
+        origin = origin or base[0]
+        destination = base[1]
+        if re.search(r"zurück|zurueck|rückweg|rueckweg", text, re.I):
+            origin, destination = destination, origin or home
+    elif not TRIP_WORDS.search(text):
+        return None
+    origin = origin or home
     if origin.casefold() in {"hier", "uns", "zuhause", "zu hause"}:
         origin = home
-    vague = {"hause", "arbeit", "schule", "uni", "oma", "mama", "papa", "freunden", "dir", "mir"}
-    if origin.casefold() in vague or destination.casefold() in vague:
+    if origin.casefold() in VAGUE_PLACES or destination.casefold() in VAGUE_PLACES:
         return None
     if not origin or not destination or origin.casefold() == destination.casefold():
         return None
-    return {"origin": origin, "destination": destination}
+    args = {"origin": origin, "destination": destination}
+    when, arrive, only, shift = None, False, "", 0
+    for step in chain:  # oldest first: later messages change earlier wishes
+        wanted, arriving = _trip_time(step, now)
+        if wanted:
+            when, arrive, shift = wanted, arriving, 0
+        if re.search(r"früher|frueher|\beher\b", step, re.I) and step is not chain[0]:
+            shift -= 30
+        if re.search(r"später|spaeter", step, re.I) and step is not chain[0]:
+            shift += 30
+        for name, pattern in PRODUCTS:
+            if re.search(pattern, step, re.I):
+                only = name
+        if re.search(r"egal|alles|alle verkehrsmittel|auch (s-?)?bahn|öffentlich|oeffentlich", step, re.I) and not \
+                any(re.search(p, step, re.I) for _, p in PRODUCTS):
+            only = ""
+    if when or shift:
+        moment = (when or now) + timedelta(minutes=shift)
+        args["when"] = f"{max(moment, now - timedelta(minutes=5)) if not when else moment:%Y-%m-%dT%H:%M}"
+    if arrive and when:
+        args["arrive"] = "ja"
+    if only:
+        args["only"] = only
+    return args
 
 
 def transit_request(question: str) -> dict | None:
@@ -793,6 +905,9 @@ def transit_request(question: str) -> dict | None:
         return None
     if re.search(r"flug|flieg|was ist|was sind|erklär|warum|wieso|ticket|preis|kosten|wie lange|dauer|verbindung|umsteig", text, re.I):
         return None
+    if re.search(r"\bsein\b|da bin|ankunft|ankommen|damit ich", text, re.I) or (
+            re.search(r"\b(nach|zum|zur|bis)\s", text, re.I) and not re.search(r"n(ä|ae)chste", text, re.I)):
+        return None  # a destination or arrival time is a journey, not a departure board
     matches = list(STOP.finditer(text))
     match = matches[-1] if matches else None
     if not match:
