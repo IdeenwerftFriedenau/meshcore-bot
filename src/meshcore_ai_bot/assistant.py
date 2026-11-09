@@ -118,6 +118,13 @@ class Assistant:
         weather = weather_question(question, self.config.weather.location) if self.config.weather.enabled else None
         if weather:
             return await self._weather_answer(question, weather)
+        trip = (
+            journey_request(question, self.config.station.location)
+            if self.config.research.enabled and self.config.research.transit_url and not self.offline
+            else None
+        )
+        if trip:
+            return await self._tool_answer("get_journey", trip)
         transit = (
             transit_request(question)
             if self.config.research.enabled and self.config.research.transit_url and not self.offline
@@ -686,6 +693,42 @@ TRANSIT_WORDS = re.compile(
 TRAIN_WORDS = re.compile(r"\b(z(u|ü|ue)ge?|ice|ic|re\d*|rb\d*|fex|regionalbahn|regionalzug|fernverkehr)\b", re.I)
 STOP = re.compile(r"\b(?:ab|von|vom|am|an der|an dem|beim|bei|abfahrt(?:en)?)\s+(.+?)(?:\s+(?:nach|richtung|in richtung)\b.*)?$",
                   re.I)
+
+
+JOURNEY = re.compile(
+    r"(?:wie komm(?:e|t) (?:ich|man|wir)|verbindung(?:en)?|wie fahr(?:e|t) (?:ich|man)|weg|route|fahrt)?"
+    r".*?\b(?:von|ab)\s+(?P<a>.+?)\s+(?:nach|zum|zur|zu|bis)\s+(?P<b>.+?)$"
+    r"|wie komm(?:e|t) (?:ich|man|wir)(?: von hier)? (?:nach|zum|zur|zu)\s+(?P<c>.+?)$", re.I)
+
+
+def journey_request(question: str, home: str) -> dict | None:
+    """'Wie komme ich von S Friedenau nach Potsdamer Platz' -> a journey, straight from the timetable."""
+    text = " ".join(question.split()).strip(" ?!.")
+    if len(text) > 120 or re.search(r"flug|flieg|ticket|preis|kosten|auto|fahrrad|rad\b|zu fu(ß|ss)", text, re.I):
+        return None
+    if not re.search(r"wie komm|verbindung|wie fahr|route|weg\b|\bvon\b.+\bnach\b", text, re.I):
+        return None
+    match = JOURNEY.search(text)
+    if not match:
+        return None
+
+    def clean(value):
+        value = re.sub(r"^(der|die|dem|den|haltestelle|bahnhof)\s+", "", value.strip(), flags=re.I)
+        value = re.sub(r"\s+(mit|per)\s+.*$|\s+(jetzt|gleich|heute|morgen)$", "", value, flags=re.I)
+        return " ".join(value.split()[:5])
+
+    if match.group("c"):
+        origin, destination = home, clean(match.group("c"))
+    else:
+        origin, destination = clean(match.group("a")), clean(match.group("b"))
+    if origin.casefold() in {"hier", "uns", "zuhause", "zu hause"}:
+        origin = home
+    vague = {"hause", "arbeit", "schule", "uni", "oma", "mama", "papa", "freunden", "dir", "mir"}
+    if origin.casefold() in vague or destination.casefold() in vague:
+        return None
+    if not origin or not destination or origin.casefold() == destination.casefold():
+        return None
+    return {"origin": origin, "destination": destination}
 
 
 def transit_request(question: str) -> dict | None:

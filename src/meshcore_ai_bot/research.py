@@ -124,6 +124,67 @@ class Research:
             return {"text": f"Die Websuche fand nichts Brauchbares zu „{query}“.", "sources": []}
         return {"text": " | ".join(lines), "sources": sources}
 
+    async def _stop(self, base: str, name: str) -> dict | None:
+        places = await read_json(
+            self.client, "GET", base + "/locations",
+            params={"query": name, "results": 1, "stops": "true", "addresses": "false", "poi": "false"},
+            headers=HEADERS, timeout=12, limit=500_000,
+        )
+        place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else None
+        return place if place and re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))) else None
+
+    async def journey(self, origin: str, destination: str) -> dict:
+        """Connections like a journey planner app (BVG/VBB data), short enough for radio."""
+        base = self.config.research.transit_url.rstrip("/")
+        if not base:
+            return {"text": "Die Verbindungsauskunft ist hier nicht eingerichtet.", "sources": []}
+        start, goal = await self._stop(base, origin.strip()), await self._stop(base, destination.strip())
+        if not start or not goal:
+            missing = origin if not start else destination
+            return {"text": f"Haltestelle „{missing.strip()}“ nicht gefunden.", "sources": []}
+        data = await read_json(
+            self.client, "GET", base + "/journeys",
+            params={"from": start["id"], "to": goal["id"], "results": 3, "stopovers": "false", "remarks": "false"},
+            headers=HEADERS, timeout=15, limit=3_000_000,
+        )
+        tz = ZoneInfo(self.config.station.timezone)
+        lines = []
+        for item in (data.get("journeys") if isinstance(data, dict) else None) or []:
+            legs = [leg for leg in item.get("legs") or [] if isinstance(leg, dict)]
+            rides = [leg for leg in legs if not leg.get("walking") and leg.get("line")]
+            if not rides:
+                continue
+            try:
+                depart = datetime.fromisoformat(rides[0].get("departure") or rides[0]["plannedDeparture"]).astimezone(tz)
+                arrive = datetime.fromisoformat(rides[-1].get("arrival") or rides[-1]["plannedArrival"]).astimezone(tz)
+                first = datetime.fromisoformat(legs[0].get("departure") or legs[0]["plannedDeparture"]).astimezone(tz)
+                last = datetime.fromisoformat(legs[-1].get("arrival") or legs[-1]["plannedArrival"]).astimezone(tz)
+            except (KeyError, TypeError, ValueError):
+                continue
+            names = [plain((leg.get("line") or {}).get("name")) for leg in rides]
+            via = [plain((leg.get("origin") or {}).get("name")).replace(" (Berlin)", "") for leg in rides[1:]]
+            delay = rides[0].get("departureDelay")
+            late = f" (+{round(delay / 60)})" if type(delay) is int and delay >= 60 else ""
+            track = plain(rides[0].get("departurePlatform"))
+            board = plain((rides[0].get("origin") or {}).get("name")).replace(" (Berlin)", "")
+            text = f"{depart:%H:%M}{late} {' > '.join(names)}"
+            if board and board != plain(start.get("name")).replace(" (Berlin)", ""):
+                text += f" ab {board}"
+            if track:
+                text += f" Gl. {track}"
+            if via:
+                text += f", umsteigen {', '.join(via)}"
+            minutes = round((last - first).total_seconds() / 60)
+            text += f", an {arrive:%H:%M} ({minutes} Min.)"
+            lines.append(text)
+            if len(lines) >= 2:
+                break
+        if not lines:
+            return {"text": "Keine Verbindung gefunden.", "sources": []}
+        names = f"{plain(start.get('name'))} → {plain(goal.get('name'))}".replace(" (Berlin)", "")
+        return {"text": f"{names}: " + "; ".join(lines) + ".",
+                "sources": ["https://www.bvg.de/de/verbindungen/verbindungssuche"]}
+
     # Public transport -------------------------------------------------------------------------------
 
     async def departures(self, stop: str, trains: bool = False, suburban: bool = False) -> dict:

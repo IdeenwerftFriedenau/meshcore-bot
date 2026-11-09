@@ -629,3 +629,52 @@ async def test_train_at_sbahn_only_station_falls_back_to_sbahn():
         )
     assert calls == ["false", None]
     assert "12:25 S1 → S Frohnau (Berlin) Gl. 1" in result["text"]
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("wie komme ich von s friedenau nach postdammer platz", {"origin": "s friedenau", "destination": "postdammer platz"}),
+    ("Verbindung von Südkreuz nach Alexanderplatz", {"origin": "Südkreuz", "destination": "Alexanderplatz"}),
+    ("Wie komme ich zum Alexanderplatz?", {"origin": "Berlin-Friedenau", "destination": "Alexanderplatz"}),
+    ("Wie komme ich mit dem Fahrrad nach Potsdam", None),
+    ("Ich komme von der Arbeit nach Hause", None),
+    ("Was kostet ein Ticket von Spandau nach Hamburg", None),
+])
+def test_journey_questions(question, expected):
+    from meshcore_ai_bot.assistant import journey_request
+    assert journey_request(question, "Berlin-Friedenau") == expected
+
+
+async def test_journey_from_transport_rest():
+    def respond(request):
+        if request.url.path == "/locations":
+            q = request.url.params["query"]
+            if "friedenau" in q:
+                return httpx.Response(200, json=[{"type": "stop", "id": "900061102", "name": "S Friedenau (Berlin)"}])
+            return httpx.Response(200, json=[{"type": "stop", "id": "900100020", "name": "S+U Potsdamer Platz Bhf (Berlin)"}])
+        assert request.url.path == "/journeys"
+        return httpx.Response(200, json={"journeys": [
+            {"legs": [
+                {"line": {"name": "S1"}, "origin": {"name": "S Friedenau (Berlin)"},
+                 "destination": {"name": "S+U Potsdamer Platz Bhf (Berlin)"}, "departure": "2026-11-09T12:34:00+01:00",
+                 "arrival": "2026-11-09T12:46:00+01:00", "departurePlatform": "2", "departureDelay": 60},
+            ]},
+            {"legs": [
+                {"walking": True, "origin": {"name": "S Friedenau (Berlin)"}, "destination": {"name": "U Walther-Schreiber-Platz"},
+                 "departure": "2026-11-09T12:30:00+01:00", "arrival": "2026-11-09T12:35:00+01:00"},
+                {"line": {"name": "M76"}, "origin": {"name": "U Walther-Schreiber-Platz (Berlin)"},
+                 "destination": {"name": "S Priesterweg (Berlin)"}, "departure": "2026-11-09T12:36:00+01:00",
+                 "arrival": "2026-11-09T12:44:00+01:00"},
+                {"line": {"name": "S2"}, "origin": {"name": "S Priesterweg (Berlin)"},
+                 "destination": {"name": "S+U Potsdamer Platz Bhf (Berlin)"}, "departure": "2026-11-09T12:47:00+01:00",
+                 "arrival": "2026-11-09T12:56:00+01:00"},
+            ]},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run(
+            "get_journey", {"origin": "s friedenau", "destination": "postdammer platz"}
+        )
+    assert result["text"] == (
+        "S Friedenau → S+U Potsdamer Platz Bhf: 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.); "
+        "12:36 M76 > S2 ab U Walther-Schreiber-Platz, umsteigen S Priesterweg, an 12:56 (26 Min.)."
+    )

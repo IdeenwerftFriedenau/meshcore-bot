@@ -102,6 +102,13 @@ RESEARCH_SCHEMAS = {
         },
         ["stop"],
     ),
+    "get_journey": tool(
+        "get_journey",
+        "Verbindungen mit Bus und Bahn in Berlin/Brandenburg von A nach B (wie eine Fahrplan-App), Echtzeit.",
+        {"origin": {"type": "string", "description": "Start-Haltestelle"},
+         "destination": {"type": "string", "description": "Ziel-Haltestelle"}},
+        ["origin", "destination"],
+    ),
     "get_flights": tool(
         "get_flights",
         "Live-Abflüge oder -Ankünfte am Flughafen BER, optional gefiltert nach Flugnummer, Ziel oder Airline.",
@@ -135,7 +142,7 @@ def schemas(config: Config) -> list[dict]:
             result.append(RESEARCH_SCHEMAS["web_search"])
         result += [RESEARCH_SCHEMAS["search_news"], RESEARCH_SCHEMAS["search_wikipedia"]]
         if research.transit_url:
-            result.append(RESEARCH_SCHEMAS["get_departures"])
+            result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
         result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
@@ -190,6 +197,7 @@ class Tools:
                 allowed["read_webpage"] = {"url"}
             if self.config.research.transit_url:
                 allowed["get_departures"] = {"stop", "trains"}
+                allowed["get_journey"] = {"origin", "destination"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
@@ -213,6 +221,11 @@ class Tools:
             trains = arguments.get("trains", "").strip().casefold() in {"ja", "true", "1", "yes"}
             return await research.cached(
                 name, f"{stop}|{trains}", 30, lambda: research.departures(stop, trains)
+            )
+        if name == "get_journey":
+            origin, destination = arguments.get("origin", ""), arguments.get("destination", "")
+            return await research.cached(
+                name, f"{origin}|{destination}", 60, lambda: research.journey(origin, destination)
             )
         if name == "get_flights":
             arrivals = arguments.get("direction", "").strip().casefold().startswith(("an", "arr"))
