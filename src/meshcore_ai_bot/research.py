@@ -660,10 +660,17 @@ async def ber_flights(client: httpx.AsyncClient, timezone: str, arrivals: bool =
     return {"text": f"BER {kind} (Live): " + "; ".join(entries) + ".", "sources": [BER_PAGE]}
 
 
+RESCUE_CALLSIGN = re.compile(r"CHX(\d{1,3})")
+
+
 async def planes_overhead(
-    client: httpx.AsyncClient, lat: float, lon: float, place: str, wide: bool = False
+    client: httpx.AsyncClient, lat: float, lon: float, place: str, wide: bool = False, rescue: bool = False
 ) -> dict:
-    """Aircraft currently in the air near the station (OpenSky), with route if adsbdb knows it."""
+    """Aircraft currently in the air near the station (OpenSky), with route if adsbdb knows it.
+
+    rescue=True only looks for rescue helicopters (callsign CHX…, "Christoph N") over all of Berlin.
+    """
+    wide = wide or rescue
     if wide:  # all of Berlin instead of the sky over the station
         lat, lon, place = 52.52, 13.40, "Berlin"
     dlat, dlon = (0.25, 0.45) if wide else (0.15, 0.25)
@@ -682,6 +689,12 @@ async def planes_overhead(
         distance = ((row[6] - lat) * 111) ** 2 + ((row[5] - lon) * 68) ** 2
         planes.append((distance, callsign, row[13] or row[7]))
     planes.sort()
+    if rescue:
+        planes = [p for p in planes if RESCUE_CALLSIGN.fullmatch(p[1])]
+        if not planes:
+            return {"text": f"Gerade ist kein Rettungshubschrauber (Christoph) über {place} in der Luft gemeldet. "
+                            "Nicht jeder sendet seine Position.",
+                    "sources": ["https://opensky-network.org/"]}
     if not planes:
         return {"text": f"Gerade kein Flugzeug mit Rufzeichen in der Luft über {place} gemeldet.",
                 "sources": ["https://opensky-network.org/"]}
@@ -695,12 +708,16 @@ async def planes_overhead(
             target = plain((flight.get("destination") or {}).get("municipality"))
             airline = plain((flight.get("airline") or {}).get("name"))
             name = plain(flight.get("callsign_iata")) or callsign
-            route = f"{name} {airline}".strip() + (f", {origin} → {target}" if origin and target else "")
+            route = f"{name} {airline}".strip()
+            low = isinstance(altitude, (int, float)) and altitude < 1500
+            local = any(re.search(r"berlin|schönefeld|schoenefeld", x, re.I) for x in (origin, target))
+            if origin and target and (local or not low):  # adsbdb routes are sometimes stale
+                route += f", {origin} → {target}"
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             route = ""
-        rescue = re.fullmatch(r"CHX(\d{1,3})", callsign)
-        if rescue and not route:
-            route = f"Rettungshubschrauber Christoph {rescue.group(1)}"
+        christoph = RESCUE_CALLSIGN.fullmatch(callsign)
+        if christoph:
+            route = f"Rettungshubschrauber Christoph {christoph.group(1)}"
         height = f", {round(altitude / 100) * 100:g} m hoch" if isinstance(altitude, (int, float)) else ""
         entries.append(f"{route or callsign}{height}, {distance ** 0.5:.0f} km entfernt")
     return {"text": f"Flugzeuge bei {place} (OpenSky): " + "; ".join(entries) + ".",

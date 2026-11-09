@@ -121,7 +121,7 @@ RESEARCH_SCHEMAS = {
     "get_planes_overhead": tool(
         "get_planes_overhead",
         "Welche Flugzeuge gerade in der Nähe der Station (oder mit area='berlin' über ganz Berlin) in der Luft sind.",
-        {"area": {"type": "string", "description": "'berlin' für ganz Berlin, leer für die Station"}},
+        {"area": {"type": "string", "description": "'berlin' für ganz Berlin, 'rettung' nur Rettungshubschrauber, leer für die Station"}},
         [],
     ),
     "read_webpage": tool(
@@ -236,10 +236,12 @@ class Tools:
             )
         if name == "get_planes_overhead":
             weather = self.config.weather
-            wide = arguments.get("area", "").strip().casefold() == "berlin"
+            area = arguments.get("area", "").strip().casefold()
+            wide, rescue = area == "berlin", area == "rettung"
             return await research.cached(
-                name, str(wide), 60,
-                lambda: planes_overhead(self.client, weather.latitude, weather.longitude, weather.location, wide),
+                name, area, 60,
+                lambda: planes_overhead(
+                    self.client, weather.latitude, weather.longitude, weather.location, wide, rescue),
             )
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())

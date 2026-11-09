@@ -471,6 +471,35 @@ async def test_planes_overhead_with_route():
     assert "GRND1" not in result["text"]
 
 
+async def test_rescue_helicopter_only_and_stale_routes_dropped():
+    def respond(request):
+        if "opensky" in request.url.host:
+            return httpx.Response(200, json={"states": [
+                ["a", "VJT683", "X", 0, 0, 13.4, 52.5, 200.0, False, 0, 0, 0, None, 200.0],
+                ["b", "CHX31", "X", 0, 0, 13.3, 52.45, 300.0, False, 0, 0, 0, None, 300.0],
+            ]})
+        return httpx.Response(200, json={"response": {"flightroute": {
+            "callsign_iata": "VJT683", "origin": {"municipality": "Cork"},
+            "destination": {"municipality": "Farnborough"}}}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(Config(), Store(":memory:"), client)
+        rescue = await tools.run("get_planes_overhead", {"area": "rettung"})
+        everything = await tools.run("get_planes_overhead", {"area": "berlin"})
+    assert "Rettungshubschrauber Christoph 31" in rescue["text"] and "VJT" not in rescue["text"]
+    assert "Cork" not in everything["text"] and "VJT683" in everything["text"]
+
+
+async def test_no_rescue_helicopter_in_the_air():
+    def respond(request):
+        return httpx.Response(200, json={"states": [
+            ["a", "DLH1", "X", 0, 0, 13.4, 52.5, 9000.0, False, 0, 0, 0, None, 9000.0]]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run("get_planes_overhead", {"area": "rettung"})
+    assert result["text"].startswith("Gerade ist kein Rettungshubschrauber")
+
+
 def test_flight_tools_offered_with_research():
     names = {s["function"]["name"] for s in schemas(Config())}
     assert {"get_flights", "get_planes_overhead"} <= names
@@ -486,6 +515,8 @@ def test_flight_tools_offered_with_research():
     ("Status Flug FR146", ("get_flights", {"direction": "abflug", "query": "FR146"})),
     ("Flüge vom BER nach London", ("get_flights", {"direction": "abflug", "query": "London"})),
     ("Ankünfte BER aus Lissabon", ("get_flights", {"direction": "ankunft", "query": "Lissabon"})),
+    ("Wo ist der Rettungshubschrauber?", ("get_planes_overhead", {"area": "rettung"})),
+    ("wo ist christoph 31 gerade", ("get_planes_overhead", {"area": "rettung"})),
     ("Wie funktioniert ein Flugzeug?", None),
     ("Wann fährt der nächste Bus am Knausplatz", None),
     ("Was ist LoRa?", None),

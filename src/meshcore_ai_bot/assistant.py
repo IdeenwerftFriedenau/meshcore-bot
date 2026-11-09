@@ -757,6 +757,8 @@ def transit_request(question: str) -> dict | None:
 PLANES = re.compile(
     r"(flugzeug\w*|flieger|maschinen?|jets?|hubschrauber)\b.*\b(über|ueber|am himmel|gerade|jetzt|hier|da oben)"
     r"|was fliegt (da|hier|gerade|über|ueber)|flugzeug\w* (über|ueber) ", re.I)
+RESCUE = re.compile(r"rettungs(hubschrauber|heli\w*)|\bchristoph\s?\d|\bheli(kopter)?\b.*\b(wo|über|ueber)"
+                    r"|\bwo\b.*\b(hubschrauber|heli\w*)", re.I)
 FLIGHT_NO = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{1,4}[A-Z]?\b")
 BER = re.compile(r"\bBER\b|flughafen|airport|schönefeld|schoenefeld", re.I)
 ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landung|kommt .*an\b|ankommen", re.I)
@@ -766,6 +768,8 @@ DEPART = re.compile(r"abflug|abflüge|abfluege|fliegt .*ab\b|abfliegen|startet|s
 def flight_request(question: str) -> tuple[str, dict] | None:
     """Flight questions go straight to the live data: the model tends to answer an older question instead."""
     text = " ".join(question.split())
+    if RESCUE.search(text):
+        return "get_planes_overhead", {"area": "rettung"}
     if PLANES.search(text) and not BER.search(text):
         wide = re.search(r"\bberlin\b", text, re.I) and not re.search(r"friedenau|\bhier\b|\buns\b", text, re.I)
         return "get_planes_overhead", {"area": "berlin"} if wide else {}
