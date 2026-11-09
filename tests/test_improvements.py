@@ -991,5 +991,34 @@ def test_grill_questions_route_to_trucks():
         "day": "freitag", "place": ""}
     assert grill_request("wo gibt es hähnchen in schöneberg") is None
     assert grill_request("hähnchen rezept für morgen") is None
+    assert grill_request(fix_typos("gaumenschaus in der nahe von friedenau")) == {
+        "day": "", "place": "", "near": "friedenau"}
+    assert grill_request("gaumenschmaus am freitag in Lichterfelde") == {
+        "day": "freitag", "place": "", "near": "Lichterfelde"}
     assert grill_request("und morgen?", [{"role": "user", "content": "wetter heute"}]) is None
     assert local_place_request("wo gibt es hähnchen in schöneberg", "Friedenau")["query"] == "Hähnchen-Restaurant"
+
+
+async def test_grill_near_district_uses_its_coordinates():
+    import httpx
+
+    seen = []
+
+    def respond(request):
+        if "geocoding" in request.url.host:
+            return httpx.Response(200, json={"results": [
+                {"name": "Steglitz", "latitude": 52.46, "longitude": 13.32, "admin1": "Berlin"}]})
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"status": "OK", "locations": [
+            {"b": "REWE", "e": "Schlangenbaderstraße", "f": "25", "d": "14197", "i": 2, "p": "10:30", "q": "18:30",
+             "t": [1, 2, 3, 4, 5, 6, 7], "v": None, "w": None, "x": ""}]})
+
+    config = Config()
+    config.research.enabled = True
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(config, Store(":memory:"), client)
+        text = (await tools.run("get_grill_stands", {"day": "heute", "near": "Steglitz"}))["text"]
+        home = (await tools.run("get_grill_stands", {"day": "heute", "near": "friedenau"}))["text"]
+    assert ", nahe Steglitz: REWE Schlangenbaderstraße 25" in text
+    assert "/52.4600/13.3200/" in seen[0]
+    assert "am nächsten" in home

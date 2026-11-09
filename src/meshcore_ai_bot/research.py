@@ -803,7 +803,7 @@ def _day_label(day, today) -> str:
 
 
 async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: str,
-                       day: str = "", place: str = "", now: datetime | None = None) -> dict:
+                       day: str = "", place: str = "", now: datetime | None = None, near: str = "") -> dict:
     """Where the GaumenSchmaus chicken trucks stand on a day, nearest first, or when one is at a place next.
 
     day: heute, morgen, übermorgen, a weekday name or "" (next day with a stand).
@@ -811,6 +811,7 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
     """
     now = now or datetime.now(ZoneInfo(tz)).replace(tzinfo=None)
     today = now.date()
+    near_label = near
     word = _fold(day)
     offsets: list[int]
     if word in {"", "naechste", "nachste", "wann", "wieder"}:
@@ -891,7 +892,8 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
             near = "; ".join(line(r, date) for r in open_rows[:3])
             if near.count("(heute schon zu)") == len(open_rows[:3]) > 1:
                 near = near.replace(" (heute schon zu)", "") + " – heute aber schon geschlossen"
-            return {"text": f"GaumenSchmaus {label}, am nächsten: {near}.", "sources": source}
+            where = f"nahe {near_label}" if near_label else "am nächsten"
+            return {"text": f"GaumenSchmaus {label}, {where}: {near}.", "sources": source}
         if len(offsets) == 1:
             return {"text": f"GaumenSchmaus {label}: kein Grillwagen in der Nähe.", "sources": source}
     if place:
