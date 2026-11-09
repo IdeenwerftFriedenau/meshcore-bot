@@ -1,0 +1,19 @@
+{
+  "piper": {
+    "version": "piper 2023.11.14-2 linux aarch64",
+    "url": "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz",
+    "sha256": "fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb",
+    "bytes": 26004717
+  },
+  "voice": {
+    "name": "de_DE thorsten medium (CC0)",
+    "url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+    "md5": "a129b00fb3078df43c96bab6c94535c0",
+    "bytes": 63201294
+  },
+  "voice_config": {
+    "url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json",
+    "md5": "843a7bd7272724f750534dd5a26d1aad",
+    "bytes": 4819
+  }
+}

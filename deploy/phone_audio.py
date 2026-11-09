@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
@@ -23,6 +24,8 @@ from aiortc.mediastreams import MediaStreamError
 
 ROOT = Path("/var/lib/meshcore-gateway/phone-remote")
 DEVICE = Path("/var/lib/meshcore-ai-bot/phone/device.json")
+# Shared with jarvis.py: whoever holds it owns the phone's SCO audio.
+LOCK = ROOT / "audio.lock"
 HFP = "0000111f-0000-1000-8000-00805f9b34fb"
 RATE, SAMPLES = 48000, 960
 
@@ -274,11 +277,33 @@ async def terminate_pcm(process):
         await asyncio.wait_for(process.communicate(), 2)
 
 
+def claim_audio(path=LOCK):
+    """Non-blocking shared lock; a missing lock file means Jarvis is not installed."""
+    try:
+        handle = open(path, "rb")  # noqa: SIM115 - held for the whole browser session
+    except FileNotFoundError:
+        return None
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise ValueError("Jarvis führt gerade ein Telefonat") from None
+    return handle
+
+
+def release_audio(handle):
+    if handle:
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
 class Bridge:
-    def __init__(self, route=None):
+    def __init__(self, route=None, lock_path=None):
         self.route = route or Route()
         self.current = None
         self.lock = asyncio.Lock()
+        self.lock_path = lock_path or Path(getattr(self.route, "root", ROOT)) / "audio.lock"
 
     async def status(self, owner):
         try:
@@ -316,10 +341,12 @@ class Bridge:
         async with self.lock:
             if self.current:
                 raise ValueError("Gesprächston ist bereits in einem Browser verbunden")
+            claim = claim_audio(self.lock_path)
             try:
                 await self.route.connect()
             except BaseException:
                 await self.route.disconnect()
+                release_audio(claim)
                 raise
             pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
             row = {
@@ -330,6 +357,7 @@ class Bridge:
                 "tasks": [],
                 "capture": None,
                 "lease": time.monotonic() + 45,
+                "claim": claim,
             }
             self.current = row
             try:
@@ -421,6 +449,7 @@ class Bridge:
         await row["pc"].close()
         await self.stop_processes(row)
         await self.route.disconnect()
+        release_audio(row.get("claim"))
         if self.current is row:
             self.current = None
 
