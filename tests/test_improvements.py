@@ -2,7 +2,9 @@
 
 import json
 import time
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -14,6 +16,8 @@ from meshcore_ai_bot.engine import Engine, source_name, source_names
 from meshcore_ai_bot.protocol import Incoming, followup_command, radio_check
 from meshcore_ai_bot.store import Store
 from meshcore_ai_bot.tools import Tools, schemas
+
+TODAY = datetime.now(ZoneInfo("Europe/Berlin")).date().isoformat()  # journeys "today" carry no date tag
 
 
 def sent_texts(store):
@@ -686,18 +690,18 @@ async def test_journey_from_transport_rest():
         return httpx.Response(200, json={"journeys": [
             {"legs": [
                 {"line": {"name": "S1"}, "origin": {"name": "S Friedenau (Berlin)"},
-                 "destination": {"name": "S+U Potsdamer Platz Bhf (Berlin)"}, "departure": "2026-11-09T12:34:00+01:00",
-                 "arrival": "2026-11-09T12:46:00+01:00", "departurePlatform": "2", "departureDelay": 60},
+                 "destination": {"name": "S+U Potsdamer Platz Bhf (Berlin)"}, "departure": f"{TODAY}T12:34:00+01:00",
+                 "arrival": f"{TODAY}T12:46:00+01:00", "departurePlatform": "2", "departureDelay": 60},
             ]},
             {"legs": [
                 {"walking": True, "origin": {"name": "S Friedenau (Berlin)"}, "destination": {"name": "U Walther-Schreiber-Platz"},
-                 "departure": "2026-11-09T12:30:00+01:00", "arrival": "2026-11-09T12:35:00+01:00"},
+                 "departure": f"{TODAY}T12:30:00+01:00", "arrival": f"{TODAY}T12:35:00+01:00"},
                 {"line": {"name": "M76"}, "origin": {"name": "U Walther-Schreiber-Platz (Berlin)"},
-                 "destination": {"name": "S Priesterweg (Berlin)"}, "departure": "2026-11-09T12:36:00+01:00",
-                 "arrival": "2026-11-09T12:44:00+01:00"},
+                 "destination": {"name": "S Priesterweg (Berlin)"}, "departure": f"{TODAY}T12:36:00+01:00",
+                 "arrival": f"{TODAY}T12:44:00+01:00"},
                 {"line": {"name": "S2"}, "origin": {"name": "S Priesterweg (Berlin)"},
-                 "destination": {"name": "S+U Potsdamer Platz Bhf (Berlin)"}, "departure": "2026-11-09T12:47:00+01:00",
-                 "arrival": "2026-11-09T12:56:00+01:00"},
+                 "destination": {"name": "S+U Potsdamer Platz Bhf (Berlin)"}, "departure": f"{TODAY}T12:47:00+01:00",
+                 "arrival": f"{TODAY}T12:56:00+01:00"},
             ]},
         ]})
 
@@ -981,6 +985,8 @@ def test_grill_questions_route_to_trucks():
     assert grill_request("Wann steht der Hähnchenwagen wieder am REWE Schlangenbader?") == {
         "day": "", "place": "REWE Schlangenbader"}
     assert grill_request("gaumenschmaus am freitag") == {"day": "freitag", "place": ""}
+    assert grill_request("ist morgen ein Gaumenschmaus Hähnchen wagen in der Nähe") == {"day": "morgen", "place": ""}
+    assert grill_request("gaumenschmaus heute bei mir in der umgebung") == {"day": "heute", "place": ""}
     assert grill_request("und am freitag?", [{"role": "user", "content": "gaumenschmaus morgen"}]) == {
         "day": "freitag", "place": ""}
     assert grill_request("wo gibt es hähnchen in schöneberg") is None

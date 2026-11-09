@@ -1071,7 +1071,8 @@ def grill_request(question: str, history: list[dict] | None = None) -> dict | No
     if match:
         candidate = match.group(1).strip(" ?!.,")
         if candidate and not GRILL_DAY.fullmatch(candidate) and not GRILL.search(candidate) and not re.fullmatch(
-                r"(?:wochenende|abend|mittag|nachmittag|vormittag|früh|frueh)", candidate, re.I):
+                r"(?:wochenende|abend|mittag|nachmittag|vormittag|früh|frueh)", candidate, re.I) and not re.match(
+                r"(?:n[äa]e?he|umgebung|mir|uns|hier|friedenau)\b", candidate, re.I):
             place = candidate
     return {"day": day.group(1).casefold() if day else "", "place": place}
 
