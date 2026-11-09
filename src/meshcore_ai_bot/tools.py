@@ -109,7 +109,8 @@ RESEARCH_SCHEMAS = {
          "destination": {"type": "string", "description": "Ziel-Haltestelle"},
          "when": {"type": "string", "description": "optional Ortszeit YYYY-MM-DDTHH:MM"},
          "arrive": {"type": "string", "description": "'ja', wenn when die gewünschte Ankunftszeit ist"},
-         "only": {"type": "string", "description": "optional nur ein Verkehrsmittel: bus, tram, subway, suburban"}},
+         "only": {"type": "string", "description": "optional nur ein Verkehrsmittel: bus, tram, subway, suburban"},
+         "direct": {"type": "string", "description": "'ja' für Verbindungen ohne Umsteigen"}},
         ["origin", "destination"],
     ),
     "get_flights": tool(
@@ -200,7 +201,7 @@ class Tools:
                 allowed["read_webpage"] = {"url"}
             if self.config.research.transit_url:
                 allowed["get_departures"] = {"stop", "trains"}
-                allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only"}
+                allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
@@ -229,9 +230,10 @@ class Tools:
             origin, destination = arguments.get("origin", ""), arguments.get("destination", "")
             when, only = arguments.get("when", ""), arguments.get("only", "")
             arrive = arguments.get("arrive", "").strip().casefold() in {"ja", "true", "yes", "1"}
+            direct = arguments.get("direct", "").strip().casefold() in {"ja", "true", "yes", "1"}
             return await research.cached(
-                name, f"{origin}|{destination}|{when}|{arrive}|{only}", 60,
-                lambda: research.journey(origin, destination, when, arrive, only),
+                name, f"{origin}|{destination}|{when}|{arrive}|{only}|{direct}", 60,
+                lambda: research.journey(origin, destination, when, arrive, only, direct),
             )
         if name == "get_flights":
             arrivals = arguments.get("direction", "").strip().casefold().startswith(("an", "arr"))

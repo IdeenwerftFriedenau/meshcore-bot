@@ -825,3 +825,47 @@ async def test_cancelled_departures_stay_in_time_order():
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         result = await Tools(Config(), Store(":memory:"), client).run("get_departures", {"stop": "S Friedenau"})
     assert result["text"].index("23:10") < result["text"].index("23:25 S1 → S Nordbahnhof fällt aus")
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Wie komme ich morgen früh um halb acht nach Mitte?",
+     {"origin": "S Friedenau", "destination": "Mitte", "when": "2026-11-10T07:30"}),
+    ("Wann muss ich los um 18 Uhr am Ostbahnhof zu sein?",
+     {"origin": "S Friedenau", "destination": "Ostbahnhof", "when": "2026-11-10T18:00", "arrive": "ja"}),
+    ("Wie komme ich nach Potsdam?", {"origin": "S Friedenau", "destination": "Potsdam"}),
+    ("verbindung friedenau - hermannplatz", {"origin": "friedenau", "destination": "hermannplatz"}),
+    ("Wie komme ich ohne Umsteigen nach Wannsee?", {"origin": "S Friedenau", "destination": "Wannsee", "direct": "ja"}),
+    ("S1 nach Oranienburg wann?", {"origin": "S Friedenau", "destination": "Oranienburg"}),
+    ("von hier zum Brandenburger Tor", {"origin": "S Friedenau", "destination": "Brandenburger Tor"}),
+    ("Wie lange brauche ich nach Charlottenburg?", {"origin": "S Friedenau", "destination": "Charlottenburg"}),
+    ("wie komme ich nach hause", None),
+])
+def test_more_journey_wordings(question, expected):
+    from datetime import datetime
+
+    from meshcore_ai_bot.assistant import fix_typos, journey_request
+    assert journey_request(fix_typos(question), "S Friedenau", [], datetime(2026, 11, 9, 23, 20)) == expected
+
+
+async def test_journey_to_a_place_and_without_tram_line():
+    seen = []
+
+    def respond(request):
+        if request.url.path == "/locations":
+            if "kadewe" in request.url.params["query"].casefold():
+                return httpx.Response(200, json=[
+                    {"type": "location", "id": "980105411", "name": "KaDeWe, 10789 Berlin-Schöneberg", "poi": True,
+                     "latitude": 52.502, "longitude": 13.341},
+                    {"type": "stop", "id": "900000001", "name": "Badeweg"}])
+            return httpx.Response(200, json=[{"type": "stop", "id": "900061102", "name": "S Friedenau (Berlin)"}])
+        seen.append(dict(request.url.params))
+        if request.url.params.get("tram") == "true":
+            return httpx.Response(404, json={"message": "no journeys found"})
+        return httpx.Response(200, json={"journeys": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(Config(), Store(":memory:"), client)
+        await tools.run("get_journey", {"origin": "S Friedenau", "destination": "KaDeWe"})
+        tram = await tools.run("get_journey", {"origin": "S Friedenau", "destination": "Alex", "only": "tram"})
+    assert seen[0]["to.id"] == "980105411" and seen[0]["to.latitude"] == "52.502" and "to" not in seen[0]
+    assert tram["text"] == "S Friedenau → Alex: nur mit Tram keine Verbindung gefunden."
