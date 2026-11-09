@@ -751,24 +751,33 @@ def weather_when(question: str, days: list[dict]) -> str:
 
 
 def weather_verdict(question: str, day: dict) -> str:
-    """Short yes/no lead for 'wird es sonnig/regnet es' from the forecast numbers."""
+    """Short lead for 'wird es sonnig/regnet es' from the forecast numbers.
+
+    Rain is judged by the expected amount first: a high shower risk with 0 mm is not "Ja, Regen".
+    A statement ("morgen wird es nicht regnen") gets no Ja/Nein, which would read as agreeing or not.
+    """
     sun, prob, mm = day.get("sun_h"), day.get("rain_prob"), day.get("rain_mm")
+    lead = ""
     if re.search(r"sonnig|sonne", question, re.I) and sun is not None:
-        if sun >= 4:
-            return "Ja, ziemlich sonnig."
-        if sun >= 1.5:
-            return "Teils sonnig."
-        return "Eher nicht sonnig."
-    if re.search(r"regn|regen|schirm|nass", question, re.I) and (prob is not None or mm is not None):
+        lead = "Ja, ziemlich sonnig." if sun >= 4 else "Teils sonnig." if sun >= 1.5 else "Eher nicht sonnig."
+    elif re.search(r"regn|regen|schirm|nass|trocken", question, re.I) and (prob is not None or mm is not None):
         prob, mm = prob or 0, mm or 0
-        if prob >= 60 or mm >= 1:
-            return "Ja, mit Regen ist zu rechnen."
-        if prob < 25 and mm < 0.3:
-            return "Nein, es bleibt wohl trocken."
-        return "Vielleicht etwas Regen."
-    if re.search(r"schnee|schneit", question, re.I) and day.get("code") is not None:
-        return "Ja, Schnee ist möglich." if day["code"] in (71, 73, 75, 77, 85, 86) else "Nein, kein Schnee in Sicht."
-    return ""
+        if mm >= 1:
+            lead = f"Ja, es wird regnen (etwa {mm:.0f} mm)."
+        elif mm >= 0.2:
+            lead = "Etwas Regen ist möglich, aber nur wenig."
+        elif prob >= 40:
+            lead = f"Eher kein Regen: 0 mm erwartet, nur Schauerrisiko bis {prob:.0f} %."
+        else:
+            lead = "Nein, es bleibt wohl trocken."
+    elif re.search(r"schnee|schneit", question, re.I) and day.get("code") is not None:
+        lead = "Ja, Schnee ist möglich." if day["code"] in (71, 73, 75, 77, 85, 86) else "Nein, kein Schnee in Sicht."
+    asking = question.strip().endswith("?") or re.match(
+        r"\s*(wird|werden|regnet|schneit|scheint|gibt|brauch\w*|ist|bleibt|kommt|wann|wie|soll|muss|kann)\b",
+        question, re.I)
+    if lead and not asking:
+        lead = re.sub(r"^(Ja|Nein), (\w)", lambda m: m.group(2).upper(), lead)
+    return lead
 
 
 TRANSIT_WORDS = re.compile(
@@ -1050,6 +1059,9 @@ def local_place_request(question: str, default_location: str) -> dict | None:
     asks = re.search(r"\b(wo|welche|gibt|empfiehl|suche|n[aä]he|in der n[aä]he|finde)\b", lowered)
     if not asks:
         return None
+    if re.search(r"\b(morgen|heute|übermorgen|wann|wieder|zeit f[üu]r|ge[öo]ffnet|offen|montag|dienstag|mittwoch"
+                 r"|donnerstag|freitag|samstag|sonntag|wochenende)\b", lowered):
+        return None  # a question about when a certain stand is there, not a list of places
     location = default_location
     match = re.search(r"\b(?:in|bei|nahe)\s+([\wäöüß .-]{2,60})", question, re.I)
     if match:

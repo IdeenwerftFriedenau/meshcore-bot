@@ -553,7 +553,7 @@ def test_weather_verdicts():
     assert weather_verdict("wird es morgen sonnig", {"sun_h": 0.2}) == "Eher nicht sonnig."
     assert weather_verdict("wird es sonnig", {"sun_h": 5}) == "Ja, ziemlich sonnig."
     assert weather_verdict("regnet es morgen", {"rain_prob": 0, "rain_mm": 0}) == "Nein, es bleibt wohl trocken."
-    assert weather_verdict("brauche ich einen Schirm", {"rain_prob": 80, "rain_mm": 3}) == "Ja, mit Regen ist zu rechnen."
+    assert weather_verdict("brauche ich einen Schirm", {"rain_prob": 80, "rain_mm": 3}) == "Ja, es wird regnen (etwa 3 mm)."
     assert weather_verdict("wie wird das Wetter", {"sun_h": 5}) == ""
 
 
@@ -897,3 +897,21 @@ def test_place_search_keeps_food_and_place_apart():
         "query": "Pizzeria", "location": "Schöneberg"}
     assert local_place_request("Gibt es ein gutes Café in Friedenau?", "Berlin-Friedenau") == {
         "query": "Café", "location": "Friedenau"}
+
+
+@pytest.mark.parametrize("question,day,expected", [
+    ("in Berlin wird es morgen nicht regnen.", {"rain_prob": 68, "rain_mm": 0}, "Eher kein Regen: 0 mm erwartet, nur Schauerrisiko bis 68 %."),
+    ("wird es morgen regnen?", {"rain_prob": 90, "rain_mm": 4.2}, "Ja, es wird regnen (etwa 4 mm)."),
+    ("morgen bleibt es trocken", {"rain_prob": 10, "rain_mm": 0}, "Es bleibt wohl trocken."),
+    ("Regnet es morgen", {"rain_prob": 10, "rain_mm": 0}, "Nein, es bleibt wohl trocken."),
+])
+def test_rain_verdict_follows_the_amount(question, day, expected):
+    from meshcore_ai_bot.assistant import weather_verdict
+    assert weather_verdict(question, day) == expected
+
+
+def test_question_about_a_stand_day_is_no_place_list():
+    from meshcore_ai_bot.assistant import local_place_request
+    assert local_place_request("ist morgen wieder Zeit für Gaumenschmaus Hähnchen in der Nähe", "Friedenau") is None
+    assert local_place_request("Wo gibt es Hähnchen in der Nähe?", "Friedenau") == {
+        "query": "Hähnchen-Restaurant", "location": "Friedenau"}
