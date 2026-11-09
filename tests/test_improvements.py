@@ -538,3 +538,32 @@ async def test_sunny_question_gets_verdict_without_ai(monkeypatch):
     monkeypatch.setattr(assistant.tools, "run", fake_run)
     answer = await assistant.answer("wird es morgen sonnig")
     assert answer.text.startswith("Eher nicht sonnig. Berlin-Friedenau 2026-11-08")
+
+
+def test_when_does_the_sun_come_back():
+    from datetime import date
+
+    from meshcore_ai_bot.assistant import weather_question, weather_when
+    assert weather_question("wann scheint die sonne wieder", "Friedenau")["period"] == "week"
+    days = [
+        {"date": date(2026, 11, 9), "sun_h": 0.1, "rain_prob": 10, "rain_mm": 0, "code": 45},
+        {"date": date(2026, 11, 10), "sun_h": 0.5, "rain_prob": 70, "rain_mm": 3, "code": 61},
+        {"date": date(2026, 11, 11), "sun_h": 5.2, "rain_prob": 0, "rain_mm": 0, "code": 1},
+    ]
+    assert weather_when("wann scheint die sonne wieder", days) == "Am Mittwoch (11.11.) gibt es wieder Sonne, etwa 5 Std."
+    assert weather_when("wann regnet es wieder", days) == "Morgen ist wieder mit Regen zu rechnen."
+    assert weather_when("wann scheint die sonne", days[:2]) == "In den nächsten Tagen ist kaum Sonne in Sicht."
+
+
+async def test_week_outlook_from_forecast(monkeypatch):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from meshcore_ai_bot.tools import week_outlook
+    today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    daily = {"time": [(today + timedelta(days=n)).isoformat() for n in range(3)],
+             "sunshine_duration": [0, 1800, 18000], "precipitation_probability_max": [0, 0, 0],
+             "precipitation_sum": [0, 0, 0], "weather_code": [45, 3, 1]}
+    result = week_outlook("Friedenau", daily, "Europe/Berlin", 0)
+    assert result["text"].startswith("Friedenau, Sonnenstunden: heute 0h, morgen 0h, ")
+    assert len(result["days"]) == 3 and result["days"][2]["sun_h"] == 5

@@ -349,6 +349,8 @@ class Tools:
             if len(self.cache) >= 64:
                 self.cache.clear()
             self.cache[key] = (now, forecast)
+        if period == "week":
+            return week_outlook(name, forecast["daily"], self.config.station.timezone, now)
         if period == "now":
             current = forecast["current"]
             text = f"{name} jetzt: {current['temperature_2m']:g} °C, {weather_description(current['weather_code'])}."
@@ -469,6 +471,43 @@ def measurement(data, key, unit, index=None):
     if index is not None:
         value = value[index] if isinstance(value, list) and index < len(value) else None
     return f"{value:g}{unit}" if type(value) in {int, float} else "k. A."
+
+
+WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+
+def week_outlook(name: str, daily: dict, timezone: str, checked_at: float) -> dict:
+    """Seven days in short form plus per-day numbers, for 'wann scheint die Sonne wieder?'."""
+    today = datetime.now(ZoneInfo(timezone)).date()
+    days, parts = [], []
+    for i, stamp in enumerate(daily.get("time") or []):
+        try:
+            date = datetime.fromisoformat(stamp).date()
+        except ValueError:
+            continue
+        if date < today:
+            continue
+
+        def pick(key, i=i):
+            values = daily.get(key)
+            value = values[i] if isinstance(values, list) and i < len(values) else None
+            return value if type(value) in {int, float} else None
+
+        sun = pick("sunshine_duration")
+        day = {
+            "date": date, "sun_h": None if sun is None else sun / 3600, "rain_prob": pick("precipitation_probability_max"),
+            "rain_mm": pick("precipitation_sum"), "code": pick("weather_code"),
+        }
+        days.append(day)
+        label = "heute" if date == today else "morgen" if (date - today).days == 1 else WEEKDAYS[date.weekday()][:2]
+        sun_text = "?" if day["sun_h"] is None else f"{round(day['sun_h']):g}"
+        parts.append(f"{label} {sun_text}h")
+    return {
+        "text": f"{name}, Sonnenstunden: " + ", ".join(parts) + ".",
+        "sources": ["https://open-meteo.com/"],
+        "checked_at": checked_at,
+        "days": days,
+    }
 
 
 def sunshine(daily: dict, i: int) -> str:

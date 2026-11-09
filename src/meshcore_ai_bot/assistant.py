@@ -195,7 +195,7 @@ class Assistant:
                         ("Lokale KI: " if local else "") + text
                         if len(text) <= 4000
                         else "Die Antwort ist zu lang. Bitte grenze die Frage ein.",
-                        [] if local else list(dict.fromkeys(sources + mesh["sources"]))[:5],
+                        [] if local else list(dict.fromkeys(sources + (mesh["sources"] if MESH_TOPIC.search(question) else [])))[:5],
                     )
                     limited = result.get("_limited") is True
                     if researched and not (local or limited) and cache_key and self.config.research.answer_cache_seconds:
@@ -281,6 +281,9 @@ class Assistant:
             result = await self.tools.run("get_weather", args)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             return Answer("Die Wetterdaten sind gerade nicht abrufbar.")
+        if result.get("days"):
+            when = weather_when(question, result["days"])
+            return Answer((when + " " if when else "") + result["text"], result.get("sources", []))
         verdict = weather_verdict(question, result.get("day") or {})
         return Answer((verdict + " " if verdict else "") + result["text"], result.get("sources", []))
 
@@ -561,7 +564,9 @@ def weather_question(question: str, default_location: str) -> dict | None:
     if len(text) > 100 or not WEATHER_WORDS.search(text) or WEATHER_SKIP.search(text):
         return None
     period = "now"
-    if re.search(r"übermorgen|uebermorgen", text, re.I):
+    if re.match(r"\s*(wann|ab wann|bis wann)\b", text, re.I) or re.search(r"\bwieder\b|nächste[nrs]? tage|naechste[nrs]? tage|diese woche", text, re.I):
+        period = "week"
+    elif re.search(r"übermorgen|uebermorgen", text, re.I):
         period = "day_after_tomorrow"
     elif re.search(r"\bmorgen\b", text, re.I):
         period = "tomorrow"
@@ -574,6 +579,44 @@ def weather_question(question: str, default_location: str) -> dict | None:
     if place and location.casefold() in {"berlin", "friedenau", "berlin-friedenau"}:
         location = default_location
     return {"location": location, "period": period}
+
+
+MESH_TOPIC = re.compile(r"mesh|repeater|lora|companion|knoten|node|funk|firmware|kanal|channel|advert|t1000|heltec|rak", re.I)
+DAY_NAMES = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+
+def weather_when(question: str, days: list[dict]) -> str:
+    """'Wann scheint die Sonne wieder?' -> the first day that matches, named in plain words."""
+    if not days:
+        return ""
+    today = days[0]["date"]
+
+    def name(day):
+        offset = (day["date"] - today).days
+        if offset == 0:
+            return "Heute"
+        if offset == 1:
+            return "Morgen"
+        return f"Am {DAY_NAMES[day['date'].weekday()]} ({day['date']:%d.%m.})"
+
+    def wet(day):
+        return (day.get("rain_prob") or 0) >= 50 or (day.get("rain_mm") or 0) >= 1
+
+    if re.search(r"sonn", question, re.I):
+        hit = next((d for d in days if (d.get("sun_h") or 0) >= 2), None)
+        if hit:
+            return f"{name(hit)} gibt es wieder Sonne, etwa {round(hit['sun_h']):g} Std."
+        return "In den nächsten Tagen ist kaum Sonne in Sicht."
+    if re.search(r"aufhör|aufhoer|trocken", question, re.I):
+        hit = next((d for d in days if not wet(d)), None)
+        return f"{name(hit)} bleibt es voraussichtlich trocken." if hit else "Vorerst bleibt es nass."
+    if re.search(r"regn|regen", question, re.I):
+        hit = next((d for d in days if wet(d)), None)
+        return f"{name(hit)} ist wieder mit Regen zu rechnen." if hit else "In den nächsten Tagen bleibt es wohl trocken."
+    if re.search(r"schnee|schneit", question, re.I):
+        hit = next((d for d in days if d.get("code") in (71, 73, 75, 77, 85, 86)), None)
+        return f"{name(hit)} ist Schnee möglich." if hit else "In den nächsten Tagen ist kein Schnee in Sicht."
+    return ""
 
 
 def weather_verdict(question: str, day: dict) -> str:
