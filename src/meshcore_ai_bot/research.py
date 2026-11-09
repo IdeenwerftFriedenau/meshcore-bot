@@ -246,9 +246,10 @@ class Research:
         rows = data.get("departures", []) if isinstance(data, dict) else data
         tz = ZoneInfo(self.config.station.timezone)
         entries = []
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
+        rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        # Cancelled trips have no real-time "when" and come first in the feed: keep timetable order.
+        rows.sort(key=lambda row: str(row.get("when") or row.get("plannedWhen") or ""))
+        for row in rows:
             when = row.get("when") or row.get("plannedWhen")
             line = plain((row.get("line") or {}).get("name"))
             direction = plain(row.get("direction"))

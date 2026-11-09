@@ -810,3 +810,18 @@ async def test_journey_with_arrival_time_and_bus_only():
     assert seen["bus"] == "true" and seen["suburban"] == "false" and seen["subway"] == "false"
     assert "Ankunft bis 08:00, nur Bus" in result["text"]
     assert "07:35 Bus 186" in result["text"] and "07:20" not in result["text"]
+
+
+async def test_cancelled_departures_stay_in_time_order():
+    def respond(request):
+        if request.url.path == "/locations":
+            return httpx.Response(200, json=[{"type": "stop", "id": "900061102", "name": "S Friedenau (Berlin)"}])
+        return httpx.Response(200, json={"departures": [
+            {"when": None, "plannedWhen": "2026-11-09T23:25:00+01:00", "cancelled": True,
+             "line": {"name": "S1"}, "direction": "S Nordbahnhof"},
+            {"when": "2026-11-09T23:10:00+01:00", "line": {"name": "S1"}, "direction": "S Wannsee"},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run("get_departures", {"stop": "S Friedenau"})
+    assert result["text"].index("23:10") < result["text"].index("23:25 S1 → S Nordbahnhof fällt aus")
