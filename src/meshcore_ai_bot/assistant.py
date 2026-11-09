@@ -125,6 +125,9 @@ class Assistant:
                 routed, history, self.config.weather.location)
         if weather:
             return await self._weather_answer(routed, weather)
+        grill = grill_request(routed, history) if self.config.research.enabled and not self.offline else None
+        if grill:
+            return await self._tool_answer("get_grill_stands", grill)
         trip = (
             journey_request(routed, self.config.station.location, history,
                             datetime.now(ZoneInfo(self.config.station.timezone)).replace(tzinfo=None))
@@ -265,6 +268,7 @@ class Assistant:
                     "get_departures",
                     "get_flights",
                     "get_planes_overhead",
+                    "get_grill_stands",
                 }:
                     # Clothing questions deserve a human-readable interpretation of the facts.
                     clothing = re.search(r"mütze|mutze|muetze|schal|jacke|handschuhe", question, re.I)
@@ -1034,6 +1038,42 @@ def berlin_activity_reply(question: str) -> str | None:
         "Drei unkomplizierte Berlin-Ideen: Tempelhofer Feld, East Side Gallery oder ein Bummel durch den Tiergarten. "
         "Nenne Kiez, Zeit und Budget – dann suche ich gezielter; bei Unsicherheit prüfe ich den konkreten Ort nach."
     )
+
+
+GRILL = re.compile(r"gaumen\s?-?schma|h(?:ä|a|ae)hnchen\s?-?(?:wagen|mobil|griller|stand|radar|grill)|grillh(?:ä|a|ae)hnchen"
+                   r"|h(?:ä|a|ae)hnchengrill|broiler", re.I)
+GRILL_DAY = re.compile(r"\b(heute|übermorgen|uebermorgen|morgen|montag|dienstag|mittwoch|donnerstag|freitag|samstag"
+                       r"|sonntag)s?\b", re.I)
+GRILL_WHEN = re.compile(r"\b(wann|wieder|zeit f[üu]r|steht|stehen|kommt|kommen|da|heute|morgen|übermorgen|montag"
+                        r"|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b", re.I)
+
+
+def grill_request(question: str, history: list[dict] | None = None) -> dict | None:
+    """'Ist morgen wieder Zeit für GaumenSchmaus Hähnchen?' -> where the chicken trucks stand that day."""
+    text = " ".join(question.split())
+    if not GRILL.search(text):
+        if not (re.search(r"h(?:ä|a|ae)hnchen", text, re.I) and GRILL_WHEN.search(text)
+                and not re.search(r"rezept|kochen|braten|backofen|gar\b|kalorien|preis|kostet", text, re.I)):
+            short_followup = len(text) <= 40 and re.match(r"(und|wie ist es|wie sieht es|was ist mit)\b", text, re.I)
+            earlier = [str(item.get("content", "")) for item in history or [] if item.get("role") == "user"]
+            if not (short_followup and earlier and grill_request(earlier[-1])):
+                return None
+            previous = grill_request(earlier[-1]) or {}
+            day = GRILL_DAY.search(text)
+            place = re.search(r"\b(?:am|an der|beim|bei|in der|vor dem|vorm)\s+(\S.+)$", text.strip(" ?!."), re.I)
+            return {"day": day.group(1).casefold() if day else previous.get("day", ""),
+                    "place": place.group(1).strip() if place and not GRILL_DAY.fullmatch(place.group(1).strip())
+                    else previous.get("place", "")}
+    day = GRILL_DAY.search(text)
+    place = ""
+    match = re.search(r"\b(?:am|an der|beim|bei|in der|vor dem|vorm)\s+((?:rewe|netto|edeka|roller|kaufland|lidl|ekz)?"
+                      r"\s*[A-ZÄÖÜ0-9][\wäöüß.-]*(?:\s+[A-ZÄÖÜ0-9][\wäöüß.-]*)?)", text, re.I)
+    if match:
+        candidate = match.group(1).strip(" ?!.,")
+        if candidate and not GRILL_DAY.fullmatch(candidate) and not GRILL.search(candidate) and not re.fullmatch(
+                r"(?:wochenende|abend|mittag|nachmittag|vormittag|früh|frueh)", candidate, re.I):
+            place = candidate
+    return {"day": day.group(1).casefold() if day else "", "place": place}
 
 
 def local_place_request(question: str, default_location: str) -> dict | None:
