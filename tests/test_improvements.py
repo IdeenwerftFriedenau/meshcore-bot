@@ -709,3 +709,45 @@ async def test_journey_from_transport_rest():
         "S Friedenau → S+U Potsdamer Platz Bhf: 12:34 (+1) S1 Gl. 2, an 12:46 (12 Min.); "
         "12:36 M76 > S2 ab U Walther-Schreiber-Platz, umsteigen S Priesterweg, an 12:56 (26 Min.)."
     )
+
+
+@pytest.mark.parametrize("typed,expected", [
+    ("wie wird das weter morgn", "wie wird das wetter morgen"),
+    ("wan scheint die sone wieder?", "wann scheint die sonne wieder?"),
+    ("Wo is der retungshubschrauber", "Wo ist der rettungshubschrauber"),
+    ("nexter zug ab s friedenau", "nächster zug ab s friedenau"),
+    ("wie kom ich zum alex", "wie komme ich zum Alexanderplatz"),
+    ("ist es 20 grad warm", "ist es 20 grad warm"),
+    ("Was fliegt da grad", "Was fliegt da gerade"),
+    ("Wer war Hans Baluschek?", "Wer war Hans Baluschek?"),
+    ("welche fluege starten am ber", "welche fluege starten am ber"),
+])
+def test_typos_fixed_before_routing(typed, expected):
+    from meshcore_ai_bot.assistant import fix_typos
+    assert fix_typos(typed) == expected
+
+
+@pytest.mark.parametrize("typed,route", [
+    ("wird es morgn sonnig", ("weather", {"location": "Berlin-Friedenau", "period": "tomorrow"})),
+    ("regnet es heute in hamburg", ("weather", {"location": "Hamburg", "period": "today"})),
+    ("wetter ubermorgen", ("weather", {"location": "Berlin-Friedenau", "period": "day_after_tomorrow"})),
+    ("was fliegt da grad", ("flight", ("get_planes_overhead", {}))),
+    ("wann landet fr146", ("flight", ("get_flights", {"direction": "ankunft", "query": "FR146"}))),
+    ("ist der flug aus london gelandet", ("flight", ("get_flights", {"direction": "ankunft", "query": "london"}))),
+    ("wann faehrt die s1 ab friedenau", ("transit", {"stop": "friedenau"})),
+    ("abfarten rathaus steglitz", ("transit", {"stop": "rathaus steglitz"})),
+    ("wie komm ich zum alex", ("journey", {"origin": "S Friedenau", "destination": "Alexanderplatz"})),
+    ("wie komme ich zum flughafen ber", ("journey", {"origin": "S Friedenau", "destination": "flughafen ber"})),
+])
+def test_typed_questions_take_the_right_route(typed, route):
+    from meshcore_ai_bot.assistant import (
+        fix_typos,
+        flight_request,
+        journey_request,
+        transit_request,
+        weather_question,
+    )
+    text = fix_typos(typed)
+    found = [("weather", weather_question(text, "Berlin-Friedenau")), ("journey", journey_request(text, "S Friedenau")),
+             ("transit", transit_request(text)), ("flight", flight_request(text))]
+    assert next((name, value) for name, value in found if value) == route

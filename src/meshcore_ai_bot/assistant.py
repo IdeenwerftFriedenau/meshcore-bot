@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import re
@@ -115,24 +116,25 @@ class Assistant:
         wx = wx_request(question, self.config.weather.location)
         if wx:
             return await self._tool_answer("get_weather", wx)
-        weather = weather_question(question, self.config.weather.location) if self.config.weather.enabled else None
+        routed = fix_typos(question)  # radio users type fast on tiny keyboards
+        weather = weather_question(routed, self.config.weather.location) if self.config.weather.enabled else None
         if weather:
-            return await self._weather_answer(question, weather)
+            return await self._weather_answer(routed, weather)
         trip = (
-            journey_request(question, self.config.station.location)
+            journey_request(routed, self.config.station.location)
             if self.config.research.enabled and self.config.research.transit_url and not self.offline
             else None
         )
         if trip:
             return await self._tool_answer("get_journey", trip)
         transit = (
-            transit_request(question)
+            transit_request(routed)
             if self.config.research.enabled and self.config.research.transit_url and not self.offline
             else None
         )
         if transit:
             return await self._tool_answer("get_departures", transit)
-        flight = flight_request(question) if self.config.research.enabled and not self.offline else None
+        flight = flight_request(routed) if self.config.research.enabled and not self.offline else None
         if flight:
             return await self._tool_answer(*flight)
         places = local_place_request(question, self.config.station.location)
@@ -565,6 +567,51 @@ def product_release_question(question: str) -> str | None:
     return "Zum MeshPager habe ich gerade keine verlässliche aktuelle Release-Quelle. Ich möchte dazu nichts erfinden."
 
 
+TYPO_WORDS = {
+    "wan": "wann", "wen": "wann", "is": "ist", "isses": "ist es", "grade": "gerade", "grad": "gerade",
+    "nexter": "nächster", "nexte": "nächste", "naechster": "nächster", "morgn": "morgen", "moin": "moin",
+    "ubermorgen": "übermorgen", "uber": "über", "ueber": "über", "kom": "komme", "komm": "komme", "fart": "fährt",
+    "faehrt": "fährt", "farhen": "fahren", "alex": "Alexanderplatz", "hbf": "Hauptbahnhof",
+    "hauptbahnhhof": "Hauptbahnhof", "zoo": "Zoologischer Garten", "nen": "einen", "weter": "wetter",
+    "wettr": "wetter", "wtter": "wetter", "sone": "sonne", "son": "sonne",
+}
+TYPO_VOCAB = [
+    "wetter", "morgen", "übermorgen", "heute", "sonne", "sonnig", "scheint", "regnet", "regen", "schnee",
+    "gewitter", "wieder", "woche", "temperatur", "nächster", "nächste", "abfahrt", "abfahrten", "fährt",
+    "haltestelle", "bahnhof", "verbindung", "komme", "flugzeug", "flugzeuge", "fliegt", "flughafen",
+    "rettungshubschrauber", "hubschrauber", "gelandet", "landet", "startet", "starten", "landen", "fliegen", "morgens", "abends", "wetten", "abflüge", "ankünfte", "gerade",
+    "potsdamer", "alexanderplatz", "friedenau", "hauptbahnhof", "steglitz", "schöneberg", "südkreuz",
+]
+
+
+def fix_typos(question: str) -> str:
+    """Repair the usual quick-typing slips before the fixed routes look at a question.
+
+    Numbers keep their meaning ("20 grad" stays), short words are only changed via the explicit list,
+    and the first letter keeps its case so place names are still recognised.
+    """
+    words = question.split(" ")
+    out = []
+    for index, word in enumerate(words):
+        core = word.strip("?!.,;:")
+        lower = core.casefold()
+        fixed = None
+        previous = words[index - 1] if index else ""
+        if lower == "grad" and re.fullmatch(r"-?\d+[,.]?\d*", previous):
+            fixed = None
+        elif lower in TYPO_WORDS:
+            fixed = TYPO_WORDS[lower]
+        elif len(lower) >= 5 and lower.isalpha() and lower not in TYPO_VOCAB:
+            close = difflib.get_close_matches(lower, TYPO_VOCAB, n=1, cutoff=0.84)
+            fixed = close[0] if close else None
+        if fixed and fixed != lower:
+            if core[:1].isupper():
+                fixed = fixed[:1].upper() + fixed[1:]
+            word = word.replace(core, fixed)
+        out.append(word)
+    return " ".join(out)
+
+
 WEATHER_WORDS = re.compile(
     r"\b(wetter\w*|sonnig|sonne|sonnenschein|regn\w*|regen\w*|schnee\w*|schneit|gewitter|nebel\w*|neblig"
     r"|temperatur\w*|grad|warm|kalt|frost\w*|windig|sturm|wolkig|bewölkt|bewoelkt|schirm)\b", re.I)
@@ -579,6 +626,8 @@ def weather_question(question: str, default_location: str) -> dict | None:
     text = " ".join(question.split())
     if len(text) > 100 or not WEATHER_WORDS.search(text) or WEATHER_SKIP.search(text):
         return None
+    if PLANES.search(text) or RESCUE.search(text) or re.search(r"\bfliegt\b|flugzeug", text, re.I):
+        return None
     period = "now"
     if re.match(r"\s*(wann|ab wann|bis wann)\b", text, re.I) or re.search(r"\bwieder\b|nächste[nrs]? tage|naechste[nrs]? tage|diese woche", text, re.I):
         period = "week"
@@ -591,7 +640,11 @@ def weather_question(question: str, default_location: str) -> dict | None:
     elif re.search(r"sonnig|sonne|regn|regen|schnee|schneit|schirm", text, re.I):
         period = "today"
     place = re.search(r"\b(?:in|für|fuer|bei)\s+([A-ZÄÖÜ][\wäöüß-]{2,30}(?:\s+[A-ZÄÖÜ][\wäöüß-]{2,30})?)", text)
-    location = place.group(1) if place else default_location
+    if not place:  # "regnet es heute in hamburg" – typed without capital letters
+        place = re.search(r"\b(?:in|für|fuer|bei)\s+([a-zäöüß][\wäöüß-]{2,30})\s*[?.!]*$", text)
+        if place and place.group(1).casefold() in {"ordnung", "zukunft", "nähe", "naehe", "der", "den", "dem", "uns"}:
+            place = None
+    location = place.group(1)[:1].upper() + place.group(1)[1:] if place else default_location
     if place and location.casefold() in {"berlin", "friedenau", "berlin-friedenau"}:
         location = default_location
     return {"location": location, "period": period}
@@ -689,22 +742,22 @@ def weather_verdict(question: str, day: dict) -> str:
 
 TRANSIT_WORDS = re.compile(
     r"\b(z(u|ü|ue)ge?|bahn(en)?|s-?bahn|u-?bahn|bus(se)?|tram|straßenbahn|strassenbahn|ice|ic|re\d*|rb\d*|fex"
-    r"|abfahrt\w*)\b", re.I)
+    r"|abfahrt\w*|[su]\d{1,2}|m\d{1,2})\b", re.I)
 TRAIN_WORDS = re.compile(r"\b(z(u|ü|ue)ge?|ice|ic|re\d*|rb\d*|fex|regionalbahn|regionalzug|fernverkehr)\b", re.I)
 STOP = re.compile(r"\b(?:ab|von|vom|am|an der|an dem|beim|bei|abfahrt(?:en)?)\s+(.+?)(?:\s+(?:nach|richtung|in richtung)\b.*)?$",
                   re.I)
 
 
 JOURNEY = re.compile(
-    r"(?:wie komm(?:e|t) (?:ich|man|wir)|verbindung(?:en)?|wie fahr(?:e|t) (?:ich|man)|weg|route|fahrt)?"
+    r"(?:wie komm(?:e|t)? (?:ich|man|wir)|verbindung(?:en)?|wie fahr(?:e|t) (?:ich|man)|weg|route|fahrt)?"
     r".*?\b(?:von|ab)\s+(?P<a>.+?)\s+(?:nach|zum|zur|zu|bis)\s+(?P<b>.+?)$"
-    r"|wie komm(?:e|t) (?:ich|man|wir)(?: von hier)? (?:nach|zum|zur|zu)\s+(?P<c>.+?)$", re.I)
+    r"|wie komm(?:e|t)? (?:ich|man|wir)(?: von hier)? (?:nach|zum|zur|zu)\s+(?P<c>.+?)$", re.I)
 
 
 def journey_request(question: str, home: str) -> dict | None:
     """'Wie komme ich von S Friedenau nach Potsdamer Platz' -> a journey, straight from the timetable."""
     text = " ".join(question.split()).strip(" ?!.")
-    if len(text) > 120 or re.search(r"flug|flieg|ticket|preis|kosten|auto|fahrrad|rad\b|zu fu(ß|ss)", text, re.I):
+    if len(text) > 120 or re.search(r"flug(?!hafen)|flieg|ticket|preis|kosten|auto|fahrrad|rad\b|zu fu(ß|ss)", text, re.I):
         return None
     if not re.search(r"wie komm|verbindung|wie fahr|route|weg\b|\bvon\b.+\bnach\b", text, re.I):
         return None
@@ -760,8 +813,9 @@ PLANES = re.compile(
 RESCUE = re.compile(r"rettungs(hubschrauber|heli\w*)|\bchristoph\s?\d|\bheli(kopter)?\b.*\b(wo|über|ueber)"
                     r"|\bwo\b.*\b(hubschrauber|heli\w*)", re.I)
 FLIGHT_NO = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{1,4}[A-Z]?\b")
+FLIGHT_NO_LOWER = re.compile(r"\b([a-z]{2}|[a-z]\d|\d[a-z])\s?\d{2,4}\b")
 BER = re.compile(r"\bBER\b|flughafen|airport|schönefeld|schoenefeld", re.I)
-ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landung|kommt .*an\b|ankommen", re.I)
+ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landung|gelandet|kommt .*an\b|ankommen", re.I)
 DEPART = re.compile(r"abflug|abflüge|abfluege|fliegt .*ab\b|abfliegen|startet|starten|flüge|fluege|flug\b", re.I)
 
 
@@ -774,14 +828,18 @@ def flight_request(question: str) -> tuple[str, dict] | None:
         wide = re.search(r"\bberlin\b", text, re.I) and not re.search(r"friedenau|\bhier\b|\buns\b", text, re.I)
         return "get_planes_overhead", {"area": "berlin"} if wide else {}
     number = FLIGHT_NO.search(text)
-    if not BER.search(text) and not (number and re.search(r"\bflug", text, re.I)):
+    if not number and re.search(r"\b(landet|startet|flug)\b", text, re.I):
+        number = FLIGHT_NO_LOWER.search(text)
+    flight_word = re.search(r"\bflug\b", text, re.I)
+    from_to = re.search(r"\b(aus|von|nach)\s+[a-zäöüA-ZÄÖÜ]", text)
+    if not BER.search(text) and not ((number or from_to) and flight_word or number and ARRIVE.search(text)):
         return None
     if not (ARRIVE.search(text) or DEPART.search(text) or number):
         return None
     direction = "ankunft" if ARRIVE.search(text) else "abflug"
-    query = number.group(0) if number else ""
+    query = number.group(0).upper() if number else ""
     if not query:
-        place = re.search(r"\b(?:nach|aus|von)\s+([A-ZÄÖÜ][\wäöüß-]{2,30})", text)
+        place = re.search(r"\b(?:nach|aus|von)\s+([A-ZÄÖÜa-zäöü][\wäöüß-]{2,30})", text)
         query = place.group(1) if place and place.group(1).upper() != "BER" else ""
         if place and re.match(r"\b(?:aus|von)\b", place.group(0)):
             direction = "ankunft"
