@@ -12,6 +12,7 @@ import httpx
 
 from .config import Config
 from .http import read_json
+from .markets import SPLIT, market_answer, market_overview
 from .research import Research, ber_flights, grill_stands, planes_overhead
 from .store import Store
 
@@ -136,6 +137,13 @@ RESEARCH_SCHEMAS = {
          "near": {"type": "string", "description": "optional Ortsteil oder Ort, um den gesucht wird, z.B. 'Steglitz'"}},
         [],
     ),
+    "get_quote": tool(
+        "get_quote",
+        "Live-Kurs mit Tageshoch/-tief, 52-Wochen-Spanne, 1-Jahres-Entwicklung und regelbasierter Einschätzung "
+        "für Aktien, ETFs, Indizes, Krypto, Rohstoffe und Währungen. Leer für einen Marktüberblick.",
+        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu drei mit Komma, z.B. 'SAP, Bitcoin'"}},
+        [],
+    ),
     "read_webpage": tool(
         "read_webpage",
         "Text einer Webseite lesen, deren HTTPS-Adresse aus einem Suchergebnis oder der Frage stammt.",
@@ -156,7 +164,7 @@ def schemas(config: Config) -> list[dict]:
         if research.transit_url:
             result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
         result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"],
-                   RESEARCH_SCHEMAS["get_grill_stands"]]
+                   RESEARCH_SCHEMAS["get_grill_stands"], RESEARCH_SCHEMAS["get_quote"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -223,7 +231,7 @@ class Tools:
                 allowed["get_departures"] = {"stop", "trains"}
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
-                           get_grill_stands={"day", "place", "near"})
+                           get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"})
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -287,6 +295,19 @@ class Tools:
                 lambda: grill_stands(self.client, lat, lon, self.config.station.timezone, day, place,
                                      near=label),
             )
+        if name == "get_quote":
+            tz = self.config.station.timezone
+            assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]
+            if not assets:
+                return await research.cached(name, "", 60, lambda: market_overview(self.client, tz))
+            advice = arguments.get("advice", "ja").strip().casefold() not in {"nein", "no", "false", "0"}
+            try:
+                return await research.cached(
+                    name, f"{'|'.join(assets)}|{advice}", 60,
+                    lambda: market_answer(self.client, assets, advice=advice, tz=tz),
+                )
+            except LookupError:
+                return {"text": f"Zu „{', '.join(assets)}“ finde ich keinen Kurs.", "sources": []}
         if name == "read_webpage":
             return await self.research.read_page(arguments["url"], allowed_urls or set())
         if name == "get_weather":

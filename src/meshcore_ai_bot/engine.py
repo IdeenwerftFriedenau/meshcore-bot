@@ -173,7 +173,10 @@ class Engine:
                 if follow == "more":
                     topic = last[3] if last and last[3] else "deiner letzten Antwort"
                     question = f"Erzähl mir bitte weitere, neue Details zu: {topic}. Wiederhole nichts aus deiner letzten Antwort."
-                answer = await self.assistant.answer(question, history)
+                if channel.topic:
+                    answer = await self.assistant.answer(question, history, topic=channel.topic)
+                else:
+                    answer = await self.assistant.answer(question, history)
                 text, sources = answer.text, list(getattr(answer, "sources", None) or [])
                 if follow == "more" and last:
                     sources = list(dict.fromkeys(sources + last[2]))[:5]
@@ -255,6 +258,7 @@ KNOWN_SOURCES = {
     "rbb24.de": "rbb24",
     "bvg.transport.rest": "BVG/VBB",
     "open-meteo.com": "Open-Meteo",
+    "finance.yahoo.com": "Yahoo Finance",
     "openstreetmap.org": "OpenStreetMap",
     "swr.de": "SWR",
     "ndr.de": "NDR",

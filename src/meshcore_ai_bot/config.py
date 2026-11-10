@@ -166,6 +166,8 @@ class Channel:
     broadcasts: list[str] = field(default_factory=list)
     secret_env: str = ""
     memory_scope: str = "auto"
+    # "boerse": quotes, ranges and assessments first (the #börsenbot channel); "" = general questions.
+    topic: str = ""
 
     @property
     def shares_memory(self):
@@ -323,6 +325,8 @@ class Config:
         for ch in self.channels:
             if ch.memory_scope not in {"auto", "off", "channel", "shared"}:
                 raise ValueError("memory_scope must be auto, off, channel or shared")
+            if ch.topic not in {"", "boerse"}:
+                raise ValueError("topic must be empty or boerse")
             if not ch.name or len(ch.name.encode()) > 32 or any(ord(c) < 32 for c in ch.name):
                 raise ValueError("Channel names need 1–32 UTF-8 bytes without control characters")
             if ch.mode not in {"off", "all", "keyword", "mention"}:
