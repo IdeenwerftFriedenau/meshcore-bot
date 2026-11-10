@@ -889,8 +889,8 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
             continue
         open_rows = [r for r in rows if not r["closed"]]
         if open_rows:
-            near = "; ".join(line(r, date) for r in open_rows[:3])
-            if near.count("(heute schon zu)") == len(open_rows[:3]) > 1:
+            near = "; ".join(line(r, date) for r in open_rows[:4])
+            if near.count("(heute schon zu)") == len(open_rows[:4]) > 1:
                 near = near.replace(" (heute schon zu)", "") + " – heute aber schon geschlossen"
             where = f"nahe {near_label}" if near_label else "am nächsten"
             return {"text": f"GaumenSchmaus {label}, {where}: {near}.", "sources": source}
