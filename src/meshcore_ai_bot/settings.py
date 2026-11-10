@@ -49,6 +49,7 @@ EDITABLE = {
         "reply_ttl_seconds",
         "history_turns",
         "memory_enabled",
+        "profile_days",
     },
     "broadcasts": {
         "warnings_enabled",

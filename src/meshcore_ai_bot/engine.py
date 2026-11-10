@@ -13,7 +13,14 @@ from types import SimpleNamespace
 from .assistant import Assistant
 from .config import Config
 from .market_watch import MarketWatch, is_alarm_command
-from .memory import control
+from .memory import (
+    PROFILE_LABELS,
+    control,
+    describe_profile,
+    extract_facts,
+    forget_request,
+    remember_request,
+)
 from .protocol import (
     Incoming,
     allows_send,
@@ -80,6 +87,7 @@ class Engine:
     def __init__(self, config: Config, store: Store, assistant: Assistant, *, pacer: Pacer | None = None):
         self.config, self.store, self.assistant = config, store, assistant
         self.store.limits = config.radio
+        self.store.profile_days = config.storage.profile_days
         self.store.enforce_limits(time.time())
         self.pacer = pacer or Pacer(config, store.last_tx())
         self.own_names: set[str] = set()
@@ -145,14 +153,28 @@ class Engine:
             else []
         )
         key = (row["channel"], row["sender"].casefold())
-        last = self.followups.get(key)
+        last = self.followups.get(key) or self.store.followup(row["channel"], row["sender"], now)
         if last and last[0] < now:
             last = None
+        # Durable facts follow the same boundary as the chat history: shared hashtag channels or this channel.
+        scope = "shared" if channel.shares_memory else row["channel"]
+        profile: dict[str, list[str]] = {}
         sources: list[str] = []
         command = follow = None
         try:
             command = control(question)
             follow = followup_command(question)
+            forget_key = forget_request(question) if not command else None
+            remember = remember_request(question) if not command and not forget_key else None
+            stated = (
+                extract_facts(question)
+                if memory_on and not (command or forget_key or remember or follow)
+                else []
+            )
+            if stated:
+                stated = self.store.remember_facts(scope, row["sender"], stated, now)
+            if memory_on and not command:
+                profile = self.store.profile(scope, row["sender"], now)
             if follow == "more" and last and last[1]:
                 text, sources = last[1], last[2]
             elif follow == "source":
@@ -169,12 +191,41 @@ class Engine:
                 self.store.enable_memory(row["sender"])
                 text = "Deine persönliche Erinnerung ist wieder erlaubt. Es gelten weiterhin die Memory-Einstellungen dieses Kanals."
             elif command == "inspect":
+                known = describe_profile(self.store.profile(scope, row["sender"])) if memory_on else ""
                 facts = [item["content"] for item in history if item["role"] == "user"][-3:]
+                parts = []
+                if known:
+                    parts.append("Gemerkt: " + known + ".")
+                if facts:
+                    parts.append("Aus deinen letzten Nachrichten in diesem Memory-Bereich: " + " | ".join(facts))
                 text = (
-                    "Aus deinen letzten Nachrichten in diesem Memory-Bereich: " + " | ".join(facts)
-                    if facts
+                    " ".join(parts).rstrip(" .") + "." + (" 'vergiss mich' löscht alles." if known else "")
+                    if parts
                     else "In diesem Memory-Bereich habe ich keine nutzbaren Erinnerungen an dich."
                 )
+            elif forget_key:
+                if not memory_on:
+                    text = "In diesem Kanal speichere ich nichts über dich."
+                elif self.store.forget_fact(scope, row["sender"], forget_key):
+                    text = f"Erledigt, {PROFILE_LABELS[forget_key]} ist vergessen."
+                else:
+                    text = f"Zu {PROFILE_LABELS[forget_key]} hatte ich nichts gespeichert."
+            elif remember is not None:
+                facts, note = remember
+                wanted = facts + ([("notiz", note)] if note else [])
+                if not memory_on:
+                    text = "In diesem Kanal speichere ich nichts über dich."
+                elif not wanted:
+                    text = "Das kann ich mir so nicht merken. Beispiel: merk dir meine Haltestelle Rathaus Friedenau."
+                else:
+                    saved = self.store.remember_facts(scope, row["sender"], wanted, now)
+                    text = (
+                        "Gemerkt: " + saved_text(saved) + ". 'Was weißt du über mich' zeigt alles."
+                        if saved
+                        else "Deine Erinnerung ist ausgeschaltet. Mit 'memory an' geht es wieder."
+                    )
+            elif stated and is_statement(question):
+                text = "Gemerkt: " + saved_text(stated) + ". " + usage_hint(stated)
             else:
                 if follow == "more":
                     topic = last[3] if last and last[3] else "deiner letzten Antwort"
@@ -186,10 +237,11 @@ class Engine:
                 )
                 if alarm is not None:
                     answer = SimpleNamespace(text=alarm, sources=[])
-                elif channel.topic:
-                    answer = await self.assistant.answer(question, history, topic=channel.topic)
                 else:
-                    answer = await self.assistant.answer(question, history)
+                    extra = {"topic": channel.topic} if channel.topic else {}
+                    if profile:
+                        extra["profile"] = profile
+                    answer = await self.assistant.answer(question, history, **extra)
                 text, sources = answer.text, list(getattr(answer, "sources", None) or [])
                 if follow == "more" and last:
                     sources = list(dict.fromkeys(sources + last[2]))[:5]
@@ -220,6 +272,10 @@ class Engine:
                     sources,
                     topic[:200],
                 )
+                try:
+                    self.store.save_followup(row["channel"], row["sender"], self.followups[key])
+                except Exception:  # noqa: BLE001 - 'mehr' after a restart is a convenience only
+                    log.warning("Could not persist follow-up state")
         completed = time.time()
         self.store.answer(
             row["id"],
@@ -328,3 +384,31 @@ def plain_radio_text(text: str) -> str:
         text = re.sub(r"(?m)^#{1,6}\s+", "", text)
     text = re.sub(r"\s*\n\s*", " ", text.strip())
     return re.sub(r" {2,}", " ", text)
+
+
+def saved_text(saved: list[tuple[str, str]]) -> str:
+    grouped: dict[str, list[str]] = {}
+    for key, value in saved:
+        grouped.setdefault(key, []).append(value)
+    return ", ".join(f"{PROFILE_LABELS[key]} {' / '.join(values)}" for key, values in grouped.items())
+
+
+def is_statement(text: str) -> bool:
+    """'Ich wohne in Steglitz.' gets a short confirmation; a question with a fact in it gets a real answer."""
+    text = " ".join(text.split())
+    return (
+        len(text) <= 120
+        and "?" not in text
+        and not re.match(r"(wie|was|wann|wo|wer|warum|wieso|welche\w*|kannst|gibt|ist|sind|wird|zeig|sag)\b", text, re.I)
+    )
+
+
+def usage_hint(saved: list[tuple[str, str]]) -> str:
+    keys = {key for key, _ in saved}
+    if "haltestelle" in keys:
+        return "'Nächste Bahn' zeigt dir jetzt die Abfahrten dort."
+    if "ort" in keys:
+        return "Wetter und Verbindungen beziehe ich jetzt darauf."
+    if "aktien" in keys:
+        return "'Meine Aktien' zeigt dir die Kurse."
+    return "'Was weißt du über mich' zeigt alles, 'vergiss mich' löscht es."

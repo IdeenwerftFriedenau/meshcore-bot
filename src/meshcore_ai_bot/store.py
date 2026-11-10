@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Radio
-from .memory import safe_memory
+from .memory import LIST_KEYS, LIST_MAX, safe_memory
 from .protocol import Incoming
 
 
@@ -23,6 +23,8 @@ class Store:
         path = Path(path)
         self.path = path
         self.limits = Radio()
+        # Days a profile fact is kept after it was last said or used; the engine sets the configured value.
+        self.profile_days = 180
         if str(path) != ":memory:":
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(str(path), timeout=5, check_same_thread=False)
@@ -58,6 +60,12 @@ class Store:
         CREATE TABLE IF NOT EXISTS reception(
             id TEXT PRIMARY KEY,channel TEXT NOT NULL,sender TEXT NOT NULL,received REAL NOT NULL,
             decision TEXT NOT NULL,reason TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS profile(
+            scope TEXT NOT NULL,sender TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,
+            updated REAL NOT NULL,used REAL NOT NULL,PRIMARY KEY(scope,sender,key,value));
+        CREATE TABLE IF NOT EXISTS followups(
+            channel TEXT NOT NULL,sender TEXT NOT NULL,expires REAL NOT NULL,rest TEXT NOT NULL,
+            sources TEXT NOT NULL,topic TEXT NOT NULL,PRIMARY KEY(channel,sender));
         PRAGMA user_version=3;
         """)
         if "priority" not in {row[1] for row in self.db.execute("PRAGMA table_info(packets)")}:
@@ -260,6 +268,8 @@ class Store:
     def forget_memory(self, sender, now, exclude="", enabled=False):
         with self.transaction() as c:
             c.execute("DELETE FROM memory WHERE sender=?", (sender.casefold(),))
+            c.execute("DELETE FROM profile WHERE sender=?", (sender.casefold(),))
+            c.execute("DELETE FROM followups WHERE sender=?", (sender.casefold(),))
             # SQLite lower() only folds ASCII; match display names with Python's
             # Unicode rules so Änne/änne and similar names are erased together.
             names = [
@@ -284,6 +294,86 @@ class Store:
                 "DO UPDATE SET enabled=excluded.enabled",
                 (sender.casefold(), int(enabled)),
             )
+
+    def _memory_allowed(self, c, sender) -> bool:
+        row = c.execute("SELECT enabled FROM memory_preferences WHERE sender=?", (sender.casefold(),)).fetchone()
+        return not row or bool(row[0])
+
+    def remember_facts(self, scope: str, sender: str, facts: list[tuple[str, str]], now: float) -> list[tuple[str, str]]:
+        """Store self-described facts; single-value keys are replaced, list keys keep the newest few."""
+        sender = sender.casefold()
+        saved = []
+        with self.transaction() as c:
+            if not self._memory_allowed(c, sender):
+                return []
+            for key, value in facts:
+                value = str(value).strip()
+                if not value or not safe_memory(value):
+                    continue
+                if key in LIST_KEYS:
+                    c.execute(
+                        "DELETE FROM profile WHERE scope=? AND sender=? AND key=? AND lower(value)=lower(?)",
+                        (scope, sender, key, value),
+                    )
+                else:
+                    c.execute("DELETE FROM profile WHERE scope=? AND sender=? AND key=?", (scope, sender, key))
+                c.execute("INSERT INTO profile VALUES(?,?,?,?,?,?)", (scope, sender, key, value, now, now))
+                if key in LIST_KEYS:
+                    c.execute(
+                        "DELETE FROM profile WHERE scope=? AND sender=? AND key=? AND rowid NOT IN "
+                        "(SELECT rowid FROM profile WHERE scope=? AND sender=? AND key=? "
+                        "ORDER BY updated DESC,rowid DESC LIMIT ?)",
+                        (scope, sender, key, scope, sender, key, LIST_MAX),
+                    )
+                saved.append((key, value))
+        return saved
+
+    def profile(self, scope: str, sender: str, now: float | None = None) -> dict[str, list[str]]:
+        """Facts in one memory scope, oldest first per key; reading marks them as still in use."""
+        sender = sender.casefold()
+        with self.transaction() as c:
+            if not self._memory_allowed(c, sender):
+                return {}
+            rows = c.execute(
+                "SELECT key,value FROM profile WHERE scope=? AND sender=? ORDER BY updated,rowid", (scope, sender)
+            ).fetchall()
+            if rows and now is not None:
+                c.execute("UPDATE profile SET used=? WHERE scope=? AND sender=?", (now, scope, sender))
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            result.setdefault(row["key"], []).append(row["value"])
+        return result
+
+    def forget_fact(self, scope: str, sender: str, key: str) -> bool:
+        with self.transaction() as c:
+            return c.execute(
+                "DELETE FROM profile WHERE scope=? AND sender=? AND key=?", (scope, sender.casefold(), key)
+            ).rowcount > 0
+
+    def save_followup(self, channel: str, sender: str, value: tuple[float, str, list[str], str] | None):
+        """'mehr' and 'Quelle?' state survives a restart of the service."""
+        with self.transaction() as c:
+            c.execute("DELETE FROM followups WHERE channel=? AND sender=?", (channel, sender.casefold()))
+            if value:
+                expires, rest, sources, topic = value
+                c.execute(
+                    "INSERT INTO followups VALUES(?,?,?,?,?,?)",
+                    (channel, sender.casefold(), expires, rest, json.dumps(sources[:5]), topic[:200]),
+                )
+
+    def followup(self, channel: str, sender: str, now: float) -> tuple[float, str, list[str], str] | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT expires,rest,sources,topic FROM followups WHERE channel=? AND sender=? AND expires>=?",
+                (channel, sender.casefold(), now),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            sources = [str(item) for item in json.loads(row["sources"])][:5]
+        except (ValueError, TypeError):
+            sources = []
+        return row["expires"], row["rest"], sources, row["topic"]
 
     def enable_memory(self, sender):
         with self.transaction() as c:
@@ -566,6 +656,10 @@ class Store:
             c.execute("DELETE FROM packets WHERE updated<? AND state NOT IN ('queued','sending')", (cutoff,))
             c.execute("DELETE FROM model_requests WHERE stamp<?", (now - 172800,))
             c.execute("DELETE FROM memory WHERE received<?", (cutoff,))
+            c.execute(
+                "DELETE FROM profile WHERE max(updated,used)<?", (now - max(1, self.profile_days) * 86400,)
+            )
+            c.execute("DELETE FROM followups WHERE expires<?", (now,))
             c.execute("DELETE FROM incoming_requests WHERE stamp<?", (now - 60,))
             c.execute("DELETE FROM broadcasts WHERE valid_until<? AND checked<?", (cutoff, cutoff))
             c.execute("DELETE FROM reception WHERE received<?", (cutoff,))

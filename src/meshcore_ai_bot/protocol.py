@@ -44,7 +44,8 @@ def radio_check(text: str) -> str | None:
     if text.strip().casefold() in {"help", "/help", "hilfe", "befehle", "?"}:
         return (
             "Hilfe: wx, wx morgen, ping, mehr, Quelle? In #bot mit @Ideenwerft ansprechen; "
-            "in #fragdenbot einfach fragen."
+            "in #fragdenbot einfach fragen. Merken: 'merk dir meine Haltestelle X', 'was weißt du über mich', "
+            "'vergiss mich'."
         )
     body = re.sub(r"[?!.,:;]+$", "", " ".join(text.casefold().split())).strip()
     if re.fullmatch(r"ping(?: ping){0,2}(?: ?(?:[0-9]{1,3}|1 2 3))?", body):
