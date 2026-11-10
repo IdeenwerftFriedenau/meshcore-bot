@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from meshcore_ai_bot import markets
 from meshcore_ai_bot.assistant import Assistant
 from meshcore_ai_bot.config import Channel, Config
 from meshcore_ai_bot.engine import Engine, source_names
@@ -15,8 +16,10 @@ from meshcore_ai_bot.markets import (
     assessment,
     corrected,
     market_answer,
+    market_overview,
     market_request,
     number,
+    percent,
     pretty,
     quote,
     resolve,
@@ -25,6 +28,16 @@ from meshcore_ai_bot.protocol import Incoming
 from meshcore_ai_bot.store import Store
 
 NOW = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def fresh_price_cache():
+    """The fallback cache of last prices must not leak from one test into the next."""
+    markets._LAST.clear()
+    yield
+    markets._LAST.clear()
+
+
 DAY = 86400
 
 
@@ -139,6 +152,18 @@ async def test_comparison_is_compact_and_carries_one_disclaimer():
     assert len(text.encode()) < 330
 
 
+async def test_overview_lists_gold_and_silver():
+    charts = {s: chart(s, 100.0, RISING, kind="INDEX", currency="EUR", change=0.3) for s in ("^GDAXI", "^GSPC", "^IXIC")}
+    charts["BTC-EUR"] = chart("BTC-EUR", 120.0, FALLING, kind="CRYPTOCURRENCY", change=-2.0)
+    charts["GC=F"] = chart("GC=F", 280.0, RISING, kind="FUTURE", currency="USD", change=0.5)
+    charts["SI=F"] = chart("SI=F", 48.5, RISING, kind="FUTURE", currency="USD", change=-1.2)
+    charts["EURUSD=X"] = chart("EURUSD=X", 1.12, RISING, kind="CURRENCY", currency="USD", change=0.1)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo(charts))) as client:
+        result = await market_overview(client, "Europe/Berlin")
+    assert "Gold 280,00 $ +0,5 %" in result["text"]
+    assert "Silber 48,50 $ -1,2 %" in result["text"]
+
+
 async def test_falling_asset_is_called_weak():
     async with httpx.AsyncClient(transport=httpx.MockTransport(
             yahoo({"X": chart("X", 150.0, FALLING[:300] + [150.0] * 65)}))) as client:
@@ -175,6 +200,27 @@ async def test_channel_advice_adds_one_ai_sentence_without_history():
     assert answer.text.endswith("Rüstungsaufträge treiben den Kurs, politische Risiken bleiben.")
     assert len(payloads) == 1 and "tools" not in payloads[0]
     assert "Wetter" not in json.dumps(payloads[0], ensure_ascii=False)
+
+
+async def test_ai_sentence_is_dropped_when_it_would_not_fit_on_air():
+    config = Config()
+    config.ai._api_key = "synthetic"
+    config.radio.reply_max_packets = 3
+    store = Store(":memory:")
+    long_note = "Beachte bei diesem Wert die hohe Volatilität, die oft durch makroökonomische Daten und die Risikobereitschaft am Markt getrieben wird."
+    async with httpx.AsyncClient(transport=httpx.MockTransport(stock_ai([], long_note))) as client:
+        answer = await Assistant(config, store, client).answer("Soll ich Rheinmetall kaufen?", topic="boerse")
+    store.close()
+    assert answer.text.startswith("Rheinmetall 285,00 €")
+    assert "Volatilität" not in answer.text
+
+
+async def test_ranges_never_exclude_the_live_price():
+    lagging = chart("BTC-EUR", 65243.0, RISING, kind="CRYPTOCURRENCY", day=(65301.0, 67129.0), change=-2.2)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo({"BTC-EUR": lagging}))) as client:
+        data = await quote(client, "BTC-EUR", "Bitcoin")
+    assert data["day_low"] == 65243.0 and data["day_high"] == 67129.0
+    assert data["low52"] <= data["price"] <= data["high52"]
 
 
 async def test_channel_small_talk_goes_to_the_model_with_stock_role():
@@ -478,3 +524,27 @@ async def test_close_report_once_on_trading_days_only():
     store.close()
     assert texts and all(ch == "#börsenbot" for ch, _ in texts)
     assert "Börsenschluss 10.11.: DAX 100" in texts[0][1] and "DAX Top:" in "".join(t for _, t in texts)
+
+
+def test_percent_has_no_negative_zero():
+    assert percent(-0.04) == "+0,0 %"
+    assert percent(-0.05) in {"-0,1 %", "+0,0 %"}
+    assert percent(2.26) == "+2,3 %"
+
+
+async def test_help_in_boerse_channel_lists_market_commands():
+    config = Config()
+    store = Store(":memory:")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503))) as client:
+        here = await Assistant(config, store, client).answer("hilfe", topic="boerse")
+        elsewhere = await Assistant(config, store, client).answer("hilfe")
+    store.close()
+    assert here.text.startswith("Börsenbot:") and "Alarm" in here.text
+    assert len(here.text.encode()) <= 330
+    assert elsewhere.text.startswith("Hilfe: wx")
+
+
+def test_us_cents_are_named():
+    from meshcore_ai_bot.markets import unit
+
+    assert unit({"kind": "FUTURE", "currency": "USX"}) == " US-Cent"

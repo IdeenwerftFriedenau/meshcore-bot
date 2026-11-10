@@ -368,10 +368,21 @@ async def quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict
             if known and time.monotonic() - known[0] < 2 * 3600:
                 return {**known[1], "name": label or known[1]["name"]}
             raise
+    widen(result)
     if len(_LAST) > 300:
         _LAST.clear()
     _LAST[symbol] = (time.monotonic(), result)
     return result
+
+
+def widen(data: dict) -> None:
+    """Yahoo's day and 52-week ranges lag the live price now and then; a range must never exclude the price."""
+    price = data.get("price")
+    if not _ok(price):
+        return
+    for low, high in (("day_low", "day_high"), ("low52", "high52")):
+        if _ok(data.get(low), data.get(high)):
+            data[low], data[high] = min(data[low], price), max(data[high], price)
 
 
 COINGECKO = {"BTC-EUR": "bitcoin", "ETH-EUR": "ethereum", "SOL-EUR": "solana", "XRP-EUR": "ripple",
@@ -490,13 +501,14 @@ def unit(data: dict) -> str:
         return " Pkt"
     if data["kind"] == "CURRENCY":
         return ""
-    return {"EUR": " €", "USD": " $", "GBp": " Pence", "GBP": " £", "CHF": " CHF", "JPY": " Yen"}.get(
+    return {"EUR": " €", "USD": " $", "USX": " US-Cent", "GBp": " Pence", "GBP": " £", "CHF": " CHF", "JPY": " Yen"}.get(
         data["currency"], f" {data['currency']}" if data["currency"] else "")
 
 
 def percent(value: float | None) -> str:
     if value is None:
         return ""
+    value = round(value, 1) or 0.0  # no "-0,0 %"
     text = f"{value:+.1f}".replace(".", ",")
     return text + " %"
 
@@ -653,7 +665,7 @@ async def market_answer(client: httpx.AsyncClient, assets: list[str], *, advice:
 
 
 OVERVIEW_ASSETS = [("^GDAXI", "DAX"), ("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("BTC-EUR", "Bitcoin"),
-                   ("GC=F", "Gold"), ("EURUSD=X", "Euro")]
+                   ("GC=F", "Gold"), ("SI=F", "Silber"), ("EURUSD=X", "Euro")]
 
 
 async def market_overview(client: httpx.AsyncClient, tz: str, now: datetime | None = None) -> dict:
