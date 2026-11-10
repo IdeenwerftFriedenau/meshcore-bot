@@ -1,0 +1,440 @@
+"""Stock, ETF, crypto, commodity and currency quotes for the #börsenbot channel.
+
+Free Yahoo Finance endpoints without a key: chart (price, day and 52-week range,
+one year of daily closes) and search (name, ticker or ISIN to a symbol). The
+assessment is a plain rule-based reading of trend and range, never a price target.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+import httpx
+
+from .http import read_json
+
+HEADERS = {"User-Agent": "MeshCoreAIBot/0.4 (+https://github.com/IdeenwerftFriedenau/meshcore-bot)"}
+HOSTS = ("https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com")
+DISCLAIMER = "keine Anlageberatung"
+
+
+def fold(text: str) -> str:
+    """Lower case, umlauts spelled out, punctuation as spaces; '&' stays for S&P."""
+    text = text.casefold().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    return " ".join(re.sub(r"[^a-z0-9&.^=-]+", " ", text).replace("-", " ").split())
+
+
+# Folded patterns -> Yahoo symbol and the short name said on air. First match wins, so specific before general.
+ALIASES: list[tuple[str, str, str]] = [
+    (r"nasdaq ?100", "^NDX", "Nasdaq 100"),
+    (r"nasdaq", "^IXIC", "Nasdaq"),
+    (r"s ?& ?p( ?500)?|sp ?500|s und p", "^GSPC", "S&P 500"),
+    (r"dow( jones)?", "^DJI", "Dow Jones"),
+    (r"mdax", "^MDAXI", "MDAX"),
+    (r"sdax", "^SDAXI", "SDAX"),
+    (r"tecdax", "^TECDAX", "TecDAX"),
+    (r"dax", "^GDAXI", "DAX"),
+    (r"euro ?stoxx( 50)?", "^STOXX50E", "Euro Stoxx 50"),
+    (r"nikkei", "^N225", "Nikkei"),
+    (r"ftse ?100", "^FTSE", "FTSE 100"),
+    (r"hang ?seng", "^HSI", "Hang Seng"),
+    (r"smi", "^SSMI", "SMI"),
+    (r"atx", "^ATX", "ATX"),
+    (r"cac ?40", "^FCHI", "CAC 40"),
+    (r"msci world|weltportfolio|welt etf", "EUNL.DE", "MSCI World (iShares-ETF)"),
+    (r"(ftse |vanguard )?all ?world", "VWCE.DE", "FTSE All-World (Vanguard-ETF)"),
+    (r"msci em|emerging markets?|schwellenlaender", "IS3N.DE", "MSCI EM IMI (iShares-ETF)"),
+    (r"bitcoin|btc", "BTC-EUR", "Bitcoin"),
+    (r"ethereum|ether|eth", "ETH-EUR", "Ethereum"),
+    (r"solana", "SOL-EUR", "Solana"),
+    (r"xrp|ripple", "XRP-EUR", "XRP"),
+    (r"dogecoin|doge", "DOGE-EUR", "Dogecoin"),
+    (r"cardano", "ADA-EUR", "Cardano"),
+    (r"litecoin", "LTC-EUR", "Litecoin"),
+    (r"tether|usdt", "USDT-EUR", "Tether"),
+    (r"gold(preis)?", "GC=F", "Gold (Feinunze)"),
+    (r"silber(preis)?", "SI=F", "Silber (Feinunze)"),
+    (r"platin", "PL=F", "Platin (Feinunze)"),
+    (r"palladium", "PA=F", "Palladium (Feinunze)"),
+    (r"brent|oel(preis)?|rohoel", "BZ=F", "Brent-Öl (Barrel)"),
+    (r"wti", "CL=F", "WTI-Öl (Barrel)"),
+    (r"erdgas(preis)?", "NG=F", "Erdgas US (MMBtu)"),
+    (r"kupfer", "HG=F", "Kupfer (Pfund)"),
+    (r"weizen", "ZW=F", "Weizen (Scheffel)"),
+    (r"kaffee", "KC=F", "Kaffee (Pfund)"),
+    (r"kakao", "CC=F", "Kakao (Tonne)"),
+    (r"euro ?(in |zum |gegen |vs )?dollar|eur ?usd|dollar ?kurs|dollar", "EURUSD=X", "Euro in Dollar"),
+    (r"franken|eur ?chf", "EURCHF=X", "Euro in Franken"),
+    (r"pfund|eur ?gbp", "EURGBP=X", "Euro in Pfund"),
+    (r"yen|eur ?jpy", "EURJPY=X", "Euro in Yen"),
+]
+_ALIAS_RE = [(re.compile(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])"), symbol, label) for pattern, symbol, label in ALIASES]
+
+STOPWORDS = set("""
+wie was wo wer wann warum wieso weshalb welche welcher welches steht stehen stand standen ist sind war der die das
+den dem des ein eine einen einem einer aktie aktien aktienkurs kurs kurse kursen boersenkurs aktuell aktuelle
+aktueller aktuellen heute gerade jetzt momentan derzeit macht machen von vom zu zum zur fuer mit im in an am
+bei preis preise wert hoch hochs tief tiefs tageshoch tagestief jahreshoch jahrestief 52 wochen wochenhoch
+wochentief einschaetzung einschaetzungen meinung kaufen kauf verkaufen verkauf halten lohnt lohnen sich soll
+sollte sollen ich man noch gut gute schlecht prognose tipp tipps ratschlag rat chart trend boerse stand gibt es
+mal bitte zeig zeige sag sage sagst mir sagen kannst du dazu davon denkst haeltst findest steigt faellt
+gestiegen gefallen entwicklung performance info infos daten zahlen etf etfs fonds coin coins krypto kurz und
+oder vs versus gegen vergleich vergleiche aus sicht deiner deine dein meine mein uns unser ihr nach seit lage
+investieren investiert einsteigen nachkaufen aussicht aussichten empfehlung empfiehlst bewertung so viel hallo hi
+moin servus danke super toll ok okay ja nein bot boersenbot hey na kostet kosten euro dollar laeuft lief
+geht los welt markt maerkte
+""".split())
+# Everyday names -> what Yahoo's search understands.
+NICKNAMES = {
+    "vw": "Volkswagen", "volkswagen": "Volkswagen Vz", "mercedes": "Mercedes-Benz", "daimler": "Mercedes-Benz",
+    "telekom": "Deutsche Telekom", "post": "DHL Group", "dhl": "DHL Group", "google": "Alphabet",
+    "facebook": "Meta Platforms", "meta": "Meta Platforms", "porsche": "Porsche AG", "commerzbank": "Commerzbank",
+    "deutsche bank": "Deutsche Bank", "lufthansa": "Lufthansa", "bayer": "Bayer AG", "siemens": "Siemens AG",
+    "tesla": "Tesla", "nvidia": "Nvidia", "microsoft": "Microsoft", "amazon": "Amazon", "apple": "Apple",
+}
+
+ADVICE = re.compile(
+    r"einschaetz|meinung|kaufen|kauf\b|verkauf|halten|lohnt|ratschlag|\brat\b|tipp|prognose|empfehl|investier|"
+    r"einsteig|nachkauf|aussicht|bewert|denkst|haeltst|sinnvoll|zukunft|chance|risik", re.I)
+EXPLAIN = re.compile(
+    r"^(was (ist|sind|bedeutet|bedeuten|heisst|macht man)|erklaer|wie funktionier|warum|wieso|weshalb|"
+    r"was passiert|was ist der unterschied|unterschied)", re.I)
+OVERVIEW = re.compile(
+    r"\b(markt|maerkte|marktlage|boersen?(lage|tag)?|ueberblick|uebersicht|indizes|lage)\b", re.I)
+SPLIT = re.compile(r"\s*(?:,|;|\bund\b|\boder\b|\bvs\.?|\bversus\b|\bgegen(?:ueber)?\b|\bmit\b)\s*", re.I)
+MORE_PREFIX = "Erzähl mir bitte weitere"
+
+
+def alias(text: str) -> tuple[str, str] | None:
+    folded = fold(text)
+    for pattern, symbol, label in _ALIAS_RE:
+        if pattern.search(folded):
+            return symbol, label
+    return None
+
+
+def lookup_words(part: str) -> str:
+    """What is left of a question part once the filler words are gone, e.g. 'Rheinmetall'."""
+    words = [w for w in re.findall(r"[\wäöüÄÖÜß.&^=-]+", part) if fold(w) not in STOPWORDS and fold(w)]
+    return " ".join(words)[:60].strip(" .-")
+
+
+def market_request(question: str, *, channel: bool = False) -> dict | None:
+    """Route a quote question: {'assets': [...], 'advice': bool, 'overview': bool}.
+
+    channel=True is the #börsenbot channel, where almost every message is about markets.
+    Elsewhere only clear quote questions ('Kurs', 'Aktie' or a known asset with price words) are taken.
+    """
+    text = question.strip()
+    if not text or text.startswith(MORE_PREFIX):
+        return None
+    folded = fold(text)
+    advice = bool(ADVICE.search(folded))
+    if not channel:
+        known = alias(text)
+        pricey = re.search(r"\b(kurs|steht|stehen|preis|notiert|wert|wie hoch|tageshoch|tagestief|52 wochen|"
+                           r"jahreshoch|jahrestief)\b", folded)
+        stock = re.search(r"\baktien?(kurs)?\b|\bboersenkurs\b", folded)
+        if not (stock or (known and pricey)) or EXPLAIN.match(folded):
+            return None
+    elif EXPLAIN.match(folded) and not alias(text):
+        return None
+    if channel and OVERVIEW.search(folded) and not alias(text):
+        named = [lookup_words(p) for p in SPLIT.split(text)]
+        if not any(named):
+            return {"assets": [], "advice": advice, "overview": True}
+    parts: list[str] = []
+    for part in SPLIT.split(text):
+        known = alias(part)
+        name = known[1] if known else lookup_words(part)
+        if name and name.casefold() not in {p.casefold() for p in parts}:
+            parts.append(name)
+    parts = parts[:3]
+    if not parts:
+        return None
+    return {"assets": parts, "advice": advice or channel, "overview": False}
+
+
+async def _get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
+    error: Exception | None = None
+    for host in HOSTS:  # the second host often answers when the first one rate-limits
+        try:
+            return await read_json(client, "GET", host + path, params=params, headers=HEADERS, timeout=10)
+        except (httpx.HTTPError, ValueError) as exc:
+            error = exc
+    raise error or httpx.TransportError("Yahoo Finance unreachable")
+
+
+QUOTE_TYPES = {"EQUITY": 0, "ETF": 1, "INDEX": 2, "CRYPTOCURRENCY": 3, "MUTUALFUND": 4, "CURRENCY": 5}
+
+
+async def resolve(client: httpx.AsyncClient, name: str) -> tuple[str, str] | None:
+    """Name, ticker or ISIN -> (symbol, short name). Known names need no request."""
+    known = alias(name)
+    if known:
+        return known
+    query = NICKNAMES.get(fold(name), name)
+    data = await _get(client, "/v1/finance/search",
+                      {"q": query, "quotesCount": 8, "newsCount": 0, "lang": "de-DE", "region": "DE"})
+    rows = [
+        q for q in data.get("quotes") or []
+        if q.get("quoteType") in QUOTE_TYPES and q.get("symbol") and q.get("exchange") not in {"PNK", "OTC"}
+    ]
+    rows = [q for q in rows if plausible(query, q)]
+    if not rows:
+        return None
+    best = rows[0]
+    if "." not in name and best.get("exchange") != "GER":
+        # Radio users here think in euro: prefer the XETRA listing of the same company.
+        first = fold(str(best.get("longname") or best.get("shortname") or "")).split()[:1]
+        best = next((q for q in rows if q.get("exchange") == "GER"
+                     and fold(str(q.get("longname") or q.get("shortname") or "")).split()[:1] == first), best)
+    label = " ".join(str(best.get("longname") or best.get("shortname") or best["symbol"]).split())
+    label = re.sub(r",? (Inc\.?|AG|SE|N\.V\.|S\.A\.|plc|Corporation|Corp\.?|Holding|Ltd\.?|Co\.?)$", "", label)
+    return best["symbol"], label[:40]
+
+
+def plausible(query: str, row: dict) -> bool:
+    """Yahoo finds *something* for any word ('Hallo'): keep hits that really carry the asked name."""
+    raw = query.strip()
+    symbol = str(row.get("symbol", "")).upper()
+    if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", raw):  # ISIN
+        return True
+    if re.fullmatch(r"[A-Za-z0-9.^=-]{1,10}", raw) and symbol.split(".")[0] == raw.upper().split(".")[0]:
+        return True
+    names = fold(f"{row.get('longname') or ''} {row.get('shortname') or ''}").replace(" ", "")
+    words = [w for w in fold(raw).split() if len(w) >= 3]
+    return bool(words) and all(w.replace(" ", "") in names for w in words)
+
+
+def _closes(result: dict) -> list[tuple[int, float]]:
+    stamps = result.get("timestamp") or []
+    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    return [(t, float(c)) for t, c in zip(stamps, closes, strict=False) if isinstance(c, int | float) and c > 0]
+
+
+async def quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict:
+    data = await _get(client, f"/v8/finance/chart/{symbol}", {"range": "1y", "interval": "1d"})
+    result = (data.get("chart") or {}).get("result") or []
+    if not result:
+        raise ValueError("No quote")
+    meta = result[0].get("meta") or {}
+    price = meta.get("regularMarketPrice")
+    if not isinstance(price, int | float) or price <= 0:
+        raise ValueError("No price")
+    closes = _closes(result[0])
+    change = meta.get("regularMarketChangePercent")
+    if not isinstance(change, int | float):
+        previous = meta.get("previousClose") or (closes[-2][1] if len(closes) >= 2 else None)
+        change = (price / previous - 1) * 100 if previous else None
+    name = label or " ".join(str(meta.get("shortName") or meta.get("longName") or symbol).split())
+    return {
+        "symbol": meta.get("symbol") or symbol,
+        "name": name,
+        "kind": meta.get("instrumentType") or "",
+        "currency": meta.get("currency") or "",
+        "exchange": meta.get("fullExchangeName") or "",
+        "price": float(price),
+        "change": change,
+        "day_high": meta.get("regularMarketDayHigh"),
+        "day_low": meta.get("regularMarketDayLow"),
+        "high52": meta.get("fiftyTwoWeekHigh"),
+        "low52": meta.get("fiftyTwoWeekLow"),
+        "time": meta.get("regularMarketTime"),
+        "closes": closes,
+    }
+
+
+def number(value: float, kind: str = "") -> str:
+    """German number format sized to the value: 26.420 / 209,55 / 1,1153 / 0,4521."""
+    if kind == "CURRENCY":
+        digits = 4 if value < 10 else 2
+    else:
+        digits = 0 if value >= 1000 else 2 if value >= 1 else 4
+    text = f"{value:,.{digits}f}"
+    return text.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def unit(data: dict) -> str:
+    if data["kind"] in {"INDEX"}:
+        return " Pkt"
+    if data["kind"] == "CURRENCY":
+        return ""
+    return {"EUR": " €", "USD": " $", "GBp": " Pence", "GBP": " £", "CHF": " CHF", "JPY": " Yen"}.get(
+        data["currency"], f" {data['currency']}" if data["currency"] else "")
+
+
+def percent(value: float | None) -> str:
+    if value is None:
+        return ""
+    text = f"{value:+.1f}".replace(".", ",")
+    return text + " %"
+
+
+def _ok(*values) -> bool:
+    return all(isinstance(v, int | float) and v > 0 for v in values)
+
+
+def performance(data: dict, days: int) -> float | None:
+    closes = data["closes"]
+    if not closes:
+        return None
+    since = closes[-1][0] - days * 86400
+    start = next((c for t, c in closes if t >= since), None)
+    if not start or (closes[-1][0] - closes[0][0]) < days * 86400 * 0.8:
+        return None
+    return (data["price"] / start - 1) * 100
+
+
+def stamp_note(data: dict, tz: str, now: datetime | None = None) -> str:
+    """Name the time only when the price is old (weekend, holiday, closed exchange)."""
+    when = data.get("time")
+    if not isinstance(when, int):
+        return ""
+    now = now or datetime.now(UTC)
+    if now.timestamp() - when < 3 * 3600:
+        return ""
+    local = datetime.fromtimestamp(when, ZoneInfo(tz))
+    days = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    return f" (Stand {days[local.weekday()]} {local:%H:%M})"
+
+
+def quote_line(data: dict, tz: str, *, short: bool = False, now: datetime | None = None) -> str:
+    u, k = unit(data), data["kind"]
+    line = f"{data['name']} {number(data['price'], k)}{u}"
+    if data["change"] is not None:
+        line += f" {percent(data['change'])}"
+    line += stamp_note(data, tz, now)
+    if short:
+        if _ok(data["low52"], data["high52"]):
+            line += f" (52W {number(data['low52'], k)}–{number(data['high52'], k)})"
+        return line
+    extra = []
+    if _ok(data["day_low"], data["day_high"]):
+        extra.append(f"Tag {number(data['day_low'], k)}–{number(data['day_high'], k)}")
+    if _ok(data["low52"], data["high52"]):
+        extra.append(f"52W {number(data['low52'], k)}–{number(data['high52'], k)}")
+    year = performance(data, 365)
+    if year is not None:
+        extra.append(f"1J {percent(year)}")
+    return line + (". " + ", ".join(extra) if extra else "") + "."
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def signals(data: dict) -> dict:
+    closes = [c for _, c in data["closes"]]
+    price = data["price"]
+    sma50 = _mean(closes[-50:]) if len(closes) >= 50 else None
+    sma200 = _mean(closes[-200:]) if len(closes) >= 200 else None
+    if sma200 and sma50 and price > sma200 and sma50 > sma200:
+        trend = "up"
+    elif sma200 and sma50 and price < sma200 and sma50 < sma200:
+        trend = "down"
+    else:
+        trend = "flat"
+    position = None
+    if _ok(data["low52"], data["high52"]) and data["high52"] > data["low52"]:
+        position = (price - data["low52"]) / (data["high52"] - data["low52"])
+    returns = [math.log(b / a) for a, b in zip(closes[-61:], closes[-60:], strict=False) if a > 0 and b > 0]
+    volatility = None
+    if len(returns) >= 20:
+        avg = _mean(returns) or 0.0
+        per_year = 365 if data["kind"] == "CRYPTOCURRENCY" else 252
+        volatility = math.sqrt(sum((r - avg) ** 2 for r in returns) / (len(returns) - 1) * per_year)
+    from_high = (price / data["high52"] - 1) * 100 if _ok(data["high52"]) else None
+    return {"trend": trend, "position": position, "volatility": volatility, "from_high": from_high,
+            "month": performance(data, 30)}
+
+
+def assessment(data: dict, *, short: bool = False) -> str:
+    s = signals(data)
+    trend = {"up": "Aufwärtstrend", "down": "Abwärtstrend", "flat": "kein klarer Trend"}[s["trend"]]
+    parts = [trend]
+    position = s["position"]
+    if position is not None and position >= 0.9:
+        parts.append("nahe 52W-Hoch")
+    elif position is not None and position <= 0.1:
+        parts.append("nahe 52W-Tief")
+    elif s["from_high"] is not None and s["from_high"] <= -15:
+        parts.append(f"{abs(s['from_high']):.0f} % unter 52W-Hoch")
+    if s["month"] is not None and abs(s["month"]) >= 5 and not short:
+        parts.append(f"1M {percent(s['month'])}")
+    if short:
+        return ", ".join(parts)
+    if s["trend"] == "up" and position is not None and position >= 0.9:
+        hint = "Stark gelaufen, Rücksetzer sind jederzeit möglich."
+    elif s["trend"] == "up" and s["month"] is not None and s["month"] <= -8:
+        hint = "Gerade deutliche Korrektur, der längere Trend hält noch."
+    elif s["trend"] == "up":
+        hint = "Trend intakt, Rücksetzer einplanen."
+    elif s["trend"] == "down" and position is not None and position <= 0.15:
+        hint = "Noch kein Boden erkennbar, eher abwarten."
+    elif s["trend"] == "down":
+        hint = "Schwach, eine Trendwende abwarten."
+    else:
+        hint = "Abwarten, bis sich eine Richtung zeigt."
+    if s["volatility"] is not None and s["volatility"] >= 0.45:
+        hint += " Stark schwankend: nur Geld einsetzen, das du entbehren kannst."
+    return ", ".join(parts) + ". " + hint
+
+
+def source(symbol: str) -> str:
+    return "https://finance.yahoo.com/quote/" + symbol
+
+
+async def market_answer(client: httpx.AsyncClient, assets: list[str], *, advice: bool, tz: str,
+                        now: datetime | None = None) -> dict:
+    """Quotes for up to three assets with an optional rule-based assessment."""
+    found: list[dict] = []
+    missing: list[str] = []
+    for name in assets[:3]:
+        resolved = await resolve(client, name)
+        if not resolved:
+            missing.append(name)
+            continue
+        found.append(await quote(client, *resolved))
+    if not found:
+        raise LookupError(", ".join(missing) or "nothing")
+    if len(found) == 1:
+        data = found[0]
+        text = quote_line(data, tz, now=now)
+        if advice:
+            text += f" Einschätzung ({DISCLAIMER}): {assessment(data)}"
+    else:
+        lines = []
+        for data in found:
+            line = quote_line(data, tz, short=True, now=now)
+            if advice:
+                line += ", " + assessment(data, short=True)
+            lines.append(line)
+        text = ". ".join(lines) + "."
+        if advice:
+            text += f" ({DISCLAIMER})"
+    if missing:
+        text += " Nicht gefunden: " + ", ".join(missing) + "."
+    return {"text": text, "sources": [source(d["symbol"]) for d in found]}
+
+
+OVERVIEW_ASSETS = [("^GDAXI", "DAX"), ("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("BTC-EUR", "Bitcoin"),
+                   ("GC=F", "Gold"), ("EURUSD=X", "Euro")]
+
+
+async def market_overview(client: httpx.AsyncClient, tz: str, now: datetime | None = None) -> dict:
+    parts, sources = [], []
+    for symbol, label in OVERVIEW_ASSETS:
+        try:
+            data = await quote(client, symbol, label)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            continue
+        sign = "" if data["kind"] == "INDEX" else unit(data)
+        parts.append(f"{label} {number(data['price'], data['kind'])}{sign} {percent(data['change'])}".strip())
+        sources.append(source(symbol))
+    if not parts:
+        raise httpx.TransportError("No market data")
+    return {"text": "Märkte: " + ", ".join(parts) + ".", "sources": sources}

@@ -106,6 +106,15 @@ mode = "all"
 broadcasts = []
 
 [[channels]]
+name = "#börsenbot"
+# Stock channel: quotes with day and 52-week range, plus a short rule-based assessment.
+# Add the channel to the companion first (deploy/existing-gateway/add_hashtag_channel.py).
+mode = "all"
+topic = "boerse"
+memory_scope = "channel"
+broadcasts = []
+
+[[channels]]
 name = "#bot"
 mode = "mention"
 mentions = ["Ideenwerft", "Ideenwerft Friedenau", "MeshCore AI Bot"]

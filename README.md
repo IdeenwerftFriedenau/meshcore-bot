@@ -5,6 +5,7 @@ Ein eigenständiger deutschsprachiger MeshCore-Bot für Raspberry Pi. Die Konfig
 ## Funktionen
 
 - `#fragdenbot`: Fragen ohne Anrede. `#bot`: nur bei **@Ideenwerft**, **#ideenwerft** oder **#ideenwerft-friedenau**. KI/AI lösen dort keine Antwort aus.
+- `#börsenbot` (`topic = "boerse"`): Kurse für Aktien, ETFs, Indizes, Krypto, Rohstoffe und Währungen mit Tageshoch/-tief, 52-Wochen-Spanne, 1-Jahres-Entwicklung und kurzer regelbasierter Einschätzung (keine Anlageberatung). Quelle: Yahoo Finance ohne Schlüssel. Bis zu drei Werte im Vergleich („SAP, Siemens und Bitcoin“), „Wie läuft die Börse?“ liefert einen Marktüberblick. Den Kanal legt `deploy/existing-gateway/add_hashtag_channel.py` in einem freien Slot an.
 - Public und `#public` bleiben gesperrt, auch für automatische Warnungen und Nachrichten.
 - 10 Sekunden Mindestabstand in der Beispielkonfiguration und zwei Sekunden Empfangsfenster, Empfangsruhe und dauerhaft gespeicherte Warteschlange.
 - Funkabkürzungen, WX, Repeater/Node/Companion, Rechenaufgaben und auf Wunsch spielerische Horoskope.
