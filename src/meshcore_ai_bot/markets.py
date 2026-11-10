@@ -653,7 +653,7 @@ async def market_answer(client: httpx.AsyncClient, assets: list[str], *, advice:
 
 
 OVERVIEW_ASSETS = [("^GDAXI", "DAX"), ("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("BTC-EUR", "Bitcoin"),
-                   ("GC=F", "Gold"), ("EURUSD=X", "Euro")]
+                   ("GC=F", "Gold"), ("SI=F", "Silber"), ("EURUSD=X", "Euro")]
 
 
 async def market_overview(client: httpx.AsyncClient, tz: str, now: datetime | None = None) -> dict:

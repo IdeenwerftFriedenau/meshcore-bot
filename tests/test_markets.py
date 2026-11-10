@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from meshcore_ai_bot import markets
 from meshcore_ai_bot.assistant import Assistant
 from meshcore_ai_bot.config import Channel, Config
 from meshcore_ai_bot.engine import Engine, source_names
@@ -15,6 +16,7 @@ from meshcore_ai_bot.markets import (
     assessment,
     corrected,
     market_answer,
+    market_overview,
     market_request,
     number,
     pretty,
@@ -25,6 +27,16 @@ from meshcore_ai_bot.protocol import Incoming
 from meshcore_ai_bot.store import Store
 
 NOW = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def fresh_price_cache():
+    """The fallback cache of last prices must not leak from one test into the next."""
+    markets._LAST.clear()
+    yield
+    markets._LAST.clear()
+
+
 DAY = 86400
 
 
@@ -137,6 +149,18 @@ async def test_comparison_is_compact_and_carries_one_disclaimer():
     assert "Gold (Feinunze) 280,00 $ +0,5 %" in text
     assert text.count("keine Anlageberatung") == 1
     assert len(text.encode()) < 330
+
+
+async def test_overview_lists_gold_and_silver():
+    charts = {s: chart(s, 100.0, RISING, kind="INDEX", currency="EUR", change=0.3) for s in ("^GDAXI", "^GSPC", "^IXIC")}
+    charts["BTC-EUR"] = chart("BTC-EUR", 120.0, FALLING, kind="CRYPTOCURRENCY", change=-2.0)
+    charts["GC=F"] = chart("GC=F", 280.0, RISING, kind="FUTURE", currency="USD", change=0.5)
+    charts["SI=F"] = chart("SI=F", 48.5, RISING, kind="FUTURE", currency="USD", change=-1.2)
+    charts["EURUSD=X"] = chart("EURUSD=X", 1.12, RISING, kind="CURRENCY", currency="USD", change=0.1)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo(charts))) as client:
+        result = await market_overview(client, "Europe/Berlin")
+    assert "Gold 280,00 $ +0,5 %" in result["text"]
+    assert "Silber 48,50 $ -1,2 %" in result["text"]
 
 
 async def test_falling_asset_is_called_weak():
