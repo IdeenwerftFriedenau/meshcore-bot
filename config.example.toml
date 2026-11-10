@@ -64,6 +64,8 @@ api_key_env = "GOOGLE_MAPS_API_KEY"
 max_results = 3
 
 [research]
+# Werktags kurzer Börsenschluss-Bericht in Kanälen mit topic = "boerse" (Ortszeit); "" schaltet ab.
+market_report_time = "17:45"
 # Kostenlose Online-Recherche vor dem Antworten: Wikipedia, tagesschau, RSS-Feeds, Webseite lesen.
 enabled = true
 wikipedia_language = "de"

@@ -8,9 +8,11 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 
 from .assistant import Assistant
 from .config import Config
+from .market_watch import MarketWatch, is_alarm_command
 from .memory import control
 from .protocol import (
     Incoming,
@@ -83,6 +85,8 @@ class Engine:
         self.own_names: set[str] = set()
         # Per channel and sender: (expires, text not yet sent, sources, question) for "mehr" and "Quelle?".
         self.followups: dict[tuple[str, str], tuple[float, str, list[str], str]] = {}
+        client = getattr(assistant, "client", None)
+        self.watch = MarketWatch(config, store, client) if client is not None else None
 
     def receive(self, message: Incoming, now: float | None = None) -> str:
         now = time.time() if now is None else now
@@ -111,6 +115,8 @@ class Engine:
 
     async def process_one(self, now: float | None = None) -> bool:
         now = time.time() if now is None else now
+        if self.watch and any(ch.topic == "boerse" and ch.mode != "off" for ch in self.config.channels):
+            self.watch.poke(now)
         row = self.store.next_message(now, self.config.storage.message_max_age_seconds)
         if not row:
             return False
@@ -173,7 +179,14 @@ class Engine:
                 if follow == "more":
                     topic = last[3] if last and last[3] else "deiner letzten Antwort"
                     question = f"Erzähl mir bitte weitere, neue Details zu: {topic}. Wiederhole nichts aus deiner letzten Antwort."
-                if channel.topic:
+                alarm = (
+                    await self.watch.command(row["sender"], row["channel"], question, now)
+                    if self.watch and channel.topic == "boerse" and is_alarm_command(question)
+                    else None
+                )
+                if alarm is not None:
+                    answer = SimpleNamespace(text=alarm, sources=[])
+                elif channel.topic:
                     answer = await self.assistant.answer(question, history, topic=channel.topic)
                 else:
                     answer = await self.assistant.answer(question, history)

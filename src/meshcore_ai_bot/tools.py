@@ -12,7 +12,19 @@ import httpx
 
 from .config import Config
 from .http import read_json
-from .markets import SPLIT, market_answer, market_overview
+from .markets import (
+    SPLIT,
+    crypto_mood,
+    dax_movers,
+    headlines,
+    market_answer,
+    market_overview,
+    number,
+    percent,
+    quote,
+    resolve,
+    unit,
+)
 from .research import Research, ber_flights, grill_stands, planes_overhead
 from .store import Store
 
@@ -144,6 +156,13 @@ RESEARCH_SCHEMAS = {
         {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu drei mit Komma, z.B. 'SAP, Bitcoin'"}},
         [],
     ),
+    "get_market_news": tool(
+        "get_market_news",
+        "Aktuelle Schlagzeilen zu einer Aktie, einem Coin oder Rohstoff (tagesschau, Yahoo Finance) plus Kurs. "
+        "Für Fragen wie 'Warum fällt Rheinmetall?'.",
+        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, z.B. 'Rheinmetall'"}},
+        ["asset"],
+    ),
     "read_webpage": tool(
         "read_webpage",
         "Text einer Webseite lesen, deren HTTPS-Adresse aus einem Suchergebnis oder der Frage stammt.",
@@ -164,7 +183,8 @@ def schemas(config: Config) -> list[dict]:
         if research.transit_url:
             result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
         result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"],
-                   RESEARCH_SCHEMAS["get_grill_stands"], RESEARCH_SCHEMAS["get_quote"]]
+                   RESEARCH_SCHEMAS["get_grill_stands"], RESEARCH_SCHEMAS["get_quote"],
+                   RESEARCH_SCHEMAS["get_market_news"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -203,6 +223,24 @@ class Tools:
             self.last_good[kind] = (datetime.now(UTC).timestamp(), result)
         return result
 
+    async def market_news(self, asset: str) -> dict:
+        tz = self.config.station.timezone
+        found = await resolve(self.client, asset)
+        if not found:
+            return {"text": f"Zu „{asset}“ finde ich keinen Wert.", "sources": []}
+        symbol, label = found
+        try:
+            data = await quote(self.client, symbol, label)
+            line = f"{label} {number(data['price'], data['kind'])}{unit(data)} {percent(data['change'])}.".replace(" .", ".")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            line = ""
+        news = self.research.news if self.config.research.enabled and not self.offline else None
+        lines = await headlines(self.client, symbol, label, tz, news)
+        text = (line + " Schlagzeilen: " + " | ".join(lines)) if lines else (
+            line + f" Keine aktuellen Schlagzeilen zu {label} gefunden.")
+        return {"text": text.strip(), "sources": ["https://finance.yahoo.com/quote/" + symbol], "headlines": lines,
+                "label": label}
+
     async def _berlin_place(self, name: str) -> tuple[float, float, str] | None:
         """A district or town in Berlin/Brandenburg, e.g. 'Steglitz' -> its coordinates."""
         data = await read_json(
@@ -231,7 +269,8 @@ class Tools:
                 allowed["get_departures"] = {"stop", "trains"}
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
-                           get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"})
+                           get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
+                           get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -295,6 +334,17 @@ class Tools:
                 lambda: grill_stands(self.client, lat, lon, self.config.station.timezone, day, place,
                                      near=label),
             )
+        if name == "get_market_movers":
+            return await research.cached(name, "", 300, lambda: dax_movers(self.client))
+        if name == "get_market_mood":
+            mood = await crypto_mood(self.client)
+            if not mood:
+                raise httpx.TransportError("No mood index")
+            return {"text": mood + ". 0 = extreme Angst, 100 = extreme Gier; misst die Stimmung, keine Prognose.",
+                    "sources": ["https://alternative.me/crypto/fear-and-greed-index/"]}
+        if name == "get_market_news":
+            asset = arguments.get("asset", "").strip()
+            return await research.cached(name, asset, 600, lambda: self.market_news(asset))
         if name == "get_quote":
             tz = self.config.station.timezone
             assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]

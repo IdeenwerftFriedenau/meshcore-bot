@@ -299,4 +299,182 @@ async def test_throttled_quote_falls_back_to_recent_price():
 
 def test_channel_overview_word_and_why_questions():
     assert market_request("Marktüberblick", channel=True)["overview"] is True
-    assert market_request("Warum fällt Rheinmetall?", channel=True) is None
+    why = market_request("Warum fällt Rheinmetall?", channel=True)
+    assert why["news"] and why["why"] and why["assets"] == ["Rheinmetall"]
+    assert market_request("Warum ist der Himmel blau?", channel=True) is None
+
+
+@pytest.mark.parametrize(
+    "question,channel,key",
+    [("Top Flop DAX", False, "movers"), ("Wer sind die Gewinner heute?", True, "movers"),
+     ("Wie ist die Stimmung bei Krypto?", False, "mood"), ("Angst und Gier", True, "mood"),
+     ("Nachrichten zu SAP", False, "news"), ("News Rheinmetall", True, "news")],
+)
+def test_new_market_intents(question, channel, key):
+    assert market_request(question, channel=channel).get(key) is True
+
+
+def test_spark_layouts():
+    from meshcore_ai_bot.markets import _spark_rows
+    old = {"spark": {"result": [{"symbol": "SAP.DE", "response": [
+        {"meta": {"regularMarketPrice": 110.0, "chartPreviousClose": 100.0}}]}]}}
+    new = {"RHM.DE": {"close": [None, 90.0], "chartPreviousClose": 100.0}}
+    assert _spark_rows(old) == [("SAP.DE", 110.0, 100.0)]
+    assert _spark_rows(new) == [("RHM.DE", 90.0, 100.0)]
+
+
+async def test_dax_movers_names_best_and_worst():
+    from meshcore_ai_bot.markets import DAX, dax_movers
+
+    def respond(request):
+        symbols = request.url.params["symbols"].split(",")
+        return httpx.Response(200, json={s: {"close": [100 + DAX.index(s)], "chartPreviousClose": 100.0}
+                                         for s in symbols})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        text = (await dax_movers(client))["text"]
+    assert text.startswith("DAX Top: Zalando +39,0 %, Vonovia +38,0 %, Volkswagen +37,0 %. Flop: Adidas +0,0 %")
+
+
+async def test_crypto_falls_back_to_coingecko():
+    def respond(request):
+        if request.url.host.endswith("yahoo.com"):
+            return httpx.Response(429)
+        if request.url.path.endswith("/coins/markets"):
+            return httpx.Response(200, json=[{"name": "Bitcoin", "current_price": 65000, "high_24h": 66000,
+                                              "low_24h": 64000, "price_change_percentage_24h": -1.5}])
+        if request.url.path.endswith("/market_chart"):
+            start = int(NOW.timestamp() * 1000) - 364 * DAY * 1000
+            return httpx.Response(200, json={"prices": [[start + i * DAY * 1000, 50000 + i * 50] for i in range(365)]})
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await market_answer(client, ["Bitcoin"], advice=False, tz="Europe/Berlin", now=NOW)
+    assert result["text"].startswith("Bitcoin 65.000 € -1,5 %. Tag 64.000–66.000, 52W 50.000–68.200")
+    assert "coingecko" in result["sources"][0]
+
+
+async def test_currency_adds_ecb_reference_and_falls_back_to_it():
+    from meshcore_ai_bot import markets
+
+    def ecb(request):
+        if request.url.path.endswith("/latest"):
+            return httpx.Response(200, json={"rates": {"USD": 1.1214}})
+        rates = {f"2026-{m:02d}-01": {"USD": 1.10 + m / 100} for m in range(1, 12)}
+        return httpx.Response(200, json={"rates": rates})
+
+    def yahoo_ok(request):
+        if request.url.host.endswith("yahoo.com"):
+            return httpx.Response(200, json=chart("EURUSD=X", 1.1153, [1.1 + i / 1000 for i in range(260)],
+                                                  kind="CURRENCY", currency="USD"))
+        return ecb(request)
+
+    def yahoo_down(request):
+        return httpx.Response(429) if request.url.host.endswith("yahoo.com") else ecb(request)
+
+    markets._LAST.clear()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo_ok)) as client:
+        text = (await market_answer(client, ["Euro Dollar"], advice=False, tz="Europe/Berlin", now=NOW))["text"]
+    assert "EZB-Referenzkurs 1,1214." in text
+    markets._LAST.clear()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo_down)) as client:
+        text = (await market_answer(client, ["Euro Dollar"], advice=False, tz="Europe/Berlin", now=NOW))["text"]
+    assert text.startswith("Euro in Dollar 1,2100")
+
+
+def watch_setup(price_box):
+    from meshcore_ai_bot.market_watch import MarketWatch
+
+    def respond(request):
+        if request.url.path.endswith("/RHM.DE"):
+            return httpx.Response(200, json=chart("RHM.DE", price_box[0], RISING, change=1.0))
+        return httpx.Response(404)
+
+    config = Config(channels=[Channel("#börsenbot", "all", topic="boerse")])
+    store = Store(":memory:")
+    return config, store, respond, MarketWatch
+
+
+async def test_price_alarm_set_list_fire_and_clear():
+    from meshcore_ai_bot import markets
+    from meshcore_ai_bot.protocol import allows_send
+
+    markets._LAST.clear()
+    price = [850.0]
+    config, store, respond, MarketWatch = watch_setup(price)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        watch = MarketWatch(config, store, client)
+        now = NOW.timestamp()
+        reply = await watch.command("Marc", "#börsenbot", "Alarm Rheinmetall unter 800", now)
+        assert reply.startswith("Kursalarm gesetzt: Rheinmetall unter 800,00 € (jetzt 850,00 €)")
+        assert "steht schon" in await watch.command("Marc", "#börsenbot", "Alarm Rheinmetall über 840", now)
+        assert await watch.command("Marc", "#börsenbot", "meine Alarme", now) == "Deine Alarme: Rheinmetall unter 800,00"
+        await watch.check_alarms(now + 300)
+        assert store.counts() == {}
+        price[0] = 795.0
+        markets._LAST.clear()
+        await watch.check_alarms(now + 600)
+        packet = store.claim(now + 601, lambda ch, stream: allows_send(config, ch, stream))
+        assert packet["text"].startswith("@[Marc] Kursalarm: Rheinmetall steht bei 795,00 €, unter deiner Marke")
+        assert watch.alarms() == []
+        await watch.command("Marc", "#börsenbot", "Alarm SAP über 9999", now)  # unknown in mock: no alarm
+        assert await watch.command("Marc", "#börsenbot", "Alarme löschen", now) == "Du hast keine Kursalarme."
+    store.close()
+
+
+async def test_alarm_limits():
+    from meshcore_ai_bot import market_watch
+
+    config, store, respond, MarketWatch = watch_setup([850.0])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        watch = MarketWatch(config, store, client)
+        for level in (700, 710, 720):
+            await watch.command("Bob", "#börsenbot", f"Alarm Rheinmetall unter {level}", NOW.timestamp())
+        assert "schon 3 Kursalarme" in await watch.command("Bob", "#börsenbot", "Alarm Rheinmetall unter 600")
+        assert len(watch.alarms()) == market_watch.PER_SENDER
+    store.close()
+
+
+def test_alarm_commands_and_levels():
+    from meshcore_ai_bot.market_watch import is_alarm_command, parse_level
+    assert is_alarm_command("Alarm Rheinmetall unter 800")
+    assert is_alarm_command("Kursalarm Bitcoin über 70.000")
+    assert is_alarm_command("Alarme?") and is_alarm_command("Alarme löschen")
+    assert not is_alarm_command("Feueralarm in Friedenau")
+    assert parse_level("70.000") == 70000 and parse_level("1.234,5") == 1234.5 and parse_level("0,45") == 0.45
+
+
+async def test_close_report_once_on_trading_days_only():
+    from meshcore_ai_bot import markets
+    from meshcore_ai_bot.market_watch import MarketWatch
+
+    tuesday = datetime(2026, 11, 10, 16, 50, tzinfo=UTC).timestamp()  # 17:50 Berlin
+
+    def respond(request):
+        if request.url.path.startswith("/v8/finance/chart/"):
+            symbol = request.url.path.rsplit("/", 1)[-1]
+            data = chart(symbol, 100.0, RISING, kind="INDEX", change=0.5)
+            data["chart"]["result"][0]["meta"]["regularMarketTime"] = int(tuesday) - 1800
+            return httpx.Response(200, json=data)
+        if request.url.path == "/v8/finance/spark":
+            return httpx.Response(200, json={s: {"close": [101.0], "chartPreviousClose": 100.0}
+                                             for s in request.url.params["symbols"].split(",")})
+        return httpx.Response(503)
+
+    markets._LAST.clear()
+    config = Config(channels=[Channel("#börsenbot", "all", topic="boerse"), Channel("#fragdenbot", "all")])
+    store = Store(":memory:")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        watch = MarketWatch(config, store, client)
+        assert watch.report_due(tuesday)
+        await watch.tick(tuesday)
+        assert not watch.report_due(tuesday + 60)
+        saturday = tuesday + 4 * 86400
+        assert not watch.report_due(saturday)
+    texts = []
+    while packet := store.claim(tuesday + 1, lambda *_: True):
+        texts.append((packet["channel"], packet["text"]))
+        store.finish(packet["id"], "accepted", tuesday + 1)
+    store.close()
+    assert texts and all(ch == "#börsenbot" for ch, _ in texts)
+    assert "Börsenschluss 10.11.: DAX 100" in texts[0][1] and "DAX Top:" in "".join(t for _, t in texts)

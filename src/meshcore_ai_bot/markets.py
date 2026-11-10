@@ -88,7 +88,8 @@ gestiegen gefallen entwicklung performance info infos daten zahlen etf etfs fond
 oder vs versus gegen vergleich vergleiche aus sicht deiner deine dein meine mein uns unser ihr nach seit lage
 investieren investiert einsteigen nachkaufen aussicht aussichten empfehlung empfiehlst bewertung so viel hallo hi
 moin servus danke super toll ok okay ja nein bot boersenbot hey na kostet kosten euro dollar laeuft lief
-geht los welt markt maerkte marktueberblick ueberblick uebersicht marktlage boersentag bist bin heisst hast machst gehts wars lieber eigentlich denn doch schon auch
+geht los welt markt maerkte marktueberblick fallen steigen faellt steigt gefallen gestiegen
+abgestuerzt crash rally ueberblick uebersicht marktlage boersentag bist bin heisst hast machst gehts wars lieber eigentlich denn doch schon auch
 nicht kein keine wieder mehr weniger genau ungefaehr etwa wirklich sehr
 """.split())
 # Popular shares, checked against Yahoo: no search request, clean names, typo matching.
@@ -194,6 +195,21 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
     folded = fold(text)
     advice = bool(ADVICE.search(folded))
     known = known_asset(text)
+    if re.search(r"\b(top|flop|tops|flops|gewinner|verlierer|renner|penner)\b", folded) and (
+            channel or re.search(r"\bdax\b|\baktien?\b|\bboerse", folded)):
+        return {"assets": [], "advice": False, "overview": False, "movers": True}
+    if re.search(r"\b(angst|gier|stimmung|fear|greed|sentiment)\b", folded) and (
+            channel or re.search(r"krypto|bitcoin|boerse|markt", folded)):
+        return {"assets": [], "advice": False, "overview": False, "mood": True}
+    why = re.match(r"(warum|wieso|weshalb)\b", folded) or re.search(r"\b(was ist (da )?los mit|grund)\b", folded)
+    news = re.search(r"\b(news|nachrichten|neuigkeiten|meldungen|schlagzeilen|neues (von|zu|bei))\b", folded)
+    moving = re.search(r"\b(faellt|fallt|steigt|gestiegen|gefallen|stuerzt|abgestuerzt|crash|rally|aktie|kurs|"
+                       r"im minus|im plus|explodiert|bricht ein|eingebrochen)\b", folded)
+    if (why and (known or (channel and moving))) or (news and (known or channel)):
+        target = known[1] if known else lookup_words(re.sub(r"(?i)\b(news|nachrichten|neuigkeiten|meldungen|"
+                                                                   r"schlagzeilen|neues|grund|los)\b", " ", text))
+        if target and (known or channel):
+            return {"assets": [target], "advice": False, "overview": False, "news": True, "why": bool(why)}
     if not channel:
         # #fragdenbot and friends: a named share/coin/index with a market word, or 'Aktie'/'Kurs' plus a name.
         pricey = re.search(r"\b(kurs\w*|\w+kurs|\w*preis|steht|stehen|notiert|wert|wie hoch|tageshoch|tagestief|"
@@ -336,16 +352,96 @@ _LAST: dict[str, tuple[float, dict]] = {}
 async def quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict:
     try:
         data = await _get(client, f"/v8/finance/chart/{symbol}", {"range": "1y", "interval": "1d"})
-    except (httpx.HTTPError, ValueError):
-        known = _LAST.get(symbol)  # Yahoo throttles bursts: a price from the last two hours beats no answer
-        if known and time.monotonic() - known[0] < 2 * 3600:
-            return {**known[1], "name": label or known[1]["name"]}
-        raise
-    result = _parse(data, symbol, label)
+        result = _parse(data, symbol, label)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        # Second source first: CoinGecko for coins, the ECB for currencies; then a price from the last two hours.
+        result = None
+        try:
+            if symbol in COINGECKO:
+                result = await coingecko_quote(client, symbol, label)
+            elif symbol in ECB_PAIRS:
+                result = await ecb_quote(client, symbol, label)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
+            result = None
+        if result is None:
+            known = _LAST.get(symbol)
+            if known and time.monotonic() - known[0] < 2 * 3600:
+                return {**known[1], "name": label or known[1]["name"]}
+            raise
     if len(_LAST) > 300:
         _LAST.clear()
     _LAST[symbol] = (time.monotonic(), result)
     return result
+
+
+COINGECKO = {"BTC-EUR": "bitcoin", "ETH-EUR": "ethereum", "SOL-EUR": "solana", "XRP-EUR": "ripple",
+             "DOGE-EUR": "dogecoin", "ADA-EUR": "cardano", "LTC-EUR": "litecoin", "USDT-EUR": "tether"}
+ECB_PAIRS = {"EURUSD=X": "USD", "EURCHF=X": "CHF", "EURGBP=X": "GBP", "EURJPY=X": "JPY"}
+ECB_URL = "https://api.frankfurter.dev/v1"
+
+
+async def coingecko_quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict:
+    coin = COINGECKO[symbol]
+    rows = await read_json(client, "GET", "https://api.coingecko.com/api/v3/coins/markets",
+                           params={"vs_currency": "eur", "ids": coin}, headers=HEADERS, timeout=10)
+    row = rows[0]
+    chart = await read_json(client, "GET", f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart",
+                            params={"vs_currency": "eur", "days": 365, "interval": "daily"}, headers=HEADERS,
+                            timeout=10)
+    closes = [(int(t / 1000), float(p)) for t, p in chart.get("prices") or [] if p]
+    values = [p for _, p in closes] or [row["current_price"]]
+    return {
+        "symbol": symbol, "name": label or row.get("name") or symbol, "kind": "CRYPTOCURRENCY", "currency": "EUR",
+        "exchange": "CoinGecko", "price": float(row["current_price"]), "change": row.get("price_change_percentage_24h"),
+        "day_high": row.get("high_24h"), "day_low": row.get("low_24h"), "high52": max(values), "low52": min(values),
+        "time": int(time.time()), "closes": closes, "source": f"https://www.coingecko.com/de/munze/{coin}",
+    }
+
+
+async def ecb_quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict:
+    """ECB reference rates (once a day, about 16:00): no day range, but a whole year of closes."""
+    target = ECB_PAIRS[symbol]
+    start = (datetime.now(UTC).date().replace(day=1).replace(year=datetime.now(UTC).year - 1)).isoformat()
+    data = await read_json(client, "GET", f"{ECB_URL}/{start}..", params={"base": "EUR", "symbols": target},
+                           headers=HEADERS, timeout=10)
+    rates = sorted((day, values[target]) for day, values in (data.get("rates") or {}).items() if target in values)
+    closes = [(int(datetime.fromisoformat(day).replace(tzinfo=UTC).timestamp()), float(v)) for day, v in rates]
+    if not closes:
+        raise ValueError("No ECB rates")
+    values = [v for _, v in closes[-260:]]
+    price = closes[-1][1]
+    change = (price / closes[-2][1] - 1) * 100 if len(closes) >= 2 else None
+    return {
+        "symbol": symbol, "name": label or f"Euro in {target}", "kind": "CURRENCY", "currency": target,
+        "exchange": "EZB", "price": price, "change": change, "day_high": None, "day_low": None,
+        "high52": max(values), "low52": min(values), "time": closes[-1][0] + 16 * 3600, "closes": closes[-260:],
+        "source": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/",
+    }
+
+
+async def ecb_rate(client: httpx.AsyncClient, symbol: str) -> float | None:
+    if symbol not in ECB_PAIRS:
+        return None
+    try:
+        data = await read_json(client, "GET", f"{ECB_URL}/latest", params={"base": "EUR", "symbols": ECB_PAIRS[symbol]},
+                               headers=HEADERS, timeout=8)
+        return float(data["rates"][ECB_PAIRS[symbol]])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return None
+
+
+async def crypto_mood(client: httpx.AsyncClient) -> str:
+    """Crypto Fear & Greed index (alternative.me), e.g. 'Krypto-Stimmung: Angst (32/100)'."""
+    try:
+        data = await read_json(client, "GET", "https://api.alternative.me/fng/", params={"limit": 1},
+                               headers=HEADERS, timeout=8)
+        row = data["data"][0]
+        value = int(row["value"])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
+        return ""
+    words = {"Extreme Fear": "extreme Angst", "Fear": "Angst", "Neutral": "neutral", "Greed": "Gier",
+             "Extreme Greed": "extreme Gier"}
+    return f"Krypto-Stimmung: {words.get(row.get('value_classification'), row.get('value_classification', ''))} ({value}/100)"
 
 
 def _parse(data: dict, symbol: str, label: str) -> dict:
@@ -535,6 +631,10 @@ async def market_answer(client: httpx.AsyncClient, assets: list[str], *, advice:
     if len(found) == 1:
         data = found[0]
         text = quote_line(data, tz, now=now)
+        if data["kind"] == "CURRENCY" and data.get("exchange") != "EZB":
+            rate = await ecb_rate(client, data["symbol"])
+            if rate:
+                text += f" EZB-Referenzkurs {number(rate, 'CURRENCY')}."
         if advice:
             text += f" Einschätzung ({DISCLAIMER}): {assessment(data)}"
     else:
@@ -549,7 +649,7 @@ async def market_answer(client: httpx.AsyncClient, assets: list[str], *, advice:
             text += f" ({DISCLAIMER})"
     if missing:
         text += " Nicht gefunden: " + ", ".join(missing) + "."
-    return {"text": text, "sources": [source(d["symbol"]) for d in found]}
+    return {"text": text, "sources": [d.get("source") or source(d["symbol"]) for d in found]}
 
 
 OVERVIEW_ASSETS = [("^GDAXI", "DAX"), ("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("BTC-EUR", "Bitcoin"),
@@ -568,4 +668,92 @@ async def market_overview(client: httpx.AsyncClient, tz: str, now: datetime | No
         sources.append(source(symbol))
     if not parts:
         raise httpx.TransportError("No market data")
-    return {"text": "Märkte: " + ", ".join(parts) + ".", "sources": sources}
+    mood = await crypto_mood(client)
+    if mood:
+        sources.append("https://alternative.me/crypto/fear-and-greed-index/")
+    return {"text": "Märkte: " + ", ".join(parts) + "." + (f" {mood}." if mood else ""), "sources": sources}
+
+
+DAX = ["ADS.DE", "AIR.DE", "ALV.DE", "BAS.DE", "BAYN.DE", "BEI.DE", "BMW.DE", "BNR.DE", "CBK.DE", "CON.DE",
+       "DTG.DE", "DBK.DE", "DB1.DE", "DHL.DE", "DTE.DE", "EOAN.DE", "FRE.DE", "FME.DE", "HNR1.DE", "HEI.DE",
+       "HEN3.DE", "IFX.DE", "MBG.DE", "MRK.DE", "MTX.DE", "MUV2.DE", "P911.DE", "PAH3.DE", "QIA.DE", "RHM.DE",
+       "RWE.DE", "SAP.DE", "SRT3.DE", "SIE.DE", "ENR.DE", "SHL.DE", "SY1.DE", "VOW3.DE", "VNA.DE", "ZAL.DE"]
+_LABELS = {symbol: label for _, symbol, label in STOCKS}
+
+
+def _spark_rows(data: dict) -> list[tuple[str, float, float]]:
+    """Both spark layouts Yahoo serves: {'spark': {'result': [...]}} and {'SAP.DE': {...}}."""
+    rows = []
+    if isinstance(data.get("spark"), dict):
+        for item in data["spark"].get("result") or []:
+            response = (item.get("response") or [{}])[0]
+            meta = response.get("meta") or {}
+            closes = [c for c in ((response.get("indicators") or {}).get("quote") or [{}])[0].get("close") or [] if c]
+            price = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
+            previous = meta.get("chartPreviousClose") or meta.get("previousClose")
+            rows.append((item.get("symbol"), price, previous))
+    else:
+        for symbol, item in data.items():
+            if isinstance(item, dict):
+                closes = [c for c in item.get("close") or [] if c]
+                rows.append((symbol, closes[-1] if closes else None,
+                             item.get("chartPreviousClose") or item.get("previousClose")))
+    return [(sym, float(p), float(prev)) for sym, p, prev in rows
+            if sym and isinstance(p, int | float) and isinstance(prev, int | float) and prev > 0]
+
+
+async def dax_movers(client: httpx.AsyncClient, count: int = 3) -> dict:
+    """Best and worst DAX shares today from two spark requests (20 symbols each)."""
+    moves: list[tuple[float, str]] = []
+    for start in range(0, len(DAX), 20):
+        data = await _get(client, "/v8/finance/spark",
+                          {"symbols": ",".join(DAX[start:start + 20]), "range": "1d", "interval": "1d"})
+        moves += [((p / prev - 1) * 100, sym) for sym, p, prev in _spark_rows(data)]
+    if len(moves) < 10:
+        raise ValueError("Too few DAX values")
+    moves.sort(reverse=True)
+
+    def name(sym):
+        return _LABELS.get(sym, sym.split(".")[0])
+
+    top = ", ".join(f"{name(s)} {percent(m)}" for m, s in moves[:count])
+    flop = ", ".join(f"{name(s)} {percent(m)}" for m, s in moves[::-1][:count])
+    return {"text": f"DAX Top: {top}. Flop: {flop}.", "sources": [source("^GDAXI")]}
+
+
+async def headlines(client: httpx.AsyncClient, symbol: str, name: str, tz: str, news=None,
+                    now: datetime | None = None) -> list[str]:
+    """Recent headlines about one asset: tagesschau (German, via news()) and Yahoo Finance, newest first."""
+    now = now or datetime.now(UTC)
+    found: list[tuple[float, str]] = []
+    if news is not None:
+        try:
+            result = await news(name.split(" (")[0])
+            local = now.astimezone(ZoneInfo(tz))
+            for line in str(result.get("text", "")).split(" | ") if result.get("sources") else []:
+                stamp = re.match(r"(\d\d)\.(\d\d)\. (\d\d):(\d\d)", line.strip())
+                if not stamp:
+                    continue
+                day, month, hour, minute = map(int, stamp.groups())
+                year = local.year - (1 if month > local.month else 0)
+                when = datetime(year, month, day, hour, minute, tzinfo=ZoneInfo(tz))
+                if local.timestamp() - when.timestamp() < 7 * 86400:
+                    found.append((when.timestamp(), line.strip()[:160]))
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            pass
+    try:
+        data = await _get(client, "/v1/finance/search", {"q": symbol, "quotesCount": 0, "newsCount": 6})
+        for row in data.get("news") or []:
+            stamp = row.get("providerPublishTime")
+            if isinstance(stamp, int | float) and now.timestamp() - stamp < 7 * 86400 and row.get("title"):
+                day = datetime.fromtimestamp(stamp, ZoneInfo(tz)).strftime("%d.%m.")
+                found.append((float(stamp), f"{day} {row.get('publisher') or 'Yahoo'}: {row['title']}"[:160]))
+    except (httpx.HTTPError, ValueError):
+        pass
+    seen, result = set(), []
+    for _, line in sorted(found, reverse=True):
+        key = fold(line)[:60]
+        if key not in seen:
+            seen.add(key)
+            result.append(line)
+    return result[:5]
