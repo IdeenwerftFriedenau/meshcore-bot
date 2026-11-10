@@ -19,7 +19,7 @@ from .http import read_json
 from .knowledge import meshcore_context, meshcore_short_answer
 from .markets import ADVICE, fold, market_request
 from .memory import OVERRIDE, safe_memory
-from .protocol import radio_check
+from .protocol import radio_check, split_text
 from .radio_terms import glossary_context, short_radio_reply, wx_request
 from .research import urls_in
 from .store import Store
@@ -79,7 +79,8 @@ und verständlich beantworten."""
 
 MARKET_NOTE = """Du ergänzt eine Kursmeldung im Funk um genau einen kurzen Satz (höchstens 140 Zeichen) Einordnung:
 was dieses Unternehmen oder diesen Wert typischerweise bewegt, oder ein Risiko bzw. eine Chance. Nur allgemein bekannte
-Zusammenhänge, keine erfundenen aktuellen Nachrichten, keine Kurse oder Zahlen wiederholen, kein Kursziel, kein
+Zusammenhänge, keine erfundenen aktuellen Nachrichten, nichts wiederholen, was schon in der Meldung steht (Kurse, Zahlen,
+Trend, Schwankung), kein Kursziel, kein
 Kauf- oder Verkaufsbefehl, kein Markdown. Deutsch, duzen."""
 
 MARKET_WHY = """Du beantwortest im Funk, warum sich ein Kurs bewegt, in höchstens zwei kurzen Sätzen (300 Zeichen).
@@ -372,7 +373,7 @@ class Assistant:
             self.config.ai.api_key or self.config.ai.allow_local_http
         ):
             note = await self._market_note(question, text)
-            if note:
+            if note and self._fits(text + " " + note):
                 text += " " + note
         return Answer(text, result.get("sources", []))
 
@@ -398,6 +399,11 @@ class Assistant:
             except Exception:  # noqa: BLE001 - the headlines below still answer
                 pass
         return Answer(result["text"], sources)
+
+    def _fits(self, text: str) -> bool:
+        """Room for a typical '@[name] ' prefix; a garnish that would push the quote into 'mehr?' is dropped."""
+        radio = self.config.radio
+        return len(text) <= 420 and len(split_text("@[" + "x" * 16 + "] " + text, radio.packet_bytes)) <= radio.reply_max_packets
 
     async def _market_note(self, question: str, facts: str) -> str:
         """One sentence of context from the model; the quote stands on its own when that fails."""

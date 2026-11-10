@@ -368,10 +368,21 @@ async def quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict
             if known and time.monotonic() - known[0] < 2 * 3600:
                 return {**known[1], "name": label or known[1]["name"]}
             raise
+    widen(result)
     if len(_LAST) > 300:
         _LAST.clear()
     _LAST[symbol] = (time.monotonic(), result)
     return result
+
+
+def widen(data: dict) -> None:
+    """Yahoo's day and 52-week ranges lag the live price now and then; a range must never exclude the price."""
+    price = data.get("price")
+    if not _ok(price):
+        return
+    for low, high in (("day_low", "day_high"), ("low52", "high52")):
+        if _ok(data.get(low), data.get(high)):
+            data[low], data[high] = min(data[low], price), max(data[high], price)
 
 
 COINGECKO = {"BTC-EUR": "bitcoin", "ETH-EUR": "ethereum", "SOL-EUR": "solana", "XRP-EUR": "ripple",

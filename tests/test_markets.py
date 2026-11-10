@@ -201,6 +201,27 @@ async def test_channel_advice_adds_one_ai_sentence_without_history():
     assert "Wetter" not in json.dumps(payloads[0], ensure_ascii=False)
 
 
+async def test_ai_sentence_is_dropped_when_it_would_not_fit_on_air():
+    config = Config()
+    config.ai._api_key = "synthetic"
+    config.radio.reply_max_packets = 3
+    store = Store(":memory:")
+    long_note = "Beachte bei diesem Wert die hohe Volatilität, die oft durch makroökonomische Daten und die Risikobereitschaft am Markt getrieben wird."
+    async with httpx.AsyncClient(transport=httpx.MockTransport(stock_ai([], long_note))) as client:
+        answer = await Assistant(config, store, client).answer("Soll ich Rheinmetall kaufen?", topic="boerse")
+    store.close()
+    assert answer.text.startswith("Rheinmetall 285,00 €")
+    assert "Volatilität" not in answer.text
+
+
+async def test_ranges_never_exclude_the_live_price():
+    lagging = chart("BTC-EUR", 65243.0, RISING, kind="CRYPTOCURRENCY", day=(65301.0, 67129.0), change=-2.2)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo({"BTC-EUR": lagging}))) as client:
+        data = await quote(client, "BTC-EUR", "Bitcoin")
+    assert data["day_low"] == 65243.0 and data["day_high"] == 67129.0
+    assert data["low52"] <= data["price"] <= data["high52"]
+
+
 async def test_channel_small_talk_goes_to_the_model_with_stock_role():
     config = Config()
     config.ai._api_key = "synthetic"
