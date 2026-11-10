@@ -132,6 +132,8 @@ def allows_send(config: Config, channel_name: str, stream: str) -> bool:
         return False
     if stream == "reply":
         return channel.mode != "off"
+    if stream == "markets":  # price alarms and the close report, only in a #börsenbot-style channel
+        return channel.mode != "off" and channel.topic == "boerse"
     enabled = {"warnings": config.broadcasts.warnings_enabled, "news": config.broadcasts.news_enabled}
     return enabled.get(stream, False) and stream in channel.broadcasts
 

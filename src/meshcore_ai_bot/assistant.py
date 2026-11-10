@@ -82,6 +82,10 @@ was dieses Unternehmen oder diesen Wert typischerweise bewegt, oder ein Risiko b
 Zusammenhänge, keine erfundenen aktuellen Nachrichten, keine Kurse oder Zahlen wiederholen, kein Kursziel, kein
 Kauf- oder Verkaufsbefehl, kein Markdown. Deutsch, duzen."""
 
+MARKET_WHY = """Du beantwortest im Funk, warum sich ein Kurs bewegt, in höchstens zwei kurzen Sätzen (300 Zeichen).
+Nutze ausschließlich die mitgelieferten Schlagzeilen und Kursdaten; erfinde keine Gründe. Passt keine Schlagzeile,
+sag ehrlich, dass die Meldungen keinen klaren Grund nennen. Keine Quellen nennen, kein Kursziel, kein Markdown. Deutsch, duzen."""
+
 
 @dataclass
 class Answer:
@@ -347,6 +351,15 @@ class Assistant:
 
     async def _market_answer(self, question: str, market: dict) -> Answer | None:
         """Quotes straight from the data; None lets the model answer (nothing found, e.g. 'Hallo')."""
+        if market.get("movers") or market.get("mood"):
+            name = "get_market_movers" if market.get("movers") else "get_market_mood"
+            try:
+                result = await self.tools.run(name, {})
+            except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                return Answer("Die Marktdaten sind gerade nicht abrufbar. Versuch es bitte gleich nochmal.")
+            return Answer(result["text"], result.get("sources", []))
+        if market.get("news"):
+            return await self._market_news(question, market)
         args = {"asset": ", ".join(market["assets"]), "advice": "ja" if market["advice"] else "nein"}
         try:
             result = await self.tools.run("get_quote", args)
@@ -362,6 +375,29 @@ class Assistant:
             if note:
                 text += " " + note
         return Answer(text, result.get("sources", []))
+
+    async def _market_news(self, question: str, market: dict) -> Answer | None:
+        """Headlines for one asset; with 'warum' the model explains the move only from those headlines."""
+        try:
+            result = await self.tools.run("get_market_news", {"asset": market["assets"][0]})
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            return Answer("Die Nachrichten sind gerade nicht abrufbar. Versuch es bitte gleich nochmal.")
+        if not result.get("label"):
+            return None
+        lines, sources = result.get("headlines") or [], result.get("sources", [])
+        if market.get("why") and lines and (self.config.ai.api_key or self.config.ai.allow_local_http):
+            try:
+                reply = await self._completion(
+                    [{"role": "system", "content": MARKET_WHY},
+                     {"role": "user", "content": f"Frage: {question}\nDaten: {result['text']}"}],
+                    tools=False,
+                )
+                text = str(reply["choices"][0]["message"]["content"] or "").strip()
+                if text and not reply.get("_limited") and not reply.get("_local_fallback"):
+                    return Answer(re.sub(r"[*_#]", "", text), sources)
+            except Exception:  # noqa: BLE001 - the headlines below still answer
+                pass
+        return Answer(result["text"], sources)
 
     async def _market_note(self, question: str, facts: str) -> str:
         """One sentence of context from the model; the quote stands on its own when that fails."""

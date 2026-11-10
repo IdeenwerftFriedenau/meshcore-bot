@@ -119,6 +119,8 @@ class Research:
     answer_cache_seconds: int = 600
     # Optional model name for the rounds after a research tool call; empty uses ai.model.
     model: str = ""
+    # Short close report on weekdays in channels with topic = "boerse" (local time); empty disables.
+    market_report_time: str = "17:45"
 
 
 @dataclass
