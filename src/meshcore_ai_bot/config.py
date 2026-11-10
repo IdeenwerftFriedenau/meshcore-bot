@@ -76,6 +76,8 @@ class Storage:
     reply_ttl_seconds: int = 1800
     history_turns: int = 12
     memory_enabled: bool = True
+    # Days a remembered personal fact (Wohnort, Haltestelle, …) is kept after it was last said or used.
+    profile_days: int = 180
 
 
 @dataclass
@@ -224,6 +226,7 @@ class Config:
             (self.storage.message_max_age_seconds, 10, 3600, "message_max_age_seconds"),
             (self.storage.reply_ttl_seconds, 30, 7200, "reply_ttl_seconds"),
             (self.storage.history_turns, 0, 12, "history_turns"),
+            (self.storage.profile_days, 1, 730, "profile_days"),
             (self.ai.requests_per_minute, 1, 60, "requests_per_minute"),
             (self.ai.requests_per_day, 1, 10000, "requests_per_day"),
             (self.ai.max_tokens, 32, 2048, "max_tokens"),

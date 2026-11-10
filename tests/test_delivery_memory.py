@@ -106,8 +106,8 @@ async def test_forget_inspect_and_opt_in_are_local_and_persistent(tmp_path):
     engine = Engine(config, store, assistant)
     await invoke(engine, "Ich wohne in Berlin.")
     inspection = await invoke(engine, "Was weißt du über mich?")
-    assert "Ich wohne in Berlin." in inspection
-    assert len(assistant.histories) == 1
+    assert "Ich wohne in Berlin." in inspection and "Wohnort: Berlin" in inspection
+    assert len(assistant.histories) == 0  # a plain self-description is confirmed without the model
     assert "gelöscht" in await invoke(engine, "Vergiss mich")
     assert store.db.execute("SELECT count(*) FROM memory").fetchone()[0] == 0
     assert store.db.execute("SELECT count(*) FROM messages WHERE raw_text LIKE '%Berlin%'").fetchone()[0] == 0

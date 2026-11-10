@@ -18,7 +18,7 @@ from .config import Config, validate_loopback_url
 from .http import read_json
 from .knowledge import meshcore_context, meshcore_short_answer
 from .markets import ADVICE, fold, market_request
-from .memory import OVERRIDE, safe_memory
+from .memory import OVERRIDE, profile_context, safe_memory
 from .protocol import radio_check, split_text
 from .radio_terms import glossary_context, short_radio_reply, wx_request
 from .research import urls_in
@@ -106,7 +106,13 @@ class Assistant:
         self._answer_cache: dict[str, tuple[float, Answer]] = {}
         self._offline_until = 0.0
 
-    async def answer(self, question: str, history: list[dict] | None = None, topic: str = "") -> Answer:
+    async def answer(
+        self, question: str, history: list[dict] | None = None, topic: str = "",
+        profile: dict[str, list[str]] | None = None,
+    ) -> Answer:
+        profile = profile or {}
+        home = (profile.get("ort") or [""])[-1]
+        home_stop = (profile.get("haltestelle") or [""])[-1]
         history = [
             item
             for item in (history or [])
@@ -140,7 +146,8 @@ class Assistant:
             return Answer(short["answer"], short.get("sources", []))
         stocks = topic == "boerse"
         market = (
-            market_request(fix_typos(question), channel=stocks)
+            own_stocks_request(question, profile.get("aktien") or [])
+            or market_request(fix_typos(question), channel=stocks)
             if self.config.research.enabled and not self.offline
             else None
         )
@@ -157,15 +164,15 @@ class Assistant:
         routed = fix_typos(question)  # radio users type fast on tiny keyboards
         weather = None
         if self.config.weather.enabled:
-            weather = weather_question(routed, self.config.weather.location) or weather_followup(
-                routed, history, self.config.weather.location)
+            weather = weather_question(routed, self.config.weather.location, home) or weather_followup(
+                routed, history, self.config.weather.location, home)
         if weather:
             return await self._weather_answer(routed, weather)
         grill = grill_request(routed, history) if self.config.research.enabled and not self.offline else None
         if grill:
             return await self._tool_answer("get_grill_stands", grill)
         trip = (
-            journey_request(routed, self.config.station.location, history,
+            journey_request(routed, home_stop or home or self.config.station.location, history,
                             datetime.now(ZoneInfo(self.config.station.timezone)).replace(tzinfo=None))
             if self.config.research.enabled and self.config.research.transit_url and not self.offline
             else None
@@ -173,7 +180,7 @@ class Assistant:
         if trip:
             return await self._tool_answer("get_journey", trip)
         transit = (
-            transit_request(routed)
+            (transit_request(routed) or home_departures(routed, home_stop))
             if self.config.research.enabled and self.config.research.transit_url and not self.offline
             else None
         )
@@ -228,7 +235,8 @@ class Assistant:
                 + ("\n" + RESEARCH if self.config.research.enabled else "")
                 + ("\n" + BOERSE if stocks else "")
                 + "\n"
-                + identity + "\n" + glossary_context(question) + "\n" + mesh["text"],
+                + identity + "\n" + glossary_context(question) + "\n" + mesh["text"]
+                + ("\n" + profile_context(profile) if profile else ""),
             },
             *history[-6:],
             {"role": "user", "content": question if not history else "Neue Nachricht (beantworte nur diese; bezieht sie sich auf vorher, nutze den Verlauf): " + question},
@@ -749,7 +757,7 @@ WEATHER_SKIP = re.compile(
     r"|wo kann|wo gibt|empfehl|tipp|rezept|koch|ausflug|unternehm", re.I)
 
 
-def weather_question(question: str, default_location: str) -> dict | None:
+def weather_question(question: str, default_location: str, home: str = "") -> dict | None:
     """Plain weather questions -> get_weather arguments, so the answer fits the question asked."""
     text = " ".join(question.split())
     if len(text) > 100 or not WEATHER_WORDS.search(text) or WEATHER_SKIP.search(text):
@@ -772,13 +780,13 @@ def weather_question(question: str, default_location: str) -> dict | None:
         place = re.search(r"\b(?:in|für|fuer|bei)\s+([a-zäöüß][\wäöüß-]{2,30})\s*[?.!]*$", text)
         if place and place.group(1).casefold() in {"ordnung", "zukunft", "nähe", "naehe", "der", "den", "dem", "uns"}:
             place = None
-    location = place.group(1)[:1].upper() + place.group(1)[1:] if place else default_location
+    location = place.group(1)[:1].upper() + place.group(1)[1:] if place else (home or default_location)
     if place and location.casefold() in {"berlin", "friedenau", "berlin-friedenau"}:
         location = default_location
     return {"location": location, "period": period}
 
 
-def weather_followup(question: str, history: list[dict], default_location: str) -> dict | None:
+def weather_followup(question: str, history: list[dict], default_location: str, home: str = "") -> dict | None:
     """'und morgen?' / 'und in Potsdam?' right after a weather question stays a weather question."""
     text = " ".join(question.split()).strip(" ?!.")
     if len(text) > 40 or not re.match(r"(und|wie ist es|wie sieht es)\b", text, re.I):
@@ -786,7 +794,7 @@ def weather_followup(question: str, history: list[dict], default_location: str) 
     earlier = [str(item.get("content", "")) for item in history if item.get("role") == "user"]
     if not earlier:
         return None
-    previous = weather_question(fix_typos(earlier[-1]), default_location)
+    previous = weather_question(fix_typos(earlier[-1]), default_location, home)
     if not previous:
         return None
     period = weather_question(f"wetter {text}", default_location) or {}
@@ -1062,6 +1070,36 @@ def journey_request(question: str, home: str, history: list[dict] | None = None,
         args["only"] = only
     if any(re.search(r"ohne umsteig|ohne zu umsteigen|\bdirekt\b", step, re.I) for step in chain):
         args["direct"] = "ja"
+    return args
+
+
+OWN_STOCKS = re.compile(r"\bmeine[nm]?\s+(aktien|depot|werte|papiere|portfolio|titel)\b|\bmein\s+(depot|portfolio)\b", re.I)
+HOME_DEPARTURE = re.compile(
+    r"^(?:wann\s+)?(?:f(?:ä|ae)hrt|kommt|geht)\s+(?:meine?|der|die|das)\s+(?:n(?:ä|ae)chste\s+)?\S+"
+    r"|^(?:die\s+)?n(?:ä|ae)chste[nrs]?\s+(?:abfahrt\w*|bahn|bus|tram|s-?bahn|u-?bahn|z(?:u|ü|ue)ge?)(?:\s+bitte)?$"
+    r"|^(?:meine\s+)?abfahrt(?:en)?(?:\s+(?:bei mir|zu ?hause|meiner haltestelle))?$"
+    r"|^(?:wann\s+)?(?:f(?:ä|ae)hrt|kommt)\s+(?:meine?\s+)?(?:bahn|bus|tram|s-?bahn|u-?bahn|zug)$",
+    re.I,
+)
+
+
+def own_stocks_request(question: str, stocks: list[str]) -> dict | None:
+    """'Wie stehen meine Aktien?' -> quotes for the shares this person told the bot about."""
+    if not stocks or not OWN_STOCKS.search(question):
+        return None
+    return {"assets": stocks[-3:], "advice": bool(ADVICE.search(fold(question))), "overview": False}
+
+
+def home_departures(question: str, stop: str) -> dict | None:
+    """'Nächste Bahn?' without a stop -> departures at the stop this person saved."""
+    text = " ".join(question.split()).strip(" ?!.")
+    if not stop or len(text) > 50 or STOP.search(text) or not HOME_DEPARTURE.search(text):
+        return None
+    if re.search(r"\b(nach|zum|zur|bis|richtung)\b", text, re.I):
+        return None
+    args = {"stop": stop}
+    if TRAIN_WORDS.search(text):
+        args["trains"] = "ja"
     return args
 
 

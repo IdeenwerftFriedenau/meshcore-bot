@@ -50,6 +50,9 @@ message_max_age_seconds = 300
 reply_ttl_seconds = 1800
 history_turns = 12
 memory_enabled = true
+# Personal facts people tell the bot ("ich wohne in Steglitz", "merk dir …") stay this many days after
+# they were last said or used. "vergiss mich" erases them at once, "vergiss meinen Wohnort" a single one.
+profile_days = 180
 
 [weather]
 enabled = true

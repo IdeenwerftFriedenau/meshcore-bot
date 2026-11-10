@@ -455,11 +455,13 @@ class Tools:
                     self.client,
                     "GET",
                     "https://geocoding-api.open-meteo.com/v1/search",
-                    params={"name": location, "count": 1, "language": "de"},
+                    params={"name": location, "count": 10, "language": "de"},
                 )
                 if not data.get("results"):
                     return {"text": "Ort nicht gefunden. Nenne bitte Ort und Land.", "sources": []}
-                place = data["results"][0]
+                results = data["results"]
+                # Berlin Ortsteile ("Steglitz", "Schöneberg") before same-named places elsewhere.
+                place = next((row for row in results if row.get("admin1") in {"Berlin", "Land Berlin"}), results[0])
                 lat, lon, name = place["latitude"], place["longitude"], place["name"]
             forecast = await read_json(
                 self.client,
