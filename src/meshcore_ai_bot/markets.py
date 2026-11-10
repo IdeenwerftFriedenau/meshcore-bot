@@ -7,8 +7,11 @@ assessment is a plain rule-based reading of trend and range, never a price targe
 
 from __future__ import annotations
 
+import asyncio
+import difflib
 import math
 import re
+import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -85,16 +88,74 @@ gestiegen gefallen entwicklung performance info infos daten zahlen etf etfs fond
 oder vs versus gegen vergleich vergleiche aus sicht deiner deine dein meine mein uns unser ihr nach seit lage
 investieren investiert einsteigen nachkaufen aussicht aussichten empfehlung empfiehlst bewertung so viel hallo hi
 moin servus danke super toll ok okay ja nein bot boersenbot hey na kostet kosten euro dollar laeuft lief
-geht los welt markt maerkte
+geht los welt markt maerkte marktueberblick ueberblick uebersicht marktlage boersentag bist bin heisst hast machst gehts wars lieber eigentlich denn doch schon auch
+nicht kein keine wieder mehr weniger genau ungefaehr etwa wirklich sehr
 """.split())
-# Everyday names -> what Yahoo's search understands.
-NICKNAMES = {
-    "vw": "Volkswagen", "volkswagen": "Volkswagen Vz", "mercedes": "Mercedes-Benz", "daimler": "Mercedes-Benz",
-    "telekom": "Deutsche Telekom", "post": "DHL Group", "dhl": "DHL Group", "google": "Alphabet",
-    "facebook": "Meta Platforms", "meta": "Meta Platforms", "porsche": "Porsche AG", "commerzbank": "Commerzbank",
-    "deutsche bank": "Deutsche Bank", "lufthansa": "Lufthansa", "bayer": "Bayer AG", "siemens": "Siemens AG",
-    "tesla": "Tesla", "nvidia": "Nvidia", "microsoft": "Microsoft", "amazon": "Amazon", "apple": "Apple",
+# Popular shares, checked against Yahoo: no search request, clean names, typo matching.
+# Folded spellings separated by "|" -> XETRA symbol (euro) and the name said on air.
+STOCKS: list[tuple[str, str, str]] = [
+    ("adidas", "ADS.DE", "Adidas"), ("airbus", "AIR.DE", "Airbus"), ("allianz", "ALV.DE", "Allianz"),
+    ("basf", "BAS.DE", "BASF"), ("bayer", "BAYN.DE", "Bayer"), ("beiersdorf|nivea", "BEI.DE", "Beiersdorf"),
+    ("bmw", "BMW.DE", "BMW"), ("brenntag", "BNR.DE", "Brenntag"), ("commerzbank", "CBK.DE", "Commerzbank"),
+    ("continental", "CON.DE", "Continental"), ("daimler truck", "DTG.DE", "Daimler Truck"),
+    ("deutsche bank", "DBK.DE", "Deutsche Bank"), ("deutsche boerse", "DB1.DE", "Deutsche Börse"),
+    ("dhl|deutsche post|post", "DHL.DE", "DHL Group"), ("telekom|deutsche telekom", "DTE.DE", "Deutsche Telekom"),
+    ("eon|e.on", "EOAN.DE", "E.ON"), ("fresenius medical care|fmc", "FME.DE", "Fresenius Medical Care"),
+    ("fresenius", "FRE.DE", "Fresenius"), ("hannover rueck|hannover re", "HNR1.DE", "Hannover Rück"),
+    ("heidelberg materials|heidelbergcement", "HEI.DE", "Heidelberg Materials"), ("henkel", "HEN3.DE", "Henkel"),
+    ("infineon", "IFX.DE", "Infineon"), ("mercedes|mercedes benz|daimler", "MBG.DE", "Mercedes-Benz"),
+    ("merck", "MRK.DE", "Merck KGaA"), ("mtu|mtu aero engines", "MTX.DE", "MTU Aero Engines"),
+    ("muenchener rueck|muenchner rueck|munich re|muenchener rueckversicherung", "MUV2.DE", "Munich Re"),
+    ("porsche se|porsche holding", "PAH3.DE", "Porsche SE"), ("porsche|porsche ag", "P911.DE", "Porsche AG"),
+    ("qiagen", "QIA.DE", "Qiagen"), ("rheinmetall", "RHM.DE", "Rheinmetall"), ("rwe", "RWE.DE", "RWE"),
+    ("sap", "SAP.DE", "SAP"), ("sartorius", "SRT3.DE", "Sartorius"), ("siemens energy", "ENR.DE", "Siemens Energy"),
+    ("siemens healthineers|healthineers", "SHL.DE", "Siemens Healthineers"), ("siemens", "SIE.DE", "Siemens"),
+    ("symrise", "SY1.DE", "Symrise"), ("volkswagen|vw", "VOW3.DE", "Volkswagen"), ("vonovia", "VNA.DE", "Vonovia"),
+    ("zalando", "ZAL.DE", "Zalando"), ("puma", "PUM.DE", "Puma"), ("hensoldt", "HAG.DE", "Hensoldt"),
+    ("renk", "R3NK.DE", "Renk"), ("lufthansa", "LHA.DE", "Lufthansa"), ("tui", "TUI1.DE", "TUI"),
+    ("thyssenkrupp|thyssen", "TKA.DE", "Thyssenkrupp"), ("hellofresh", "HFG.DE", "HelloFresh"),
+    ("delivery hero", "DHER.DE", "Delivery Hero"), ("nordex", "NDX1.DE", "Nordex"), ("evotec", "EVT.DE", "Evotec"),
+    ("apple", "APC.DE", "Apple"), ("microsoft", "MSF.DE", "Microsoft"), ("nvidia", "NVD.DE", "Nvidia"),
+    ("amazon", "AMZ.DE", "Amazon"), ("alphabet|google", "ABEA.DE", "Alphabet (Google)"),
+    ("meta|facebook|meta platforms", "FB2A.DE", "Meta"), ("tesla", "TL0.DE", "Tesla"), ("netflix", "NFC.DE", "Netflix"),
+    ("amd", "AMD.DE", "AMD"), ("palantir", "PTX.DE", "Palantir"), ("coca cola|cocacola|coke", "CCC3.DE", "Coca-Cola"),
+    ("asml", "ASME.DE", "ASML"), ("berkshire|berkshire hathaway", "BRYN.DE", "Berkshire Hathaway"),
+    ("broadcom", "1YD.DE", "Broadcom"), ("paypal", "2PP.DE", "PayPal"),
+]
+_STOCK_KEYS: dict[str, tuple[str, str]] = {
+    key: (symbol, label) for keys, symbol, label in STOCKS for key in keys.split("|")
 }
+_STOCK_RE = [
+    (re.compile(rf"(?<![a-z0-9])(?:{keys.replace('.', chr(92) + '.')})(?![a-z0-9])"), symbol, label)
+    for keys, symbol, label in sorted(STOCKS, key=lambda row: -max(len(k) for k in row[0].split("|")))
+]
+# Words Yahoo would also match ('Wer bist du' -> BIST 100) and short words that are no asset.
+_ALIAS_WORDS = sorted({w for pattern, _, _ in ALIASES for w in re.findall(r"[a-z]{4,}", pattern)})
+
+
+def known_asset(text: str) -> tuple[str, str] | None:
+    """A known index, coin, commodity, currency or popular share named in the text."""
+    found = alias(text)
+    if found:
+        return found
+    folded = fold(text)
+    for pattern, symbol, label in _STOCK_RE:
+        if pattern.search(folded):
+            return symbol, label
+    return None
+
+
+def corrected(name: str) -> tuple[str, str] | None:
+    """Typos on tiny radio keyboards: 'rheinmetal', 'bitcon', 'siemns' -> the known asset."""
+    word = fold(name)
+    if len(word) < 4:
+        return None
+    candidates = list(_STOCK_KEYS) + _ALIAS_WORDS
+    match = difflib.get_close_matches(word, candidates, n=1, cutoff=0.8)
+    if not match:
+        return None
+    return _STOCK_KEYS.get(match[0]) or alias(match[0])
+
 
 ADVICE = re.compile(
     r"einschaetz|meinung|kaufen|kauf\b|verkauf|halten|lohnt|ratschlag|\brat\b|tipp|prognose|empfehl|investier|"
@@ -102,8 +163,7 @@ ADVICE = re.compile(
 EXPLAIN = re.compile(
     r"^(was (ist|sind|bedeutet|bedeuten|heisst|macht man)|erklaer|wie funktionier|warum|wieso|weshalb|"
     r"was passiert|was ist der unterschied|unterschied)", re.I)
-OVERVIEW = re.compile(
-    r"\b(markt|maerkte|marktlage|boersen?(lage|tag)?|ueberblick|uebersicht|indizes|lage)\b", re.I)
+OVERVIEW = re.compile(r"\b(markt|maerkte|boerse|ueberblick|uebersicht|indizes|lage|aktienmarkt)", re.I)
 SPLIT = re.compile(r"\s*(?:,|;|\bund\b|\boder\b|\bvs\.?|\bversus\b|\bgegen(?:ueber)?\b|\bmit\b)\s*", re.I)
 MORE_PREFIX = "Erzähl mir bitte weitere"
 
@@ -133,22 +193,29 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
         return None
     folded = fold(text)
     advice = bool(ADVICE.search(folded))
+    known = known_asset(text)
     if not channel:
-        known = alias(text)
-        pricey = re.search(r"\b(kurs|steht|stehen|preis|notiert|wert|wie hoch|tageshoch|tagestief|52 wochen|"
-                           r"jahreshoch|jahrestief)\b", folded)
-        stock = re.search(r"\baktien?(kurs)?\b|\bboersenkurs\b", folded)
-        if not (stock or (known and pricey)) or EXPLAIN.match(folded):
+        # #fragdenbot and friends: a named share/coin/index with a market word, or 'Aktie'/'Kurs' plus a name.
+        pricey = re.search(r"\b(kurs\w*|\w+kurs|\w*preis|steht|stehen|notiert|wert|wie hoch|tageshoch|tagestief|"
+                           r"52 wochen|jahreshoch|jahrestief|wie laeuft|wie lief|gestiegen|gefallen|steigt|faellt|"
+                           r"im plus|im minus|chart|performance|dividende)\b", folded)
+        stock = re.search(r"\baktien?(kurs)?\b|\bboersenkurs\b|\bbitcoin|\bkrypto", folded)
+        market = re.search(r"\b(boerse|boersen|aktienmarkt|maerkte|marktueberblick|marktlage|dax)\b", folded)
+        if EXPLAIN.match(folded):
             return None
-    elif EXPLAIN.match(folded) and not alias(text):
-        return None
-    if channel and OVERVIEW.search(folded) and not alias(text):
+        if market and not (known and known[0] != "^GDAXI") and OVERVIEW.search(folded) and not stock:
+            return {"assets": [], "advice": advice, "overview": True}
+        if not (stock or (known and (pricey or advice))):
+            return None
+    elif (EXPLAIN.match(folded) and not known) or re.match(r"(warum|wieso|weshalb)\b", folded):
+        return None  # reasons need news: the model answers with get_quote and search_news
+    if channel and OVERVIEW.search(folded) and not known:
         named = [lookup_words(p) for p in SPLIT.split(text)]
         if not any(named):
             return {"assets": [], "advice": advice, "overview": True}
     parts: list[str] = []
     for part in SPLIT.split(text):
-        known = alias(part)
+        known = known_asset(part)
         name = known[1] if known else lookup_words(part)
         if name and name.casefold() not in {p.casefold() for p in parts}:
             parts.append(name)
@@ -160,7 +227,10 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
 
 async def _get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
     error: Exception | None = None
-    for host in HOSTS:  # the second host often answers when the first one rate-limits
+    # Yahoo throttles bursts: the other host often still answers, and a short pause usually helps.
+    for attempt, host in enumerate((*HOSTS, HOSTS[0])):
+        if attempt:
+            await asyncio.sleep(0.8 * attempt)
         try:
             return await read_json(client, "GET", host + path, params=params, headers=HEADERS, timeout=10)
         except (httpx.HTTPError, ValueError) as exc:
@@ -171,19 +241,60 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict) -> dict:
 QUOTE_TYPES = {"EQUITY": 0, "ETF": 1, "INDEX": 2, "CRYPTOCURRENCY": 3, "MUTUALFUND": 4, "CURRENCY": 5}
 
 
+_RESOLVED: dict[str, tuple[float, tuple[str, str] | None]] = {}
+MAJOR = {"GER", "FRA", "NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "CCC", "LSE", "PAR", "AMS", "EBS", "VIE",
+         "MIL", "MCE", "CPH", "STO", "HEL", "OSL", "TOR", "TYO", "HKG", "BRU", "LIS", "DJI", "SNP", "NIM", "CXI"}
+
+
+def pretty(label: str) -> str:
+    """'Siemens Aktiengesellschaft' -> 'Siemens', 'RENK Group AG' -> 'Renk Group'."""
+    label = " ".join(label.split())
+    label = re.sub(r"^(The|Dr\. Ing\. h\.c\. F\.) ", "", label)
+    label = re.sub(r"\s+(in München|Aktiengesellschaft.*)$", "", label)
+    for _ in range(2):
+        label = re.sub(r",? (Inc\.?|AG|SE|N\.V\.|S\.A\.|plc|Corporation|Corp\.?|Holdings?|Ltd\.?|Co\.?|KGaA|"
+                       r"& Co\.|Limited|A/S|ASA|S\.p\.A\.)$", "", label)
+    keep = {"BASF", "ASML", "MSCI", "FTSE", "NASDAQ", "IBM", "UCITS", "ETF", "USD", "EUR", "BYD"}
+    words = [w.capitalize() if w.isupper() and len(w) >= 4 and w.isalpha() and w not in keep else w
+             for w in label.split()]
+    return " ".join(words)[:40]
+
+
 async def resolve(client: httpx.AsyncClient, name: str) -> tuple[str, str] | None:
     """Name, ticker or ISIN -> (symbol, short name). Known names need no request."""
-    known = alias(name)
+    known = known_asset(name)
     if known:
         return known
-    query = NICKNAMES.get(fold(name), name)
+    key = fold(name)
+    cached = _RESOLVED.get(key)
+    if cached and time.monotonic() - cached[0] < 24 * 3600:
+        return cached[1]
+    try:
+        found = await _search(client, name)
+    except (httpx.HTTPError, ValueError):
+        found = corrected(name)  # search throttled: a near-miss of a known name still answers
+        if not found:
+            raise
+    if not found:
+        found = corrected(name)
+    if len(_RESOLVED) > 500:
+        _RESOLVED.clear()
+    _RESOLVED[key] = (time.monotonic(), found)
+    return found
+
+
+async def _search(client: httpx.AsyncClient, name: str) -> tuple[str, str] | None:
+    typo = corrected(name)
+    if typo and not re.fullmatch(r"[A-Z0-9.]{2,12}", name.strip()):
+        return typo
     data = await _get(client, "/v1/finance/search",
-                      {"q": query, "quotesCount": 8, "newsCount": 0, "lang": "de-DE", "region": "DE"})
+                      {"q": name, "quotesCount": 10, "newsCount": 0, "lang": "de-DE", "region": "DE"})
     rows = [
         q for q in data.get("quotes") or []
         if q.get("quoteType") in QUOTE_TYPES and q.get("symbol") and q.get("exchange") not in {"PNK", "OTC"}
     ]
-    rows = [q for q in rows if plausible(query, q)]
+    rows = [q for q in rows if plausible(name, q)]
+    rows.sort(key=lambda q: q.get("exchange") not in MAJOR)  # stable: Yahoo's order within each group
     if not rows:
         return None
     best = rows[0]
@@ -192,9 +303,7 @@ async def resolve(client: httpx.AsyncClient, name: str) -> tuple[str, str] | Non
         first = fold(str(best.get("longname") or best.get("shortname") or "")).split()[:1]
         best = next((q for q in rows if q.get("exchange") == "GER"
                      and fold(str(q.get("longname") or q.get("shortname") or "")).split()[:1] == first), best)
-    label = " ".join(str(best.get("longname") or best.get("shortname") or best["symbol"]).split())
-    label = re.sub(r",? (Inc\.?|AG|SE|N\.V\.|S\.A\.|plc|Corporation|Corp\.?|Holding|Ltd\.?|Co\.?)$", "", label)
-    return best["symbol"], label[:40]
+    return best["symbol"], pretty(str(best.get("longname") or best.get("shortname") or best["symbol"]))
 
 
 def plausible(query: str, row: dict) -> bool:
@@ -205,9 +314,14 @@ def plausible(query: str, row: dict) -> bool:
         return True
     if re.fullmatch(r"[A-Za-z0-9.^=-]{1,10}", raw) and symbol.split(".")[0] == raw.upper().split(".")[0]:
         return True
-    names = fold(f"{row.get('longname') or ''} {row.get('shortname') or ''}").replace(" ", "")
+    names = fold(f"{row.get('longname') or ''} {row.get('shortname') or ''}")
+    joined = names.replace(" ", "")
     words = [w for w in fold(raw).split() if len(w) >= 3]
-    return bool(words) and all(w.replace(" ", "") in names for w in words)
+    if not words or not all(w in joined for w in words):
+        return False
+    if row.get("quoteType") in {"CRYPTOCURRENCY", "INDEX"}:  # 'bitcon' -> BitCone, 'bist' -> BIST 100
+        return all(w in names.split() for w in words) and len(words) > 1 or fold(raw) == names.split()[0]
+    return True
 
 
 def _closes(result: dict) -> list[tuple[int, float]]:
@@ -216,8 +330,25 @@ def _closes(result: dict) -> list[tuple[int, float]]:
     return [(t, float(c)) for t, c in zip(stamps, closes, strict=False) if isinstance(c, int | float) and c > 0]
 
 
+_LAST: dict[str, tuple[float, dict]] = {}
+
+
 async def quote(client: httpx.AsyncClient, symbol: str, label: str = "") -> dict:
-    data = await _get(client, f"/v8/finance/chart/{symbol}", {"range": "1y", "interval": "1d"})
+    try:
+        data = await _get(client, f"/v8/finance/chart/{symbol}", {"range": "1y", "interval": "1d"})
+    except (httpx.HTTPError, ValueError):
+        known = _LAST.get(symbol)  # Yahoo throttles bursts: a price from the last two hours beats no answer
+        if known and time.monotonic() - known[0] < 2 * 3600:
+            return {**known[1], "name": label or known[1]["name"]}
+        raise
+    result = _parse(data, symbol, label)
+    if len(_LAST) > 300:
+        _LAST.clear()
+    _LAST[symbol] = (time.monotonic(), result)
+    return result
+
+
+def _parse(data: dict, symbol: str, label: str) -> dict:
     result = (data.get("chart") or {}).get("result") or []
     if not result:
         raise ValueError("No quote")

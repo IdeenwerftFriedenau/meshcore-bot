@@ -11,7 +11,16 @@ import pytest
 from meshcore_ai_bot.assistant import Assistant
 from meshcore_ai_bot.config import Channel, Config
 from meshcore_ai_bot.engine import Engine, source_names
-from meshcore_ai_bot.markets import assessment, market_answer, market_request, number, quote
+from meshcore_ai_bot.markets import (
+    assessment,
+    corrected,
+    market_answer,
+    market_request,
+    number,
+    pretty,
+    quote,
+    resolve,
+)
 from meshcore_ai_bot.protocol import Incoming
 from meshcore_ai_bot.store import Store
 
@@ -54,7 +63,7 @@ def yahoo(charts, searches=None, seen=None):
     "question,channel,expected",
     [
         ("Wie steht Rheinmetall?", True, ["Rheinmetall"]),
-        ("rheinmetall", True, ["rheinmetall"]),
+        ("rheinmetall", True, ["Rheinmetall"]),
         ("Vergleiche Apple, Nvidia und Microsoft", True, ["Apple", "Nvidia", "Microsoft"]),
         ("Bitcoin Einschätzung", True, ["Bitcoin"]),
         ("Goldpreis?", True, ["Gold (Feinunze)"]),
@@ -217,3 +226,77 @@ async def test_engine_passes_channel_topic():
 def test_unknown_topic_is_rejected():
     with pytest.raises(ValueError, match="topic"):
         Config(channels=[Channel("#x", "all", topic="casino")]).validate()
+
+
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        ("Wie steht Rheinmetall?", ["Rheinmetall"]),  # #fragdenbot: known share + market word
+        ("Soll ich Nvidia kaufen?", ["Nvidia"]),
+        ("Wie läuft Siemens Energy?", ["Siemens Energy"]),
+        ("Bitcoin Kurs", ["Bitcoin"]),
+        ("Goldpreis aktuell", ["Gold (Feinunze)"]),
+        ("Ist VW gestiegen?", ["Volkswagen"]),
+        ("Wann kommt die Post?", None),
+        ("Was macht Rheinmetall eigentlich?", None),  # what the company does: the model with get_quote
+        ("Erste Hilfe Kurs in Berlin", None),
+        ("Wie viel ist ein Pfund in Gramm?", None),
+    ],
+)
+def test_general_channel_knows_shares(question, expected):
+    found = market_request(question)
+    assert (found["assets"] if found else None) == expected
+
+
+def test_general_channel_market_overview():
+    assert market_request("Wie läuft die Börse heute?")["overview"] is True
+    assert market_request("Was machen die Märkte?")["overview"] is True
+    assert market_request("Wie läuft der DAX?")["assets"] == ["DAX"]
+
+
+@pytest.mark.parametrize(
+    "typo,name",
+    [("rheinmetal", "Rheinmetall"), ("bitcon", "Bitcoin"), ("siemns", "Siemens"), ("nvdia", "Nvidia"),
+     ("telkom", "Deutsche Telekom"), ("hallo", None), ("wetter", None)],
+)
+def test_typos_find_known_assets(typo, name):
+    found = corrected(typo)
+    assert (found[1] if found else None) == name
+
+
+def test_pretty_names():
+    assert pretty("Siemens Aktiengesellschaft") == "Siemens"
+    assert pretty("Dr. Ing. h.c. F. Porsche AG") == "Porsche"
+    assert pretty("RENK Group AG") == "Renk Group"
+    assert pretty("Münchener Rückversicherungs-Gesellschaft Aktiengesellschaft in München") == (
+        "Münchener Rückversicherungs-Gesellschaft")
+    assert pretty("The Coca-Cola Company") == "Coca-Cola Company"
+    assert pretty("NVIDIA Corporation") == "Nvidia"
+
+
+async def test_search_rejects_lookalikes_and_prefers_major_exchanges():
+    searches = {
+        "Shiba": [{"symbol": "SHIB-EUR", "exchange": "CCC", "quoteType": "CRYPTOCURRENCY", "shortname": "Shiba Inu EUR"}],
+        "Wolfcoin": [{"symbol": "WOLFCOINX-USD", "exchange": "CCC", "quoteType": "CRYPTOCURRENCY",
+                      "shortname": "WolfcoinX USD"}],
+        "Ferrari": [{"symbol": "RACE.MI", "exchange": "JKT", "quoteType": "EQUITY", "longname": "Ferrari Indo"},
+                    {"symbol": "RACE", "exchange": "NYQ", "quoteType": "EQUITY", "longname": "Ferrari N.V."}],
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(yahoo({}, searches))) as client:
+        assert await resolve(client, "Shiba") == ("SHIB-EUR", "Shiba Inu EUR")
+        assert await resolve(client, "Wolfcoin") is None
+        assert await resolve(client, "Ferrari") == ("RACE", "Ferrari")
+
+
+async def test_throttled_quote_falls_back_to_recent_price():
+    good = yahoo({"ZZZ.DE": chart("ZZZ.DE", 12.5, RISING)})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(good)) as client:
+        first = await quote(client, "ZZZ.DE", "Zett")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(429))) as client:
+        second = await quote(client, "ZZZ.DE", "Zett")
+    assert second["price"] == first["price"] == 12.5
+
+
+def test_channel_overview_word_and_why_questions():
+    assert market_request("Marktüberblick", channel=True)["overview"] is True
+    assert market_request("Warum fällt Rheinmetall?", channel=True) is None
