@@ -199,7 +199,7 @@ class Engine:
                 if facts:
                     parts.append("Aus deinen letzten Nachrichten in diesem Memory-Bereich: " + " | ".join(facts))
                 text = (
-                    " ".join(parts) + (" 'vergiss mich' löscht alles." if known else "")
+                    " ".join(parts).rstrip(" .") + "." + (" 'vergiss mich' löscht alles." if known else "")
                     if parts
                     else "In diesem Memory-Bereich habe ich keine nutzbaren Erinnerungen an dich."
                 )
