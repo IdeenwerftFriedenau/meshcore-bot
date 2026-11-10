@@ -19,6 +19,7 @@ from meshcore_ai_bot.markets import (
     market_overview,
     market_request,
     number,
+    percent,
     pretty,
     quote,
     resolve,
@@ -523,3 +524,27 @@ async def test_close_report_once_on_trading_days_only():
     store.close()
     assert texts and all(ch == "#börsenbot" for ch, _ in texts)
     assert "Börsenschluss 10.11.: DAX 100" in texts[0][1] and "DAX Top:" in "".join(t for _, t in texts)
+
+
+def test_percent_has_no_negative_zero():
+    assert percent(-0.04) == "+0,0 %"
+    assert percent(-0.05) in {"-0,1 %", "+0,0 %"}
+    assert percent(2.26) == "+2,3 %"
+
+
+async def test_help_in_boerse_channel_lists_market_commands():
+    config = Config()
+    store = Store(":memory:")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503))) as client:
+        here = await Assistant(config, store, client).answer("hilfe", topic="boerse")
+        elsewhere = await Assistant(config, store, client).answer("hilfe")
+    store.close()
+    assert here.text.startswith("Börsenbot:") and "Alarm" in here.text
+    assert len(here.text.encode()) <= 330
+    assert elsewhere.text.startswith("Hilfe: wx")
+
+
+def test_us_cents_are_named():
+    from meshcore_ai_bot.markets import unit
+
+    assert unit({"kind": "FUTURE", "currency": "USX"}) == " US-Cent"

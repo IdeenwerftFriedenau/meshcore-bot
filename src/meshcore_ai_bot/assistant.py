@@ -77,6 +77,11 @@ Garantien und keine Aufforderung, alles auf eine Karte zu setzen; Streuung und S
 Bei einer Einschätzung kurz „keine Anlageberatung“ dazuschreiben. Erklärfragen (ETF, KGV, Dividende, Leerverkauf) kurz
 und verständlich beantworten."""
 
+BOERSE_HELP = (
+    "Börsenbot: Name oder Kürzel (Rheinmetall, BTC, Gold), Vergleiche SAP und Siemens, Märkte, Top Flop DAX, "
+    "Warum fällt X?, Krypto Stimmung, Alarm X unter 800, Alarme, Alarme löschen. Keine Anlageberatung."
+)
+
 MARKET_NOTE = """Du ergänzt eine Kursmeldung im Funk um genau einen kurzen Satz (höchstens 140 Zeichen) Einordnung:
 was dieses Unternehmen oder diesen Wert typischerweise bewegt, oder ein Risiko bzw. eine Chance. Nur allgemein bekannte
 Zusammenhänge, keine erfundenen aktuellen Nachrichten, nichts wiederholen, was schon in der Meldung steht (Kurse, Zahlen,
@@ -120,6 +125,8 @@ class Assistant:
             )
         if horoscope_without_sign(question):
             return Answer("Für ein spielerisches Horoskop genügt dein Sternzeichen – bitte kein Geburtsdatum.")
+        if topic == "boerse" and question.strip().casefold() in {"help", "/help", "hilfe", "befehle", "?"}:
+            return Answer(BOERSE_HELP)
         check = radio_check(question)
         if check:
             return Answer(check)

@@ -501,13 +501,14 @@ def unit(data: dict) -> str:
         return " Pkt"
     if data["kind"] == "CURRENCY":
         return ""
-    return {"EUR": " €", "USD": " $", "GBp": " Pence", "GBP": " £", "CHF": " CHF", "JPY": " Yen"}.get(
+    return {"EUR": " €", "USD": " $", "USX": " US-Cent", "GBp": " Pence", "GBP": " £", "CHF": " CHF", "JPY": " Yen"}.get(
         data["currency"], f" {data['currency']}" if data["currency"] else "")
 
 
 def percent(value: float | None) -> str:
     if value is None:
         return ""
+    value = round(value, 1) or 0.0  # no "-0,0 %"
     text = f"{value:+.1f}".replace(".", ",")
     return text + " %"
 
