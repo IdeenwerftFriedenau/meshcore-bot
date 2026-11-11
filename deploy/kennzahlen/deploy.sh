@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Rollt die Firmenkennzahlen im Börsenbot aus (PR #41). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit 265329b2a5b6f8020cee06c2aee8013b145f0a9b auf GitHub und prüft jede Datei per SHA-256.
+# Rollt Firmenkennzahlen und Insider-Geschäfte im Börsenbot aus (PR #41). Als marc ausführen, nutzt sudo selbst.
+# Holt den Code vom festen Commit 5a54619c5aeafe7e8533dd387f6b3a02801ef48c auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=265329b2a5b6f8020cee06c2aee8013b145f0a9b
+COMMIT=5a54619c5aeafe7e8533dd387f6b3a02801ef48c
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
 CONF=/etc/meshcore-ai-bot/config.toml
 SP=$($PY -c 'import meshcore_ai_bot,os;print(os.path.dirname(meshcore_ai_bot.__file__))')
-FILES=(assistant.py tools.py markets.py fundamentals.py research.py)
+FILES=(assistant.py tools.py markets.py fundamentals.py research.py insider.py)
+TESTS=(test_fundamentals.py test_insider.py)
 
 if [[ "${1:-}" == rollback ]]; then
   BK=${2:?Backup-Ordner angeben}
@@ -24,25 +25,28 @@ if [[ "${1:-}" == rollback ]]; then
 fi
 
 declare -A WANT=(
+  [assistant.py]="89d07cfb69a7d6b5914d71c0dc4ad9d3d2e089b9fa31a5c93e7cf11dff979ffe"
+  [tools.py]="5bec21a0a94357bb2d8ffe1ccb6857dc18afe9469e7e942fa01d3bd1d8f0a7c4"
+  [markets.py]="fd4f35a880f4506eb078ffdbae9a4751c6aa7273c2c9cf00c40b4c86816e986a"
+  [fundamentals.py]="ce8e8e5f0832a6abfb947b3637e93bf63b19fa2b93b3c586c65ea7c0adae1445"
+  [research.py]="5026601bb1a0b84049c9d2ea224c2a4429190a11289609778005ee25880b2a7e"
+  [insider.py]="194703b4d01a4083cb42a296d9d84dd09222ca7a4bbf9e7aaa074ba525f46ab1"
+  [test_fundamentals.py]="79517f516dbb63bfff5c7e75a04fbcc8976b8594cecf667af03e4e3828383baf"
+  [test_insider.py]="1022904b540936c6341c96c674a951e6ae6082ef0d3b56d7e6177590b959b2e7"
+)
+# Erwarteter Vorstand auf dem Pi: die Kennzahlen-Auslieferung 265329b (live seit 2026-11-11 10:33).
+declare -A EXPECT=(
   [assistant.py]="4f7a08035c18e4c3f0208ab72887975c59d7ad066dc9e5aabbee2cb281be8fb6"
   [tools.py]="42efd85c0e7aabe966e01ae4ced5e8341c73b9247f6895d8b1aee50f589e5c8b"
   [markets.py]="7a1fece2877ea239189e818bcd3c49f1d2cb5113ac4650e32e0b5f58ca5fbbec"
   [fundamentals.py]="a1c618e67b14d4a9639fe8a28fbfb226d28dd2899bc79ed624c0a46f8f3a2d7f"
   [research.py]="5026601bb1a0b84049c9d2ea224c2a4429190a11289609778005ee25880b2a7e"
-  [test_fundamentals.py]="79517f516dbb63bfff5c7e75a04fbcc8976b8594cecf667af03e4e3828383baf"
-)
-# Erwarteter Vorstand auf dem Pi: main 0ffa030 (Gedächtnis #40) oder eine frühere Kennzahlen-Auslieferung (a5f7765, d7c3b98, 4f8a555, adbec7c).
-declare -A EXPECT=(
-  [assistant.py]="c843b7747da94bec563b9cc7431bb3e90fce3a34726ba1e946dbed56b0ec6d8b 4f7a08035c18e4c3f0208ab72887975c59d7ad066dc9e5aabbee2cb281be8fb6"
-  [tools.py]="fa58e377124917992a98b2cc95a7872425a412f474ab690fc90162c490cd397f 42efd85c0e7aabe966e01ae4ced5e8341c73b9247f6895d8b1aee50f589e5c8b"
-  [markets.py]="1e7911016b3026aa79083233c29263040f0e1fa643b3941e6c77dca4f6f6f990 7a1fece2877ea239189e818bcd3c49f1d2cb5113ac4650e32e0b5f58ca5fbbec"
-  [fundamentals.py]="neu 06b5a69ae53d3d8c6d4bdba594556ee7372df95d8da19e70d126a29dc571f70a 7b252114a064c35c3590da3f66c1f87eb160bfa7fbc535c7c0371af529849bb3 1f5d8ee04e16ff51239392239184ef59948c2cae7f559ad7697e99c5ab7ece98 a1c618e67b14d4a9639fe8a28fbfb226d28dd2899bc79ed624c0a46f8f3a2d7f"
-  [research.py]="5cf69e85ac54acc6f0a43764412e5a17ba29ee0265a201ab212dbf6393a17f37"
+  [insider.py]="neu"
 )
 
 PKG=$(mktemp -d)
 trap 'rm -rf "$PKG"' EXIT
-for f in "${FILES[@]}" test_fundamentals.py; do
+for f in "${FILES[@]}" "${TESTS[@]}"; do
   dir=src/meshcore_ai_bot; [[ $f == test_* ]] && dir=tests
   curl -fsSL "$RAW/$COMMIT/$dir/$f" -o "$PKG/$f"
   got=$(sha256sum "$PKG/$f" | cut -d' ' -f1)
@@ -64,7 +68,7 @@ done
 
 if [[ $TODO == 1 ]]; then
   TS=$(date -u +%Y%m%dT%H%M%SZ)
-  BK=/var/backups/meshcore-pi-v04/before-kennzahlen-$TS
+  BK=/var/backups/meshcore-pi-v04/before-insider-$TS
   sudo mkdir -p "$BK"
   sudo cp -a "$SP" "$BK/meshcore_ai_bot"
   sudo cp -a "$CONF" "$BK/config.toml"
@@ -79,10 +83,10 @@ if [[ $TODO == 1 ]]; then
   for f in "${FILES[@]}"; do sudo "$PY" -m py_compile "$SP/$f"; done
 
   OLD=$(readlink -f "$BASE/source")
-  NEW="$BASE/sources/${COMMIT:0:7}-kennzahlen"
+  NEW="$BASE/sources/${COMMIT:0:7}-insider"
   [[ -d "$NEW" ]] || sudo cp -a "$OLD" "$NEW"
   for f in "${FILES[@]}"; do sudo cp "$PKG/$f" "$NEW/src/meshcore_ai_bot/$f"; done
-  sudo cp "$PKG/test_fundamentals.py" "$NEW/tests/"
+  for f in "${TESTS[@]}"; do sudo cp "$PKG/$f" "$NEW/tests/"; done
   echo "$COMMIT" | sudo tee "$NEW/source-commit.txt" >/dev/null
   sudo ln -sfn "$NEW" "$BASE/source"
   echo "SOURCE=$NEW"
