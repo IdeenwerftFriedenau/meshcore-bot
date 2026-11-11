@@ -251,7 +251,7 @@ async def test_fuel_needs_key_then_lists_cheapest_open(client, monkeypatch):
     ("Wie ist die Luftqualität?", "get_air_quality", {}),
     ("Hab Heuschnupfen, wie sind die Pollen?", "get_pollen", {}),
     ("Ist morgen Feiertag?", "get_holidays", {"kind": "feiertag", "day": "morgen"}),
-    ("Wann sind Herbstferien?", "get_holidays", {"kind": "ferien", "day": ""}),
+    ("Wann sind Herbstferien?", "get_holidays", {"kind": "herbstferien", "day": ""}),
     ("Wo ist Diesel am billigsten?", "get_fuel_prices", {"fuel": "diesel"}),
     ("Was kostet Super E10?", "get_fuel_prices", {"fuel": "e10"}),
 ])
@@ -397,3 +397,32 @@ async def test_assistant_asks_for_fuel_kind_then_answers(monkeypatch):
     second = await assistant.answer("Diesel", history=history)
     assert calls == [("get_fuel_prices", {"fuel": "diesel", "place": "12157"})]
     assert "Diesel ab 1,659" in second.text
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("wo tanke ich günstig", ("get_fuel_prices", {"fuel": ""})),
+    ("Wie hoch ist die Ozonbelastung?", ("get_air_quality", {})),
+    ("Ist die M41 pünktlich?", ("get_transit_disruptions", {"line": "M41"})),
+    ("Probleme auf der Ringbahn?", ("get_transit_disruptions", {"line": "S41"})),
+    ("Fällt der 187 aus?", ("get_transit_disruptions", {"line": "187"})),
+    ("Wie ist die Ausbreitung auf Kurzwelle?", ("get_space_weather", {})),
+    ("Wann sind Osterferien?", ("get_holidays", {"kind": "osterferien", "day": ""})),
+    ("Ich habe Heuschnupfen, was hilft?", None),
+    ("Der Bus kommt um 187 Uhr", None),
+])
+def test_more_wordings(question, expected):
+    assert alltag_request(question) == expected
+
+
+async def test_named_school_break():
+    def respond(request: httpx.Request) -> httpx.Response:
+        if "SchoolHolidays" in request.url.path:
+            return httpx.Response(200, json=[
+                {"startDate": "2026-12-23", "endDate": "2027-01-02", "name": [{"language": "DE", "text": "Weihnachtsferien"}]},
+                {"startDate": "2027-03-22", "endDate": "2027-04-02", "name": [{"language": "DE", "text": "Osterferien"}]}])
+        return httpx.Response(200, json=[])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        easter = await holidays(client, "osterferien", today=date(2026, 11, 11))
+        summer = await holidays(client, "sommerferien", today=date(2026, 11, 11))
+    assert easter["text"] == "Osterferien in Berlin: vom 22.03. bis 02.04.2027."
+    assert "Sommerferien" in summer["text"] and "keine Termine" in summer["text"]
