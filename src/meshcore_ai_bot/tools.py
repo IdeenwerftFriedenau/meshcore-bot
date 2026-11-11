@@ -159,9 +159,12 @@ RESEARCH_SCHEMAS = {
     ),
     "get_fundamentals": tool(
         "get_fundamentals",
-        "Kennzahlen einer Firma: Börsenwert, KGV, Dividende, Umsatz, Gewinn, Cash und Schulden. US-Firmen aus den "
-        "SEC-Berichten (letzte 12 Monate), andere wie DAX-Werte als Jahreszahlen aus Wikidata.",
-        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu zwei mit Komma, z.B. 'Nvidia'"}},
+        "Kennzahlen einer Firma: Börsenwert, KGV, Dividende (mit letzter Zahlung), Umsatz mit Wachstum, Gewinn, "
+        "Cash und Schulden. US-Firmen aus den SEC-Berichten (letzte 12 Monate), andere wie DAX-Werte als "
+        "Jahreszahlen aus Wikidata. Mit about='ja' stattdessen das Firmenprofil: Chef, Sitz, Branche, "
+        "Gründungsjahr, ISIN, Webseite.",
+        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu zwei mit Komma, z.B. 'Nvidia'"},
+         "about": {"type": "string", "description": "'ja' für das Firmenprofil statt der Kennzahlen"}},
         ["asset"],
     ),
     "get_market_news": tool(
@@ -278,7 +281,7 @@ class Tools:
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
                            get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
-                           get_fundamentals={"asset"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
+                           get_fundamentals={"asset", "about"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -357,11 +360,13 @@ class Tools:
             assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]
             if not assets:
                 return {"text": "Für Kennzahlen brauche ich den Namen einer Firma.", "sources": []}
+            about = arguments.get("about", "").strip().casefold() in {"ja", "yes", "true", "1"}
             try:
-                return await research.cached(name, "|".join(assets), 24 * 3600,
-                                             lambda: fundamentals(self.client, assets))
+                return await research.cached(name, f"{'|'.join(assets)}|{about}", 24 * 3600,
+                                             lambda: fundamentals(self.client, assets, about=about))
             except LookupError:
-                return {"text": f"Zu „{', '.join(assets)}“ finde ich keine Kennzahlen.", "sources": []}
+                what = "kein Firmenprofil" if about else "keine Kennzahlen"
+                return {"text": f"Zu „{', '.join(assets)}“ finde ich {what}.", "sources": []}
         if name == "get_quote":
             tz = self.config.station.timezone
             assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]

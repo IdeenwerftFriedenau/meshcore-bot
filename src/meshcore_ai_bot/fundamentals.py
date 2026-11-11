@@ -1,9 +1,11 @@
 """Company key figures for the #börsenbot channel: valuation, size, dividend, revenue, profit, balance sheet.
 
-Two free sources without an API key, both meant for automated use:
+Free sources without an API key, all meant for automated use:
 - US companies: the SEC's XBRL API (data.sec.gov), straight from the 10-K/10-Q filings.
   KGV and market value use the live price from markets.py.
 - Everyone else, e.g. DAX companies: Wikidata (yearly revenue, profit, staff, market value).
+- Dividends of every share: the dividend events of the Yahoo chart endpoint markets.py already uses.
+- Company profile (CEO, seat, industry, founding year, ISIN, website): Wikidata.
 Figures change at most once a quarter, so every answer is kept for a day.
 """
 
@@ -16,7 +18,7 @@ from datetime import date
 import httpx
 
 from .http import read_json
-from .markets import DISCLAIMER, number, quote, resolve
+from .markets import DISCLAIMER, _get, number, quote, resolve
 
 AGENT = {"User-Agent": "IdeenwerftFriedenau meshcore-bot (+https://github.com/IdeenwerftFriedenau/meshcore-bot)",
          "Accept": "application/json"}
@@ -111,6 +113,24 @@ def trailing(rows: list[dict]) -> tuple[float, str] | None:
     return float(year["val"]), year["end"]
 
 
+def growth(rows: list[dict]) -> float | None:
+    """Change in percent: this year so far against the same span a year earlier, else year on year."""
+    spans = [r for r in rows if r.get("start") and (_days(r) or 0) in range(80, 380)]
+    for row in sorted(spans, key=lambda r: (r["end"], _days(r) or 0), reverse=True):
+        span = _days(row) or 0
+        before = [r for r in spans if abs(_gap(r["end"], row["end"]) - 365) <= 10
+                  and abs((_days(r) or 0) - span) <= 10 and r["val"]]
+        if before and before[-1]["val"] > 0:
+            return (row["val"] / before[-1]["val"] - 1) * 100
+        break
+    return None
+
+
+def trailing_growth(rows: list[dict]) -> tuple[float, str, float | None] | None:
+    found = trailing(rows)
+    return (*found, growth(rows)) if found else None
+
+
 def _shift(day: str, days: int) -> str:
     return date.fromordinal(date.fromisoformat(day).toordinal() + days).isoformat()
 
@@ -152,7 +172,7 @@ async def sec_figures(client: httpx.AsyncClient, ticker: str) -> dict | None:
     number_ = await cik(client, ticker)
     if not number_:
         return None
-    revenue = await first(client, number_, REVENUE, "USD", trailing)
+    revenue = await first(client, number_, REVENUE, "USD", trailing_growth)
     profit = await first(client, number_, ("NetIncomeLoss",), "USD", trailing)
     if not revenue and not profit:
         return None  # foreign filer (IFRS) or a fund: Wikidata knows more
@@ -211,9 +231,110 @@ async def wikidata_figures(client: httpx.AsyncClient, label: str) -> dict | None
         claims = (entities.get(item) or {}).get("claims") or {}
         figures = {"revenue": newest(claims, "P2139"), "profit": newest(claims, "P2295"),
                    "staff": newest(claims, "P1128", money=False), "market_cap": newest(claims, "P2226")}
-        if figures["revenue"] or figures["profit"]:
-            return {"source": "wikidata", "item": item, **figures}
+        if figures["revenue"]:
+            figures["revenue_before"] = previous(claims, "P2139", figures["revenue"])
+        if figures["revenue"] or figures["profit"] or {"P414", "P946"} & set(claims):
+            return {"source": "wikidata", "item": item, "profile": await profile(client, claims), **figures}
     return None
+
+
+def previous(claims: dict, prop: str, now: tuple[float, str, str]) -> float | None:
+    """The value of the year before 'now' in the same currency, for a growth rate."""
+    year = str(int(now[2]) - 1)
+    values = [a for a in map(_amount, claims.get(prop) or []) if a and a[2] == year and a[1] == now[1]]
+    return values[0][0] if values else None
+
+
+def _item(claim: dict) -> str:
+    value = ((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value")
+    return value.get("id", "") if isinstance(value, dict) else ""
+
+
+def _text(claim: dict) -> str:
+    value = ((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value")
+    if isinstance(value, dict) and "time" in value:
+        return str(value["time"])[1:5]
+    return value if isinstance(value, str) else ""
+
+
+def _current(claims: list[dict]) -> list[dict]:
+    """Statements still valid: preferred first, none with an end date (P582)."""
+    alive = [c for c in claims if c.get("rank") != "deprecated" and not (c.get("qualifiers") or {}).get("P582")]
+    return sorted(alive, key=lambda c: c.get("rank") != "preferred")
+
+
+async def profile(client: httpx.AsyncClient, claims: dict) -> dict:
+    """CEO, seat, industry, founding year, ISIN and website; item names in German where known."""
+    found: dict[str, str] = {}
+    refs = {}
+    for prop, key in (("P169", "ceo"), ("P159", "seat"), ("P452", "industry")):
+        current = _current(claims.get(prop) or [])
+        if current and _item(current[0]):
+            refs[key] = _item(current[0])
+    for prop, key in (("P571", "founded"), ("P946", "isin"), ("P856", "website")):
+        current = _current(claims.get(prop) or [])
+        if current and _text(current[0]):
+            found[key] = _text(current[0])
+    if refs:
+        try:
+            data = await _json(client, WIKIDATA, {"action": "wbgetentities", "ids": "|".join(sorted(set(refs.values()))),
+                                                  "props": "labels", "languages": "de|en", "format": "json"})
+        except (httpx.HTTPError, ValueError):
+            data = {}
+        entities = (data or {}).get("entities") or {}
+        for key, item in refs.items():
+            labels = (entities.get(item) or {}).get("labels") or {}
+            name = (labels.get("de") or labels.get("en") or {}).get("value")
+            if name:
+                found[key] = name
+    return found
+
+
+# ---------------------------------------------------------------- dividends (Yahoo chart events)
+
+async def dividends(client: httpx.AsyncClient, symbol: str) -> dict | None:
+    """Dividends paid in the last twelve months: sum, yield, the last payment and its ex-date."""
+    hit, known = _cached("div:" + symbol)
+    if hit:
+        return known
+    try:
+        data = await _get(client, f"/v8/finance/chart/{symbol}", {"range": "2y", "interval": "1mo", "events": "div"})
+        result = ((data.get("chart") or {}).get("result") or [None])[0] or {}
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None  # not kept: the next question tries again
+    meta = result.get("meta") or {}
+    events = ((result.get("events") or {}).get("dividends") or {}).values()
+    paid = sorted((int(e["date"]), float(e["amount"])) for e in events
+                  if isinstance(e, dict) and isinstance(e.get("amount"), int | float) and e.get("date"))
+    found = None
+    price = meta.get("regularMarketPrice")
+    if paid and isinstance(price, int | float) and price > 0:
+        recent = [a for t, a in paid if t >= time.time() - 366 * 86400]
+        found = {"sum": sum(recent), "yield": sum(recent) / price * 100 if recent else 0.0,
+                 "last": paid[-1][1], "last_date": date.fromtimestamp(paid[-1][0]).strftime("%d.%m.%Y"),
+                 "count": len(recent), "currency": meta.get("currency") or ""}
+    elif isinstance(price, int | float):
+        found = {"sum": 0.0, "yield": 0.0, "last": None, "count": 0, "currency": meta.get("currency") or ""}
+    _keep("div:" + symbol, found)
+    return found
+
+
+def dividend_text(d: dict | None, *, short: bool = False) -> str:
+    if not d:
+        return ""
+    if not d["count"]:
+        return "keine Dividende in den letzten 12 Monaten"
+    cur = {"EUR": "€", "USD": "$", "GBp": "Pence", "GBP": "£", "CHF": "CHF"}.get(d["currency"], d["currency"])
+    rate = f"{ratio(d['yield'])} %" if d["yield"] >= 0.1 else "unter 0,1 %"
+    total = f"{d['sum']:.2f}".replace(".", ",")
+    text = f"Dividende {total} {cur}/Aktie ({rate})"
+    if short:
+        return text
+    if d["count"] > 1:
+        text += f", zuletzt {d['last']:.2f}".replace(".", ",") + f" {cur} am {d['last_date']}"
+    else:
+        text += f", gezahlt am {d['last_date']}"
+    return text
 
 
 # ---------------------------------------------------------------- text
@@ -239,7 +360,14 @@ def months(end: str) -> str:
     return f"{end[5:7]}/{end[:4]}"
 
 
-def sec_line(label: str, f: dict, price: float | None) -> str:
+def change(value: float | None) -> str:
+    if value is None or abs(value) > 1000:
+        return ""
+    rounded = round(value)
+    return f" ({rounded:+d} %)" if rounded else " (unverändert)"
+
+
+def sec_line(label: str, f: dict, price: float | None, paid: dict | None = None, *, short: bool = False) -> str:
     parts, cur = [], f["currency"]
     if price and f["shares"]:
         parts.append("Börsenwert " + money(price * f["shares"][0], cur))
@@ -249,56 +377,108 @@ def sec_line(label: str, f: dict, price: float | None) -> str:
             parts.append("KGV " + ratio(pe))
     elif f["eps"] and f["eps"][0] < 0:
         parts.append("KGV entfällt (Verlust)")
-    if f["dividend"] and f["dividend"][0] > 0:
+    if f["revenue"]:
+        parts.append("Umsatz " + money(f["revenue"][0], cur) + change(f["revenue"][2] if len(f["revenue"]) > 2 else None))
+    if f["profit"]:
+        word = "Gewinn" if f["profit"][0] >= 0 else "Verlust"
+        text = f"{word} {money(abs(f['profit'][0]), cur)}"
+        if f["revenue"] and f["revenue"][0] > 0 and f["profit"][0] > 0 and not short:
+            text += f" (Marge {ratio(f['profit'][0] / f['revenue'][0] * 100)} %)"
+        parts.append(text)
+    if paid and paid.get("currency") == "USD":
+        if paid["count"]:
+            parts.append(dividend_text(paid, short=short))
+    elif f["dividend"] and f["dividend"][0] > 0:
         per_share = f"{f['dividend'][0]:.2f}".replace(".", ",")
         text = f"Dividende {per_share} {cur}/Aktie"
         if price:
             rate = f["dividend"][0] / price * 100
             text += f" ({ratio(rate)} %)" if rate >= 0.1 else " (unter 0,1 %)"
         parts.append(text)
-    if f["revenue"]:
-        parts.append("Umsatz " + money(f["revenue"][0], cur))
-    if f["profit"]:
-        word = "Gewinn" if f["profit"][0] >= 0 else "Verlust"
-        text = f"{word} {money(abs(f['profit'][0]), cur)}"
-        if f["revenue"] and f["revenue"][0] > 0 and f["profit"][0] > 0:
-            text += f" (Marge {ratio(f['profit'][0] / f['revenue'][0] * 100)} %)"
-        parts.append(text)
     balance = []
-    if f["cash"]:
+    if f["cash"] and not short:
         balance.append("Cash " + money(f["cash"][0], cur))
-    if f["debt"]:
+    if f["debt"] and not short:
         balance.append("Schulden " + money(f["debt"][0], cur))
     if balance:
         parts.append(" / ".join(balance))
     if not parts:
         return ""
     end = (f["revenue"] or f["profit"])[1]
+    if short:
+        return f"{label} (12 Monate bis {months(end)}): " + ", ".join(parts) + "."
     return f"{label}: " + ", ".join(parts) + f". Letzte 12 Monate bis {months(end)}, SEC-Berichte."
 
 
-def wikidata_line(label: str, f: dict) -> str:
+def wikidata_line(label: str, f: dict, paid: dict | None = None, *, short: bool = False) -> str:
     parts = []
-    if f["market_cap"] and f["market_cap"][2] >= str(date.today().year - 1):
-        parts.append(f"Börsenwert {money(f['market_cap'][0], f['market_cap'][1])} ({f['market_cap'][2]})")
+    cap, profit = f["market_cap"], f["profit"]
+    fresh_cap = cap and cap[2] >= str(date.today().year - 1)
+    if fresh_cap:
+        parts.append(f"Börsenwert {money(cap[0], cap[1])} ({cap[2]})")
+    pe = False
+    if fresh_cap and profit and profit[0] > 0 and profit[1] == cap[1] and cap[0] / profit[0] < 1000:
+        parts.append(f"KGV ca. {ratio(cap[0] / profit[0])}")
+        pe = True
     for key, word in (("revenue", "Umsatz"), ("profit", "Gewinn")):
         if f[key]:
             value, cur, year = f[key]
             if key == "profit" and value < 0:
                 word, value = "Verlust", -value
-            parts.append(f"{word} {money(value, cur)} ({year})")
-    if f["staff"]:
+            text = f"{word} {money(value, cur)} ({year}"
+            before = f.get("revenue_before") if key == "revenue" and not short else None
+            if before and before > 0:
+                text += change((value / before - 1) * 100).replace(" (", ", ", 1).removesuffix(")")
+            parts.append(text + ")")
+    if paid:
+        parts.append(dividend_text(paid, short=short))
+    if f["staff"] and not short:
         parts.append(f"{number(f['staff'][0])} Mitarbeitende ({f['staff'][2]})")
-    if not parts:
+    if not parts or not (f["revenue"] or profit or paid):
         return ""
-    return f"{label}: " + ", ".join(parts) + ". Jahreszahlen laut Wikidata, KGV habe ich dafür nicht."
+    if short:
+        return f"{label}: " + ", ".join(parts) + "."
+    tail = "Jahreszahlen laut Wikidata" + ("." if pe else ", ein aktuelles KGV habe ich dafür nicht.")
+    return f"{label}: " + ", ".join(parts) + ". " + tail
+
+
+def profile_line(label: str, p: dict) -> str:
+    parts = []
+    if p.get("ceo"):
+        parts.append("Chef " + p["ceo"])
+    if p.get("seat"):
+        parts.append("Sitz " + p["seat"])
+    if p.get("industry"):
+        parts.append("Branche " + p["industry"])
+    if p.get("founded"):
+        parts.append("gegründet " + p["founded"])
+    if p.get("isin"):
+        parts.append("ISIN " + p["isin"])
+    if p.get("website"):
+        parts.append(p["website"].removeprefix("https://").removeprefix("http://").removeprefix("www.").rstrip("/"))
+    return f"{label}: " + ", ".join(parts) + "." if parts else ""
 
 
 # ---------------------------------------------------------------- entry point
 
-async def company(client: httpx.AsyncClient, symbol: str, label: str) -> tuple[str, str] | None:
-    """(text, source URL) for one resolved asset, or None."""
+async def wiki(client: httpx.AsyncClient, label: str) -> dict | None:
+    key = "wd:" + label.casefold()
+    hit, figures = _cached(key)
+    if not hit:
+        figures = await wikidata_figures(client, label)
+        _keep(key, figures)
+    return figures
+
+
+async def company(client: httpx.AsyncClient, symbol: str, label: str, *,
+                  about: bool = False, short: bool = False) -> tuple[str, str] | None:
+    """(text, source URL) for one resolved asset, or None. about=True: the company profile instead."""
     home = HOME.get(symbol, symbol)
+    if about:
+        figures = await wiki(client, label)
+        text = profile_line(label, (figures or {}).get("profile") or {})
+        return (text, f"https://www.wikidata.org/wiki/{figures['item']}") if text else None
+    paid = await dividends(client, home)
     if re.fullmatch(r"[A-Z]{1,5}(-[A-Z])?", home):  # a US ticker: filings at the SEC
         hit, figures = _cached("sec:" + home)
         if not hit:
@@ -313,31 +493,29 @@ async def company(client: httpx.AsyncClient, symbol: str, label: str) -> tuple[s
                     price = data["price"]
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 price = None
-            text = sec_line(label, figures, price)
+            text = sec_line(label, figures, price, paid, short=short)
             if text:
                 url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={figures['cik']:010d}"
                 return text, url
-    key = "wd:" + label.casefold()
-    hit, figures = _cached(key)
-    if not hit:
-        figures = await wikidata_figures(client, label)
-        _keep(key, figures)
+    figures = await wiki(client, label)
     if figures:
-        text = wikidata_line(label, figures)
+        text = wikidata_line(label, figures, paid, short=short)
         if text:
             return text, f"https://www.wikidata.org/wiki/{figures['item']}"
+    if paid and paid["count"]:
+        return f"{label}: {dividend_text(paid, short=short)}.", f"https://finance.yahoo.com/quote/{home}/history"
     return None
 
 
-async def fundamentals(client: httpx.AsyncClient, assets: list[str]) -> dict:
-    """Key figures for up to two assets; LookupError when nothing is known."""
+async def fundamentals(client: httpx.AsyncClient, assets: list[str], *, about: bool = False) -> dict:
+    """Key figures (or with about=True the profile) for up to two assets; LookupError when nothing is known."""
     lines, sources, missing = [], [], []
     for name in assets[:2]:
         resolved = await resolve(client, name)
         if not resolved or resolved[0].startswith("^") or resolved[0].endswith(("-EUR", "=X", "=F")):
             missing.append(resolved[1] if resolved else name)
             continue
-        found = await company(client, *resolved)
+        found = await company(client, *resolved, about=about, short=len(assets) > 1)
         if not found:
             missing.append(resolved[1])
             continue
@@ -345,7 +523,11 @@ async def fundamentals(client: httpx.AsyncClient, assets: list[str]) -> dict:
         sources.append(found[1])
     if not lines:
         raise LookupError(", ".join(missing) or "nothing")
-    text = " ".join(lines) + f" ({DISCLAIMER})"
+    text = " ".join(lines)
+    if len(lines) > 1 and not about:
+        named = ["SEC-Berichte" if "sec.gov" in u else "Wikidata" if "wikidata" in u else "Yahoo" for u in sources]
+        text += f" Quellen: {', '.join(dict.fromkeys(named))}."
+    text += "" if about else f" ({DISCLAIMER})"
     if missing:
-        text += " Keine Kennzahlen zu: " + ", ".join(missing) + "."
+        text += (" Kein Profil zu: " if about else " Keine Kennzahlen zu: ") + ", ".join(missing) + "."
     return {"text": text, "sources": sources}

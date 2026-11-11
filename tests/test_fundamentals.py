@@ -1,5 +1,7 @@
 """#börsenbot key figures: SEC filings for US companies, Wikidata for the rest, routing and caching."""
 
+import time
+
 import httpx
 import pytest
 
@@ -70,8 +72,31 @@ WIKI_ENTITIES = {"entities": {
             "qualifiers": {"P585": [{"datavalue": {"value": {"time": "+2024-01-01T00:00:00Z"}}}]}}],
         "P1128": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"amount": "+109121", "unit": "1"}}},
                    "qualifiers": {"P585": [{"datavalue": {"value": {"time": "+2024-12-31T00:00:00Z"}}}]}}],
+        "P169": [  # the former CEO has an end date and must not be named
+            {"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q70"}}},
+             "qualifiers": {"P582": [{"datavalue": {"value": {"time": "+2019-10-10T00:00:00Z"}}}]}},
+            {"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q71"}}}},
+        ],
+        "P159": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q72"}}}}],
+        "P452": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"id": "Q73"}}}}],
+        "P571": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"time": "+1972-04-01T00:00:00Z"}}}}],
+        "P946": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "DE0007164600"}}}],
+        "P856": [{"rank": "normal", "mainsnak": {"datavalue": {"value": "https://www.sap.com/"}}}],
     }},
 }}
+WIKI_LABELS = {"entities": {"Q71": {"labels": {"de": {"value": "Christian Klein"}}},
+                            "Q72": {"labels": {"en": {"value": "Walldorf"}}},
+                            "Q73": {"labels": {"de": {"value": "Softwareindustrie"}}}}}
+
+
+def paid(*rows):
+    """Yahoo dividend events: (days ago, amount)."""
+    now = int(time.time())
+    return {str(now - d * 86400): {"amount": a, "date": now - d * 86400} for d, a in rows}
+
+
+DIVIDENDS = {"NVDA": (180.0, "USD", paid((20, 0.01), (110, 0.01), (200, 0.01), (290, 0.01), (400, 0.01))),
+             "SAP.DE": (240.0, "EUR", paid((180, 2.35), (545, 2.2)))}
 
 
 def sources(seen=None, sec=NVDA, price=180.0):
@@ -89,8 +114,18 @@ def sources(seen=None, sec=NVDA, price=180.0):
                 return httpx.Response(200, json={"units": sec[concept]})
             return httpx.Response(404)
         if host == "www.wikidata.org":
-            action = request.url.params["action"]
-            return httpx.Response(200, json=WIKI_SEARCH if action == "wbsearchentities" else WIKI_ENTITIES)
+            params = request.url.params
+            if params["action"] == "wbsearchentities":
+                return httpx.Response(200, json=WIKI_SEARCH)
+            return httpx.Response(200, json=WIKI_LABELS if params.get("props") == "labels" else WIKI_ENTITIES)
+        if path.startswith("/v8/finance/chart/") and request.url.params.get("events") == "div":
+            symbol = path.rsplit("/", 1)[-1]
+            if symbol not in DIVIDENDS:
+                return httpx.Response(404)
+            close, currency, events = DIVIDENDS[symbol]
+            return httpx.Response(200, json={"chart": {"result": [{
+                "meta": {"symbol": symbol, "currency": currency, "regularMarketPrice": close},
+                "events": {"dividends": events}}]}})
         if path.startswith("/v8/finance/chart/NVDA"):
             return httpx.Response(200, json=chart("NVDA", price, RISING, currency="USD", name="NVIDIA"))
         return httpx.Response(404)
@@ -129,7 +164,8 @@ async def test_us_company_from_sec_filings_with_live_kgv():
     text = result["text"]
     assert text.startswith("Nvidia: Börsenwert 4,4 Bio. $")  # 180 $ x 24,3 Mrd. Aktien
     assert "KGV 40,8" in text  # 180 / (2,94 + 3,51 - 2,04)
-    assert "Dividende 0,03 $/Aktie (unter 0,1 %)" in text
+    assert "Dividende 0,04 $/Aktie (unter 0,1 %), zuletzt 0,01 $ am " in text  # Yahoo events, 12 months
+    assert "Umsatz 187 Mrd. $ (+62 %)" in text  # 147,8 / 91,2 for the same nine months
     assert "Umsatz 187 Mrd. $" in text and "Gewinn 109 Mrd. $ (Marge 58" in text
     assert "Cash 11,5 Mrd. $ / Schulden 8,5 Mrd. $" in text
     assert "Letzte 12 Monate bis 10/2025, SEC-Berichte" in text and "keine Anlageberatung" in text
@@ -140,15 +176,17 @@ async def test_german_company_from_wikidata_with_year():
     async with httpx.AsyncClient(transport=httpx.MockTransport(sources())) as client:
         result = await key_figures(client, ["SAP"])
     text = result["text"]
-    assert text.startswith("SAP: Umsatz 34,2 Mrd. € (2024), Gewinn 3,1 Mrd. € (2024), 109.121 Mitarbeitende (2024)")
-    assert "Wikidata" in text and "KGV habe ich dafür nicht" in text
+    assert text.startswith("SAP: Umsatz 34,2 Mrd. € (2024, +10 %), Gewinn 3,1 Mrd. € (2024), "
+                           "Dividende 2,35 €/Aktie (1 %), gezahlt am ")
+    assert "109.121 Mitarbeitende (2024)" in text
+    assert "Wikidata" in text and "aktuelles KGV habe ich dafür nicht" in text
     assert result["sources"] == ["https://www.wikidata.org/wiki/Q552581"]
 
 
 async def test_comparison_of_us_and_german_company():
     async with httpx.AsyncClient(transport=httpx.MockTransport(sources())) as client:
         result = await key_figures(client, ["Nvidia", "SAP"])
-    assert result["text"].index("Nvidia:") < result["text"].index("SAP:")
+    assert result["text"].index("Nvidia (12 Monate") < result["text"].index("SAP:")
     assert len(result["sources"]) == 2
 
 
@@ -243,3 +281,57 @@ async def test_channel_question_is_answered_from_the_data_without_the_model():
     assert answer.text.startswith("Nvidia: Börsenwert") and "KGV 40,8" in answer.text
     assert answer.sources and not called
     assert tools["text"].startswith("SAP: Umsatz")
+
+
+async def test_company_profile_names_the_current_ceo():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(sources())) as client:
+        result = await key_figures(client, ["SAP"], about=True)
+    assert result["text"] == ("SAP: Chef Christian Klein, Sitz Walldorf, Branche Softwareindustrie, gegründet 1972, "
+                              "ISIN DE0007164600, sap.com.")
+    assert "Anlageberatung" not in result["text"]
+
+
+async def test_wikidata_kgv_from_fresh_market_value_and_profit():
+    from datetime import date
+
+    year = str(date.today().year - 1)
+    claims = WIKI_ENTITIES["entities"]["Q552581"]["claims"]
+    cap = {"rank": "normal", "mainsnak": {"datavalue": {"value": {
+        "amount": "+280000000000", "unit": "http://www.wikidata.org/entity/Q4916"}}},
+        "qualifiers": {"P585": [{"datavalue": {"value": {"time": f"+{year}-12-31T00:00:00Z"}}}]}}
+    claims["P2226"] = [cap]
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(sources())) as client:
+            text = (await key_figures(client, ["SAP"]))["text"]
+    finally:
+        del claims["P2226"]
+    assert text.startswith(f"SAP: Börsenwert 280 Mrd. € ({year}), KGV ca. 88,9")
+    assert text.count("KGV") == 1
+
+
+async def test_dividend_cut_shows_no_dividend_for_twelve_months():
+    DIVIDENDS["ZAL.DE"] = (30.0, "EUR", paid((500, 0.5)))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(sources())) as client:
+            text = (await key_figures(client, ["Zalando"]))["text"]
+    finally:
+        del DIVIDENDS["ZAL.DE"]
+    assert "keine Dividende in den letzten 12 Monaten" in text
+
+
+@pytest.mark.parametrize("question", ["Wer ist Chef von SAP?", "ISIN Siemens", "Wo sitzt Rheinmetall",
+                                      "Wann wurde Nvidia gegründet", "Firmenprofil Zalando"])
+def test_profile_questions_are_routed(question):
+    found = market_request(question, channel=True)
+    assert found and found.get("about")
+
+
+def test_chef_without_company_stays_with_the_model():
+    assert market_request("Wer ist der Chef hier?", channel=False) is None
+
+
+async def test_comparison_is_short_enough_for_the_radio():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(sources())) as client:
+        text = (await key_figures(client, ["Nvidia", "SAP"]))["text"]
+    assert len(text) < 330 and "Cash" not in text and "Mitarbeitende" not in text
+    assert "Quellen: SEC-Berichte, Wikidata." in text and text.count("Anlageberatung") == 1

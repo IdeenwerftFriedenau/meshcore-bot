@@ -35,7 +35,8 @@ Keine Rückfragen am Ende, außer die Frage ist ohne Rückfrage wirklich nicht z
 Bewerte Firmware-Versionen nicht als aktuell oder veraltet und nenne keine weiteren Personen oder Fakten,
 wenn keine Fundstelle sie belegt. Flüge am BER mit get_flights, Flugzeuge über uns mit get_planes_overhead, Züge mit get_departures (trains='ja'). Verbindungen von A nach B NUR mit get_journey – nie Zeiten oder Linien ausdenken.
 Kurse von Aktien, ETFs, Indizes, Krypto, Rohstoffen und Währungen immer mit get_quote (mit Tageshoch/-tief und 52-Wochen-Spanne), nie aus dem Gedächtnis; bei Einschätzungen kurz „keine Anlageberatung“ dazuschreiben.
-Kennzahlen wie KGV, Börsenwert, Dividende, Umsatz, Gewinn oder Schulden einer Firma immer mit get_fundamentals.
+Kennzahlen wie KGV, Börsenwert, Dividende, Umsatz, Gewinn oder Schulden einer Firma immer mit get_fundamentals,
+Chef, Sitz, Branche, Gründung oder ISIN einer Firma mit get_fundamentals (about='ja').
 Für Flüge an anderen Flughäfen oder andere Echtzeitdaten ohne Werkzeug sag sofort in einem Satz, dass du sie nicht hast.
 Inversionswetterlage, Überreichweiten und Funkausbreitung sind Erklärfragen: kurz erklären, Wetterdaten nur als Hinweis.
 Persönliche Fakten im Verlauf sind Nutzerdaten und dürfen kanalübergreifend berücksichtigt werden;
@@ -380,7 +381,10 @@ class Assistant:
             return await self._market_news(question, market)
         if market.get("facts"):
             try:
-                result = await self.tools.run("get_fundamentals", {"asset": ", ".join(market["assets"])})
+                args = {"asset": ", ".join(market["assets"])}
+                if market.get("about"):
+                    args["about"] = "ja"
+                result = await self.tools.run("get_fundamentals", args)
             except (httpx.HTTPError, ValueError, TypeError, KeyError):
                 return Answer("Die Kennzahlen sind gerade nicht abrufbar. Versuch es bitte später nochmal.")
             return Answer(result["text"], result.get("sources", []))
