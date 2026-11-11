@@ -795,10 +795,13 @@ def _fold(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
-def _day_label(day, today) -> str:
+def _day_label(day, today, named: bool = False) -> str:
+    """'Morgen (Di 10.11.)'; asked by weekday ('und am Freitag?') the weekday leads: 'Freitag 13.11. (übermorgen)'."""
     offset = (day - today).days
     name = WEEKDAYS[day.weekday()]
     prefix = {0: "Heute", 1: "Morgen", 2: "Übermorgen"}.get(offset)
+    if named:
+        return f"{name} {day:%d.%m.}" + (f" ({prefix.lower()})" if prefix else "")
     return f"{prefix} ({name[:2]} {day:%d.%m.})" if prefix else f"{name} {day:%d.%m.}"
 
 
@@ -814,6 +817,7 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
     near_label = near
     word = _fold(day)
     offsets: list[int]
+    named = False  # asked by weekday name: answer with that name first
     if word in {"", "naechste", "nachste", "wann", "wieder"}:
         offsets = list(range(1 if now.hour >= 19 else 0, 8))  # late in the evening "wann?" means from tomorrow
     elif word.startswith("heute"):
@@ -829,6 +833,7 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
         else:
             first = (index - today.weekday()) % 7
             offsets = [first] if not place else [first, first + 7]
+            named = True
     if place and len(offsets) == 1:
         offsets += [o for o in range(offsets[0] + 1, offsets[0] + 8)]  # "not there that day" -> next date
     wanted = [w for w in _fold(place).split() if len(w) > 2 and w not in {"rewe", "netto", "edeka", "markt",
@@ -875,7 +880,7 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
     for offset in offsets:
         date = today + timedelta(days=offset)
         rows = await fetch(date)
-        label = _day_label(date, today)
+        label = _day_label(date, today, named and offset == offsets[0])
         first_label = first_label or label
         if place:
             hits = [r for r in rows if matches(r)]
