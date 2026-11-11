@@ -343,3 +343,48 @@ async def test_fuel_by_postcode_through_tools(monkeypatch):
     station = next(r for r in seen if "tankerkoenig" in str(r.url))
     assert station.url.params["lat"] == "52.5320" and station.url.params["lng"] == "13.3922"
     assert missing["text"].startswith("Den Ort „00000“ finde ich nicht.")
+
+
+@pytest.mark.parametrize("question,fuel", [
+    ("günstig tanken in 12157", ""),
+    ("Wo kann ich billig tanken?", ""),
+    ("Spritpreise in 12157", "alle"),
+    ("Tanken alle Sorten Steglitz", "alle"),
+    ("Benzin in Spandau", "e5"),
+])
+def test_fuel_kind_or_ask(question, fuel):
+    assert alltag_request(question)[1]["fuel"] == fuel
+
+
+def test_fuel_followup_keeps_place():
+    from meshcore_ai_bot.alltag import FUEL_ASK, fuel_followup
+    history = [{"role": "user", "content": "günstig tanken in 12157"}, {"role": "assistant", "content": FUEL_ASK}]
+    assert fuel_followup("Diesel", history) == ("get_fuel_prices", {"fuel": "diesel", "place": "12157"})
+    assert fuel_followup("e10 bitte", history) == ("get_fuel_prices", {"fuel": "e10", "place": "12157"})
+    assert fuel_followup("alle", history) == ("get_fuel_prices", {"fuel": "alle", "place": "12157"})
+    assert fuel_followup("Diesel", history[:1]) is None
+    assert fuel_followup("Wie wird das Wetter?", history) is None
+
+
+async def test_assistant_asks_for_fuel_kind_then_answers(monkeypatch):
+    from meshcore_ai_bot.alltag import FUEL_ASK
+    from meshcore_ai_bot.assistant import Assistant
+    from meshcore_ai_bot.config import Config
+    from meshcore_ai_bot.store import Store
+
+    config = Config()
+    config.research.enabled = True
+    assistant = Assistant(config, Store(":memory:"), None)
+    calls = []
+
+    async def fake_run(name, args, **_):
+        calls.append((name, args))
+        return {"text": "Spritpreise bei 12157 Berlin: Diesel ab 1,659 €.", "sources": ["https://tankerkoenig.de/"]}
+
+    monkeypatch.setattr(assistant.tools, "run", fake_run)
+    first = await assistant.answer("günstig tanken in 12157")
+    assert first.text == FUEL_ASK and not calls
+    history = [{"role": "user", "content": "günstig tanken in 12157"}, {"role": "assistant", "content": first.text}]
+    second = await assistant.answer("Diesel", history=history)
+    assert calls == [("get_fuel_prices", {"fuel": "diesel", "place": "12157"})]
+    assert "Diesel ab 1,659" in second.text

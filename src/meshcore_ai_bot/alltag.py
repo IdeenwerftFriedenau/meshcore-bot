@@ -676,6 +676,40 @@ def place_in(question: str) -> str:
     return " ".join(names)[:60] if names and len(names) <= 3 else ""
 
 
+FUEL_ASK = "Welche Sorte: Diesel, E5 oder E10? Oder „alle“."
+
+
+def fuel_kind(folded: str) -> str:
+    """'diesel', 'e10', 'e5', 'alle' (every kind asked for) or '' (not said, so ask first)."""
+    if "diesel" in folded:
+        return "diesel"
+    if re.search(r"\b(e ?10|super ?e ?10)\b", folded):
+        return "e10"
+    if re.search(r"\be ?5\b|super|benzin", folded):
+        return "e5"
+    if re.search(r"\b(alle|alles|egal|beide|jede|preise)\b|spritpreis", folded):
+        return "alle"
+    return ""
+
+
+def fuel_followup(question: str, history: list[dict] | None) -> tuple[str, dict] | None:
+    """After 'Welche Sorte?': 'Diesel' -> fuel prices for the place of the earlier question."""
+    folded = fold(question)
+    if not folded or len(folded) > 40 or not history:
+        return None
+    last = history[-1]
+    if last.get("role") != "assistant" or not str(last.get("content", "")).startswith("Welche Sorte"):
+        return None
+    fuel = fuel_kind(folded)
+    if not fuel:
+        return None
+    earlier = [str(item.get("content", "")) for item in history if item.get("role") == "user"]
+    request = alltag_request(earlier[-1]) if earlier else None
+    args = dict(request[1]) if request and request[0] == "get_fuel_prices" else {}
+    place = place_in(question) or args.get("place", "")
+    return "get_fuel_prices", {"fuel": fuel, "place": place} if place else {"fuel": fuel}
+
+
 def alltag_request(question: str) -> tuple[str, dict] | None:
     """(tool, args) for everyday questions the data answers directly, else None."""
     folded = fold(question)
@@ -691,8 +725,7 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
         place = place_in(question)
         return "get_air_quality", {"place": place} if place else {}
     if FUEL.search(folded) and not re.search(r"\b(aktie|kurs|oelpreis|brent|wti)\b", folded):
-        fuel = "diesel" if "diesel" in folded else "e10" if "e10" in folded else "e5" if re.search(
-            r"\be5\b|super(?! ?e ?10)|benzin", folded) else ""
+        fuel = fuel_kind(folded)
         place = place_in(question)
         return "get_fuel_prices", {"fuel": fuel, "place": place} if place else {"fuel": fuel}
     if HOLI.search(folded):

@@ -14,7 +14,7 @@ from meshcore_ai_bot.tools import Tools
 QUESTIONS = ["Gibt es Unwetterwarnungen?", "Störungen S-Bahn", "Fährt die S1?", "Fällt die U7 aus?", "Kp-Index",
              "Wie sind die Bandbedingungen?", "Wie hat Union gespielt?", "Wann spielt Hertha?", "Bundesliga Tabelle",
              "Wie ist die Luftqualität?", "Pollenflug", "Ist morgen Feiertag?", "Wann sind Weihnachtsferien?",
-             "Wo ist Diesel am billigsten?"]
+             "Wo ist Diesel am billigsten?", "Diesel in 12157", "Luft in Hamburg", "E10 Preise München"]
 
 
 async def main() -> None:
