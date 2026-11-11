@@ -518,7 +518,8 @@ async def holidays(client: httpx.AsyncClient, kind: str = "", day: str = "", tz:
     today = today or datetime.now(ZoneInfo(tz)).date()
     params = {"countryIsoCode": "DE", "subdivisionCode": "DE-BE", "languageIsoCode": "DE",
               "validFrom": f"{today - timedelta(days=40):%Y-%m-%d}", "validTo": f"{today + timedelta(days=400):%Y-%m-%d}"}
-    want_public = kind != "ferien"
+    named = kind if kind.endswith("ferien") and kind != "ferien" else ""  # 'osterferien' -> only that break
+    want_public = not kind.endswith("ferien")
     want_school = kind != "feiertag"
     public, school = await asyncio.gather(
         _json(client, HOLIDAYS.format(kind="PublicHolidays"), params) if want_public else asyncio.sleep(0, []),
@@ -557,7 +558,15 @@ async def holidays(client: httpx.AsyncClient, kind: str = "", day: str = "", tz:
         if now_on:
             parts.append(f"Gerade sind {now_on[2]} in Berlin, bis {now_on[1]:%d.%m.%Y}.")
         nxt = [(s, e, n) for s, e, n in breaks if s > today and "unterrichtsfrei" not in n.casefold()]
-        if nxt:
+        if named:
+            hit = next(((s, e, n) for s, e, n in breaks if named in n.casefold()), None)
+            if hit and not (now_on and now_on[2] == hit[2]):
+                s, e, n = hit
+                span = f"am {s:%d.%m.%Y}" if s == e else f"vom {s:%d.%m.} bis {e:%d.%m.%Y}"
+                parts.append(f"{n} in Berlin: {span}.")
+            elif not hit:
+                parts.append(f"Zu den {named.capitalize()} finde ich im nächsten Jahr keine Termine.")
+        elif nxt:
             s, e, n = nxt[0]
             span = f"am {s:%d.%m.%Y}" if s == e else f"vom {s:%d.%m.} bis {e:%d.%m.%Y}"
             parts.append(f"Nächste Schulferien: {n} {span}.")
@@ -626,25 +635,28 @@ WARN = re.compile(r"\b(unwetter\w*|warnung\w*|wetterwarnung\w*|amtliche warnung\
                   r"gewitterwarnung|sturmwarnung|glaettewarnung|hitzewarnung|frostwarnung|hochwasser\w*|"
                   r"gibt es (eine |irgendwelche )?warnung\w*|warnt (der )?dwd)\b")
 DISRUPT = re.compile(r"\b(stoerung\w*|gestoert|baustell\w*|bauarbeiten|ersatzverkehr|sev|faellt aus|fallen aus|faellt .{0,25}\baus|fallen .{0,25}\baus|"
-                     r"ausfall\w*|verspaetung\w*|unterbrochen|sperrung|gesperrt|streik\w*)\b")
+                     r"ausfall\w*|verspaetung\w*|verspaetet|unterbrochen|sperrung|gesperrt|streik\w*|probleme?|"
+                     r"(ist|sind|faehrt|fahren) (die |der )?\S+ (puenktlich|verspaetet))\b")
 RUNS = re.compile(r"^(faehrt|fahren|geht|laeuft|kommt) (die |der |heute |gerade |jetzt )*("
-                  r"s ?\d{1,2}|u ?\d|m ?\d{1,2}|ringbahn|s ?bahn|u ?bahn|tram|bus)\b")
+                  r"s ?\d{1,2}|u ?\d|m ?\d{1,2}|ringbahn|s ?bahn|u ?bahn|tram|bus|\d{2,3})\b")
 SPACE = re.compile(r"\b(kp[ -]?index|kp[ -]?wert|weltraumwetter|space ?weather|sonnensturm|sonnenstuerme|"
                    r"geomagnetisch\w*|magnetsturm|polarlicht\w*|nordlicht\w*|aurora|sonnenaktivitaet|sonnenwind|"
                    r"solar ?flux|sfi|sonnenflecken|flares?|funkausfall|band ?bedingungen|bandbedingungen|"
-                   r"kurzwellen?(bedingungen|ausbreitung)|condx)\b")
+                   r"kurzwellen?(bedingungen|ausbreitung)|ausbreitung\w*( auf| der| im)? (kurzwelle|kw|hf)|condx)\b")
 FOOT = re.compile(r"\b(bundesliga|2\. liga|zweite liga|3\. liga|dritte liga|tabelle\w*|spieltag|fussball\w*|"
                   r"fuszball|tor(e|stand)|anstoss|spielt (union|hertha|bayern|der bvb|dortmund)|"
                   r"(union|hertha|bayern|bvb|dortmund|schalke|hsv|werder|gladbach|leverkusen|cottbus)( berlin| bsc)?"
                   r" (gespielt|gewonnen|verloren|ergebnis|spiel\w*|tabelle|platz)|"
                   r"(wie hat|hat|wann spielt) (der |die )?(union|hertha|bayern|bvb|dortmund|schalke|hsv|werder|"
                   r"gladbach|leverkusen|eintracht|stuttgart|cottbus))\b")
-AIRQ = re.compile(r"\b(luftqualitaet|luftguete|feinstaub|smog|stickstoffdioxid|stickoxid\w*|ozon(werte?|wert)?|"
+AIRQ = re.compile(r"\b(luftqualitaet|luftguete|feinstaub|smog|stickstoffdioxid|stickoxid\w*|ozon\w*|"
                   r"luft (gut|schlecht|sauber|dreckig|in|im|bei)|wie ist die luft|luftverschmutzung|pm ?10|pm ?2.?5)\b")
 POLL = re.compile(r"\b(pollen\w*|heuschnupfen|pollenflug|birkenpollen|graeserpollen|allergie\w*)\b")
+ADVICE = re.compile(r"\b(was hilft|hilft|helfen|tipps?|mittel|medikament\w*|tablette\w*|behandeln|vorbeugen|"
+                    r"was tun|was kann ich)\b")
 HOLI = re.compile(r"\b(feiertag\w*|ferien|schulferien|herbstferien|winterferien|osterferien|sommerferien|"
                   r"pfingstferien|weihnachtsferien|brueckentag\w*|schulfrei)\b")
-FUEL = re.compile(r"\b(sprit\w*|benzin\w*|diesel\w*|tanken|tankstelle\w*|super ?e ?(5|10)|e10|e5)\b")
+FUEL = re.compile(r"\b(sprit\w*|benzin\w*|diesel\w*|tanken|tanke|tankstelle\w*|super ?e ?(5|10)|e10|e5)\b")
 
 
 PLACE_WORDS = re.compile(
@@ -719,7 +731,7 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
         return None
     if SPACE.search(folded):
         return "get_space_weather", {}
-    if POLL.search(folded):
+    if POLL.search(folded) and not ADVICE.search(folded):
         return "get_pollen", {}
     if AIRQ.search(folded):
         place = place_in(question)
@@ -729,10 +741,12 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
         place = place_in(question)
         return "get_fuel_prices", {"fuel": fuel, "place": place} if place else {"fuel": fuel}
     if HOLI.search(folded):
-        kind = "ferien" if re.search(r"ferien|schulfrei", folded) and "feiertag" not in folded else (
-            "feiertag" if re.search(r"feiertag|brueckentag", folded) else "")
+        named = re.search(r"\b(herbst|winter|oster|pfingst|sommer|weihnachts)ferien\b", folded)
+        kind = named.group(0) if named and "feiertag" not in folded else (
+            "ferien" if re.search(r"ferien|schulfrei", folded) and "feiertag" not in folded else (
+            "feiertag" if re.search(r"feiertag|brueckentag", folded) else ""))
         day = next((d for d in ("uebermorgen", "morgen", "heute") if re.search(rf"\b{d}\b", folded)), "")
-        return "get_holidays", {"kind": kind, "day": day if kind != "ferien" else ""}
+        return "get_holidays", {"kind": kind, "day": "" if kind.endswith("ferien") else day}
     team = next((name for name in TEAMS if re.search(rf"\b{re.escape(name)}\b", folded)), "")
     played = re.search(r"\b(wann spielt|wie (hat|haben|spielt|spielen|steht)|gespielt|gewonnen|verloren|unentschieden|"
                        r"ergebnis|tabellenplatz|naechstes spiel|letztes spiel)\b", folded)
@@ -743,7 +757,10 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
     if WARN.search(folded) and not re.search(r"\b(kursalarm|alarm \w+ (unter|ueber))\b", folded):
         return "get_warnings", {}
     line = LINE.search(question)
+    bus = re.search(r"\b(?:der|die|linie|bus|tram|mit dem|mit der)\s+(\d{2,3})\b(?!\s*(?:uhr|min|euro|grad|km|%))", folded)
     if DISRUPT.search(folded) or RUNS.search(folded):
+        if not line and bus:
+            return "get_transit_disruptions", {"line": bus.group(1)}
         if line or re.search(r"\b(bvg|s ?bahn|u ?bahn|tram|bus|bahn|oepnv|nahverkehr|ringbahn|linie)\b", folded):
             name = line_name(line.group(0)) if line else ("S41" if "ringbahn" in folded else "")
             return "get_transit_disruptions", {"line": name}
