@@ -90,7 +90,7 @@ CASES = [
     ("B", "kennzahlen", "B4", "Wie viel ist Microsoft wert?", r"Börsenwert"),
     ("B", "kennzahlen", "B4", "Vergleich KGV SAP und Apple", r"SAP.*Apple"),
     ("B", "kennzahlen", "B4", "Wer ist Chef von SAP?", r"Chef Christian Klein|Chef "),
-    ("B", "kennzahlen", "B4", "ISIN Siemens", r"ISIN DE0007236101"),
+    ("B", "kennzahlen", "B4", "ISIN Siemens", r"ISIN\s+DE0007236101"),
     ("B", "kennzahlen", "B4", "Wo sitzt Rheinmetall?", r"Sitz Düsseldorf"),
     ("B", "erklaerung", "B5", "Was ist ein KGV?", r"Kurs|Gewinn"),
     ("B", "erklaerung", "B5", "Was ist ein ETF?", r"Fonds|Index|ETF"),
