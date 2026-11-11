@@ -603,7 +603,7 @@ async def fuel_prices(client: httpx.AsyncClient, lat: float, lon: float, fuel: s
         return {"text": "Für diese Sorte meldet gerade keine offene Tankstelle in der Nähe einen Preis.", "sources": []}
     where = f" bei {place}" if place else ""
     return {"text": f"Spritpreise{where}, günstigste offene Tankstellen im Umkreis {radius:.0f} km: "
-                    + ". ".join(parts) + ".", "sources": ["https://creativecommons.tankerkoenig.de"]}
+                    + ". ".join(parts) + ". Daten: Tankerkönig (CC BY 4.0).", "sources": ["https://creativecommons.tankerkoenig.de"]}
 
 
 # ---------------------------------------------------------------- routing
