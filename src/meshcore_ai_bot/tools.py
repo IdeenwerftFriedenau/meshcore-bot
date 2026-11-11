@@ -10,6 +10,17 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from .alltag import (
+    ALLTAG_TOOLS,
+    air_quality,
+    disruptions,
+    football,
+    fuel_prices,
+    holidays,
+    pollen,
+    space_weather,
+    warnings,
+)
 from .config import Config
 from .fundamentals import fundamentals, wiki
 from .http import read_json
@@ -176,6 +187,60 @@ RESEARCH_SCHEMAS = {
         {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN einer Firma, leer für alle von heute"}},
         [],
     ),
+    "get_warnings": tool(
+        "get_warnings",
+        "Amtliche Warnungen für Berlin jetzt und angekündigt: Unwetter, Frost, Glätte, Hitze (DWD) sowie "
+        "Katastrophen- und Hochwasserwarnungen (NINA).",
+        {},
+        [],
+    ),
+    "get_transit_disruptions": tool(
+        "get_transit_disruptions",
+        "Störungen, Bauarbeiten und Ausfälle bei S-Bahn, U-Bahn, Tram und Bus in Berlin (BVG/VBB). "
+        "Mit line nur diese Linie, z.B. 'S1', 'U7', 'M41'; ohne line alle betroffenen Linien.",
+        {"line": {"type": "string", "description": "Linie, z.B. 'S1'; leer für alle"}},
+        [],
+    ),
+    "get_space_weather": tool(
+        "get_space_weather",
+        "Weltraumwetter für Funk und Polarlicht: Kp-Index jetzt und Vorhersage, NOAA-Skalen (G/R/S), solarer Flux "
+        "und was das für die Kurzwelle heißt.",
+        {},
+        [],
+    ),
+    "get_football": tool(
+        "get_football",
+        "Fußball: Tabellenplatz, letztes Ergebnis und nächstes Spiel eines Vereins (Bundesliga, 2. und 3. Liga), "
+        "ohne team die Tabellenspitze und den aktuellen Spieltag.",
+        {"team": {"type": "string", "description": "Verein, z.B. 'Union', 'Hertha'; leer für die Liga"},
+         "league": {"type": "string", "description": "'bl1', 'bl2' oder 'bl3'; leer für automatisch"}},
+        [],
+    ),
+    "get_air_quality": tool(
+        "get_air_quality",
+        "Luftqualität hier: Europäischer Luftqualitätsindex, Feinstaub, Stickstoffdioxid und Ozon (Modellwerte).",
+        {},
+        [],
+    ),
+    "get_pollen": tool(
+        "get_pollen",
+        "Pollenflug in Berlin und Brandenburg für heute bis übermorgen (DWD-Gefahrenindex).",
+        {},
+        [],
+    ),
+    "get_holidays": tool(
+        "get_holidays",
+        "Gesetzliche Feiertage und Schulferien in Berlin.",
+        {"kind": {"type": "string", "description": "'feiertag', 'ferien' oder leer für beides"},
+         "day": {"type": "string", "description": "'heute', 'morgen' oder 'uebermorgen' für Ist-heute-Feiertag-Fragen"}},
+        [],
+    ),
+    "get_fuel_prices": tool(
+        "get_fuel_prices",
+        "Aktuelle Spritpreise der günstigsten offenen Tankstellen in der Nähe (Tankerkönig).",
+        {"fuel": {"type": "string", "description": "'diesel', 'e5', 'e10' oder leer für alle"}},
+        [],
+    ),
     "get_market_news": tool(
         "get_market_news",
         "Aktuelle Schlagzeilen zu einer Aktie, einem Coin oder Rohstoff (tagesschau, Yahoo Finance) plus Kurs. "
@@ -206,6 +271,8 @@ def schemas(config: Config) -> list[dict]:
                    RESEARCH_SCHEMAS["get_grill_stands"], RESEARCH_SCHEMAS["get_quote"],
                    RESEARCH_SCHEMAS["get_fundamentals"], RESEARCH_SCHEMAS["get_insider_trades"],
                    RESEARCH_SCHEMAS["get_market_news"]]
+        result += [RESEARCH_SCHEMAS[name] for name in ALLTAG_TOOLS
+                   if name != "get_transit_disruptions" or research.transit_url]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -291,7 +358,10 @@ class Tools:
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
                            get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
-                           get_fundamentals={"asset", "about"}, get_insider_trades={"asset"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
+                           get_fundamentals={"asset", "about"}, get_insider_trades={"asset"},
+                           get_warnings=set(), get_transit_disruptions={"line"}, get_space_weather=set(),
+                           get_football={"team", "league"}, get_air_quality=set(), get_pollen=set(),
+                           get_holidays={"kind", "day"}, get_fuel_prices={"fuel"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -377,6 +447,8 @@ class Tools:
             except LookupError:
                 what = "kein Firmenprofil" if about else "keine Kennzahlen"
                 return {"text": f"Zu „{', '.join(assets)}“ finde ich {what}.", "sources": []}
+        if name in ALLTAG_TOOLS:
+            return await self.alltag(name, arguments)
         if name == "get_insider_trades":
             asset = arguments.get("asset", "").strip()
 
@@ -415,6 +487,29 @@ class Tools:
         if name == "find_local_places":
             return await self.places(**arguments)
         return self.catalogue(**arguments)
+
+    async def alltag(self, name: str, arguments: dict) -> dict:
+        """Everyday data from alltag.py, each kept as long as it stays fresh."""
+        tz = self.config.station.timezone
+        weather = self.config.weather
+        place = weather.location or self.config.station.location
+        jobs = {
+            "get_warnings": (300, lambda: warnings(self.client, tz)),
+            "get_transit_disruptions": (180, lambda: disruptions(
+                self.client, self.config.research.transit_url, arguments.get("line", "").strip(), tz)),
+            "get_space_weather": (900, lambda: space_weather(self.client, tz)),
+            "get_football": (300, lambda: football(self.client, arguments.get("team", "").strip(),
+                                                    arguments.get("league", "").strip().casefold(), tz)),
+            "get_air_quality": (1800, lambda: air_quality(self.client, weather.latitude, weather.longitude, place)),
+            "get_pollen": (3600, lambda: pollen(self.client)),
+            "get_holidays": (3600, lambda: holidays(self.client, arguments.get("kind", "").strip().casefold(),
+                                                    arguments.get("day", "").strip().casefold(), tz)),
+            "get_fuel_prices": (600, lambda: fuel_prices(self.client, weather.latitude, weather.longitude,
+                                                         arguments.get("fuel", "").strip().casefold(), place=place)),
+        }
+        ttl, fetch = jobs[name]
+        key = "|".join(f"{k}={v}" for k, v in sorted(arguments.items()))
+        return await self.research.cached(name, key, ttl, fetch)
 
     async def places(self, query: str, location: str) -> dict:
         """Search Google Places live; never cache or persist the provider response here."""
