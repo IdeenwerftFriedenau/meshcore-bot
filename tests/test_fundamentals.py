@@ -13,7 +13,9 @@ from tests.test_markets import RISING, chart
 
 
 @pytest.fixture(autouse=True)
-def fresh_caches():
+def fresh_caches(monkeypatch, tmp_path):
+    monkeypatch.setenv("MESHCORE_SEC_CONTACT", "bot@example.org")
+    monkeypatch.setattr(fundamentals, "ENV_FILE", str(tmp_path / "missing.env"))
     fundamentals._CACHE.clear()
     fundamentals._TICKERS = (0.0, {})
     markets._LAST.clear()
@@ -105,6 +107,8 @@ def sources(seen=None, sec=NVDA, price=180.0):
             seen.append(str(request.url))
         host, path = request.url.host, request.url.path
         assert "IdeenwerftFriedenau" in request.headers["user-agent"] or host.endswith("yahoo.com")
+        if host.endswith("sec.gov"):
+            assert request.headers["user-agent"].endswith(" bot@example.org")
         if host == "www.sec.gov" and path == "/files/company_tickers.json":
             return httpx.Response(200, json={"0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
                                              "1": {"cik_str": 1, "ticker": "ASML", "title": "ASML"}})
@@ -335,3 +339,32 @@ async def test_comparison_is_short_enough_for_the_radio():
         text = (await key_figures(client, ["Nvidia", "SAP"]))["text"]
     assert len(text) < 330 and "Cash" not in text and "Mitarbeitende" not in text
     assert "Quellen: SEC-Berichte, Wikidata." in text and text.count("Anlageberatung") == 1
+
+
+async def test_without_sec_contact_us_firms_use_wikidata(monkeypatch, tmp_path):
+    monkeypatch.delenv("MESHCORE_SEC_CONTACT")
+    seen: list[str] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(sources(seen))) as client:
+        text = (await key_figures(client, ["Nvidia"]))["text"]
+    assert "Wikidata" in text and not any("sec.gov" in u for u in seen)
+
+
+async def test_sec_contact_from_env_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("MESHCORE_SEC_CONTACT")
+    env = tmp_path / ".env"
+    env.write_text("MESHCORE_SEC_CONTACT=bot@example.org\n")
+    monkeypatch.setattr(fundamentals, "ENV_FILE", str(env))
+    assert fundamentals.sec_contact() == "bot@example.org"
+    env.write_text("MESHCORE_SEC_CONTACT=keine-mail\n")
+    assert fundamentals.sec_contact() == ""
+
+
+async def test_sec_refusal_falls_back_to_wikidata():
+    def respond(request):
+        if request.url.host.endswith("sec.gov"):
+            return httpx.Response(403)
+        return sources()(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        text = (await key_figures(client, ["Nvidia"]))["text"]
+    assert "Wikidata" in text and "Umsatz" in text

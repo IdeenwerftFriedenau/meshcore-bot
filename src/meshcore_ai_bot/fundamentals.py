@@ -11,17 +11,24 @@ Figures change at most once a quarter, so every answer is kept for a day.
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import time
 from datetime import date
 
 import httpx
+from dotenv import dotenv_values
 
 from .http import read_json
 from .markets import DISCLAIMER, _get, number, quote, resolve
 
 AGENT = {"User-Agent": "IdeenwerftFriedenau meshcore-bot (+https://github.com/IdeenwerftFriedenau/meshcore-bot)",
          "Accept": "application/json"}
+# The SEC answers only clients that name a contact e-mail (www.sec.gov/os/accessing-edgar-data).
+# Set MESHCORE_SEC_CONTACT in the environment or in /etc/meshcore-ai-bot/.env; without it US firms use Wikidata.
+CONTACT_ENV = "MESHCORE_SEC_CONTACT"
+ENV_FILE = "/etc/meshcore-ai-bot/.env"
 SEC = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{concept}.json"
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 WIKIDATA = "https://www.wikidata.org/w/api.php"
@@ -41,14 +48,29 @@ REVENUE = ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "S
 DEBT = ("LongTermDebt", "LongTermDebtNoncurrent")
 CASH = ("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents")
 
+log = logging.getLogger(__name__)
 UNITS = {"Q4916": "€", "Q4917": "$", "Q25224": "£", "Q25344": "CHF", "Q8146": "Yen"}
 
 _CACHE: dict[str, tuple[float, dict | None]] = {}
 _TICKERS: tuple[float, dict[str, int]] = (0.0, {})
 
 
+def sec_contact() -> str:
+    contact = os.environ.get(CONTACT_ENV, "")
+    if not contact:
+        try:
+            contact = dotenv_values(ENV_FILE).get(CONTACT_ENV) or ""
+        except OSError:
+            contact = ""
+    contact = contact.strip()
+    return contact if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", contact) else ""
+
+
 async def _json(client: httpx.AsyncClient, url: str, params: dict | None = None):
-    return await read_json(client, "GET", url, params=params, headers=AGENT, timeout=12, limit=4_000_000)
+    headers = AGENT
+    if "sec.gov" in url:
+        headers = {**AGENT, "User-Agent": f"IdeenwerftFriedenau meshcore-bot {sec_contact()}"}
+    return await read_json(client, "GET", url, params=params, headers=headers, timeout=12, limit=4_000_000)
 
 
 def _cached(key: str) -> tuple[bool, dict | None]:
@@ -479,11 +501,16 @@ async def company(client: httpx.AsyncClient, symbol: str, label: str, *,
         text = profile_line(label, (figures or {}).get("profile") or {})
         return (text, f"https://www.wikidata.org/wiki/{figures['item']}") if text else None
     paid = await dividends(client, home)
-    if re.fullmatch(r"[A-Z]{1,5}(-[A-Z])?", home):  # a US ticker: filings at the SEC
+    if re.fullmatch(r"[A-Z]{1,5}(-[A-Z])?", home) and sec_contact():  # a US ticker: filings at the SEC
         hit, figures = _cached("sec:" + home)
         if not hit:
-            figures = await sec_figures(client, home)
-            _keep("sec:" + home, figures)
+            try:
+                figures = await sec_figures(client, home)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                log.warning("SEC figures for %s failed: %s", home, exc)
+                figures = None  # Wikidata below still answers; the next question tries the SEC again
+            else:
+                _keep("sec:" + home, figures)
         if figures:
             figures = {**figures, "ticker": home}
             price = None
