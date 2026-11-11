@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .config import Config
+from .fundamentals import fundamentals
 from .http import read_json
 from .markets import (
     SPLIT,
@@ -156,6 +157,13 @@ RESEARCH_SCHEMAS = {
         {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu drei mit Komma, z.B. 'SAP, Bitcoin'"}},
         [],
     ),
+    "get_fundamentals": tool(
+        "get_fundamentals",
+        "Kennzahlen einer Firma: Börsenwert, KGV, Dividende, Umsatz, Gewinn, Cash und Schulden. US-Firmen aus den "
+        "SEC-Berichten (letzte 12 Monate), andere wie DAX-Werte als Jahreszahlen aus Wikidata.",
+        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu zwei mit Komma, z.B. 'Nvidia'"}},
+        ["asset"],
+    ),
     "get_market_news": tool(
         "get_market_news",
         "Aktuelle Schlagzeilen zu einer Aktie, einem Coin oder Rohstoff (tagesschau, Yahoo Finance) plus Kurs. "
@@ -184,7 +192,7 @@ def schemas(config: Config) -> list[dict]:
             result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
         result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"],
                    RESEARCH_SCHEMAS["get_grill_stands"], RESEARCH_SCHEMAS["get_quote"],
-                   RESEARCH_SCHEMAS["get_market_news"]]
+                   RESEARCH_SCHEMAS["get_fundamentals"], RESEARCH_SCHEMAS["get_market_news"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
     return result
@@ -270,7 +278,7 @@ class Tools:
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
                            get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
-                           get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
+                           get_fundamentals={"asset"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -345,6 +353,15 @@ class Tools:
         if name == "get_market_news":
             asset = arguments.get("asset", "").strip()
             return await research.cached(name, asset, 600, lambda: self.market_news(asset))
+        if name == "get_fundamentals":
+            assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]
+            if not assets:
+                return {"text": "Für Kennzahlen brauche ich den Namen einer Firma.", "sources": []}
+            try:
+                return await research.cached(name, "|".join(assets), 24 * 3600,
+                                             lambda: fundamentals(self.client, assets))
+            except LookupError:
+                return {"text": f"Zu „{', '.join(assets)}“ finde ich keine Kennzahlen.", "sources": []}
         if name == "get_quote":
             tz = self.config.station.timezone
             assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]

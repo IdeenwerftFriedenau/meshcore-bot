@@ -91,6 +91,7 @@ moin servus danke super toll ok okay ja nein bot boersenbot hey na kostet kosten
 geht los welt markt maerkte marktueberblick fallen steigen faellt steigt gefallen gestiegen
 abgestuerzt crash rally ueberblick uebersicht marktlage boersentag bist bin heisst hast machst gehts wars lieber eigentlich denn doch schon auch
 nicht kein keine wieder mehr weniger genau ungefaehr etwa wirklich sehr
+hat haben hatte letzte letztes letzten letzter jahr jahres jahresbericht quartal gross hoehe zahlt zahlen ausgeschuettet
 """.split())
 # Popular shares, checked against Yahoo: no search request, clean names, typo matching.
 # Folded spellings separated by "|" -> XETRA symbol (euro) and the name said on air.
@@ -167,6 +168,13 @@ EXPLAIN = re.compile(
 OVERVIEW = re.compile(r"\b(markt|maerkte|boerse|ueberblick|uebersicht|indizes|lage|aktienmarkt)", re.I)
 SPLIT = re.compile(r"\s*(?:,|;|\bund\b|\boder\b|\bvs\.?|\bversus\b|\bgegen(?:ueber)?\b|\bmit\b)\s*", re.I)
 MORE_PREFIX = "Erzähl mir bitte weitere"
+# Key figure questions ('KGV von SAP', 'Umsatz Nvidia') go to fundamentals.py, not to the price.
+FACTS = re.compile(
+    r"\b(kgv|kbv|eps|kennzahl\w*|fundamental\w*|bilanz\w*|marktkap\w*|marktwert|boersenwert|unternehmenswert|"
+    r"umsatz\w*|gewinn|gewinne|jahresgewinn|nettogewinn|reingewinn|verlust|verluste|dividende\w*|ausschuettung|"
+    r"schulden|verschuld\w*|mitarbeiter\w*|beschaeftigte|kurs gewinn verhaeltnis|geschaeftszahlen|quartalszahlen|"
+    r"jahreszahlen)\b")
+WORTH = re.compile(r"^(wie ?viel|was) (ist|sind) .{2,40} (wert|schwer)\b")
 
 
 def alias(text: str) -> tuple[str, str] | None:
@@ -201,6 +209,21 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
     if re.search(r"\b(angst|gier|stimmung|fear|greed|sentiment)\b", folded) and (
             channel or re.search(r"krypto|bitcoin|boerse|markt", folded)):
         return {"assets": [], "advice": False, "overview": False, "mood": True}
+    facts = FACTS.search(folded) or WORTH.search(folded)
+    if facts and not re.match(r"(was (ist|sind|bedeutet|heisst)|erklaer)\w* (ein|eine|das|der|die)?\s*"
+                              r"(kgv|kbv|eps|dividende|bilanz|kennzahl|marktkap|boersenwert)\w*\s*\??$", folded):
+        rest = FACTS.sub(" ", folded)
+        known = known_asset(rest) or known_asset(text)
+        no_company = known and (known[0].startswith("^") or known[0].endswith(("-EUR", "=X", "=F")))
+        if not no_company and (known or channel or re.search(r"\baktien?\b|\bfirma\b|\bkonzern", folded)):
+            parts = []
+            for part in SPLIT.split(rest):
+                hit = known_asset(part)
+                name = hit[1] if hit else lookup_words(part)
+                if name and name.casefold() not in {p.casefold() for p in parts}:
+                    parts.append(name)
+            if parts:
+                return {"assets": parts[:2], "advice": False, "overview": False, "facts": True}
     why = re.match(r"(warum|wieso|weshalb)\b", folded) or re.search(r"\b(was ist (da )?los mit|grund)\b", folded)
     news = re.search(r"\b(news|nachrichten|neuigkeiten|meldungen|schlagzeilen|neues (von|zu|bei))\b", folded)
     moving = re.search(r"\b(faellt|fallt|steigt|gestiegen|gefallen|stuerzt|abgestuerzt|crash|rally|aktie|kurs|"
@@ -214,7 +237,7 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
         # #fragdenbot and friends: a named share/coin/index with a market word, or 'Aktie'/'Kurs' plus a name.
         pricey = re.search(r"\b(kurs\w*|\w+kurs|\w*preis|steht|stehen|notiert|wert|wie hoch|tageshoch|tagestief|"
                            r"52 wochen|jahreshoch|jahrestief|wie laeuft|wie lief|gestiegen|gefallen|steigt|faellt|"
-                           r"im plus|im minus|chart|performance|dividende)\b", folded)
+                           r"im plus|im minus|chart|performance)\b", folded)
         stock = re.search(r"\baktien?(kurs)?\b|\bboersenkurs\b|\bbitcoin|\bkrypto", folded)
         market = re.search(r"\b(boerse|boersen|aktienmarkt|maerkte|marktueberblick|marktlage|dax)\b", folded)
         if EXPLAIN.match(folded):
