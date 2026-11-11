@@ -24,6 +24,8 @@ from .config import Config
 from .http import read_bytes, read_json
 
 USER_AGENT = "MeshCoreAIBot/0.4 (+https://github.com/IdeenwerftFriedenau/meshcore-bot)"
+BVG_REST = "://v6.bvg.transport.rest"
+VBB_REST = "://v6.vbb.transport.rest"
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "de"}
 URL_PATTERN = re.compile(r"https://[^\s<>\"'„“”]+")
 PAGE_LIMIT = 1_500_000
@@ -124,10 +126,20 @@ class Research:
             return {"text": f"Die Websuche fand nichts Brauchbares zu „{query}“.", "sources": []}
         return {"text": " | ".join(lines), "sources": sources}
 
+    async def _transit(self, url: str, **kwargs):
+        """transport.rest request; the overloaded public BVG instance falls back to the VBB one (same data)."""
+        try:
+            return await read_json(self.client, "GET", url, **kwargs)
+        except (httpx.HTTPStatusError, httpx.TransportError) as error:
+            status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) else 0
+            if BVG_REST not in url or (status and status not in {429, 500, 502, 503, 504}):
+                raise
+            return await read_json(self.client, "GET", url.replace(BVG_REST, VBB_REST), **kwargs)
+
     async def _stop(self, base: str, name: str) -> dict | None:
         """Best stop for a name; a well-known place (POI) wins only when it clearly matches the words asked."""
-        places = await read_json(
-            self.client, "GET", base + "/locations",
+        places = await self._transit(
+            base + "/locations",
             params={"query": name, "results": 3, "stops": "true", "addresses": "false", "poi": "true"},
             headers=HEADERS, timeout=12, limit=500_000,
         )
@@ -179,8 +191,8 @@ class Research:
             for product in ("suburban", "subway", "tram", "bus", "ferry", "express", "regional"):
                 params[product] = "true" if product == only else "false"
         try:
-            data = await read_json(
-                self.client, "GET", base + "/journeys", params=params,
+            data = await self._transit(
+                base + "/journeys", params=params,
                 headers=HEADERS, timeout=15, limit=3_000_000,
             )
         except httpx.HTTPStatusError as error:
@@ -248,9 +260,7 @@ class Research:
             return {"text": "Die Abfahrtsauskunft ist hier nicht eingerichtet.", "sources": []}
         if not stop:
             return {"text": "Von welcher Haltestelle?", "sources": []}
-        places = await read_json(
-            self.client,
-            "GET",
+        places = await self._transit(
             base + "/locations",
             params={"query": stop, "results": 1, "stops": "true", "addresses": "false", "poi": "false"},
             headers=HEADERS,
@@ -260,9 +270,7 @@ class Research:
         place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else None
         if not place or not re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))):
             return {"text": f"Keine Haltestelle „{stop}“ gefunden.", "sources": []}
-        data = await read_json(
-            self.client,
-            "GET",
+        data = await self._transit(
             f"{base}/stops/{place['id']}/departures",
             params={"duration": 90 if trains else 30, "results": 8, "remarks": "false",
                     **({"bus": "false", "tram": "false", "subway": "false", "ferry": "false",

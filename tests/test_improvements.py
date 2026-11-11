@@ -130,6 +130,24 @@ async def test_departures_from_transport_rest():
     )
 
 
+async def test_departures_fall_back_when_bvg_instance_is_busy():
+    hosts = []
+
+    def respond(request):
+        hosts.append(request.url.host)
+        if request.url.host == "v6.bvg.transport.rest":
+            return httpx.Response(503)
+        if request.url.path == "/locations":
+            return httpx.Response(200, json=[{"type": "stop", "id": "900061101", "name": "S Friedenau (Berlin)"}])
+        return httpx.Response(200, json={"departures": [
+            {"when": "2026-11-07T13:07:00+01:00", "direction": "Wannsee", "line": {"name": "S1"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run("get_departures", {"stop": "S Friedenau"})
+    assert "13:07 S1 → Wannsee" in result["text"]
+    assert hosts == ["v6.bvg.transport.rest", "v6.vbb.transport.rest"] * 2
+
+
 def test_departures_tool_can_be_disabled():
     config = Config()
     assert "get_departures" in {s["function"]["name"] for s in schemas(config)}

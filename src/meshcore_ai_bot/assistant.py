@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from .alltag import ALLTAG_TOOLS, FUEL_ASK, alltag_request, fuel_followup
 from .config import Config, validate_loopback_url
 from .http import read_json
 from .knowledge import meshcore_context, meshcore_short_answer
@@ -38,6 +39,9 @@ Kurse von Aktien, ETFs, Indizes, Krypto, Rohstoffen und Währungen immer mit get
 Kennzahlen wie KGV, Börsenwert, Dividende, Umsatz, Gewinn oder Schulden einer Firma immer mit get_fundamentals,
 Chef, Sitz, Branche, Gründung oder ISIN einer Firma mit get_fundamentals (about='ja').
 Insider-Käufe und -Verkäufe (Directors' Dealings) mit get_insider_trades, ohne asset für alle von heute.
+Warnungen mit get_warnings, Störungen bei BVG und S-Bahn mit get_transit_disruptions, Kp-Index, Polarlicht und
+Bandbedingungen mit get_space_weather, Fußball mit get_football, Luft mit get_air_quality, Pollen mit get_pollen,
+Feiertage und Schulferien mit get_holidays, Spritpreise mit get_fuel_prices – nie raten.
 Für Flüge an anderen Flughäfen oder andere Echtzeitdaten ohne Werkzeug sag sofort in einem Satz, dass du sie nicht hast.
 Inversionswetterlage, Überreichweiten und Funkausbreitung sind Erklärfragen: kurz erklären, Wetterdaten nur als Hinweis.
 Persönliche Fakten im Verlauf sind Nutzerdaten und dürfen kanalübergreifend berücksichtigt werden;
@@ -159,6 +163,15 @@ class Assistant:
             found = await self._market_answer(question, market)
             if found:
                 return found
+        everyday = (
+            fuel_followup(question, history) or alltag_request(fix_typos(question))
+            if self.config.research.enabled and not self.offline
+            else None
+        )
+        if everyday and everyday[0] == "get_fuel_prices" and not everyday[1].get("fuel"):
+            return Answer(FUEL_ASK)
+        if everyday and (everyday[0] != "get_transit_disruptions" or self.config.research.transit_url):
+            return await self._tool_answer(*everyday)
         activity = berlin_activity_reply(question)
         if activity:
             return Answer(activity)
@@ -318,6 +331,7 @@ class Assistant:
                     "get_flights",
                     "get_planes_overhead",
                     "get_grill_stands",
+                    *ALLTAG_TOOLS,
                 }:
                     # Clothing questions deserve a human-readable interpretation of the facts.
                     clothing = re.search(r"mütze|mutze|muetze|schal|jacke|handschuhe", question, re.I)
