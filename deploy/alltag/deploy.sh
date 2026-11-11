@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Rollt die Alltagsdaten für #fragdenbot aus (Warnungen, Störungen, Weltraumwetter, Fußball, Luft, Pollen, Feiertage, Sprit). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit 02fb3b79694b64111d4612068fcf4231b255dda6 auf GitHub und prüft jede Datei per SHA-256.
+# Holt den Code vom festen Commit 422d7810f30a485b6fc084615d84ce4cf262a26f auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=02fb3b79694b64111d4612068fcf4231b255dda6
+COMMIT=422d7810f30a485b6fc084615d84ce4cf262a26f
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
@@ -25,17 +25,17 @@ if [[ "${1:-}" == rollback ]]; then
 fi
 
 declare -A WANT=(
-  [assistant.py]="6821a46b537d83f84b458e776defaf5139ba72988e5da99e3da42b9823825de4"
+  [assistant.py]="3aff1ff0479d02aec5121b56fa312005f375cf109187ff7101ae2c6b07aebf44"
   [tools.py]="7e8db847da1bd652d77196c4c7d3000ab2fa0c0426d546587d13933a91196cfc"
-  [alltag.py]="63d2e7ae703dc96e7f72c46b7f59305d1bed0f8e4defa2027c891ed3517e8174"
+  [alltag.py]="ce669f12c88c4b5f7ff27b572fee4bb8584faa6665c84c31032d5e1dbfc3a1fc"
   [research.py]="ab10683ebcb770b9d230474da1083d3378b93b98cd2a5c96f8a792f66259dbcb"
-  [test_alltag.py]="ab179bcaa0bc968ae4dd3fa8a04fcec18b9162b2d51e50bc15a8fa3009c221a7"
+  [test_alltag.py]="519bef22d90bb0d5896e92b3b4e4af9beb9b481a34399e3d5bf4497c0fe72065"
 )
-# Erwarteter Vorstand auf dem Pi: Alltagsdaten 34273e1 (live seit 2026-11-11 18:49) oder 555ff24.
+# Erwarteter Vorstand auf dem Pi: Alltagsdaten 34273e1 (live seit 2026-11-11 18:49) oder 555ff24/02fb3b7.
 declare -A EXPECT=(
   [assistant.py]="6821a46b537d83f84b458e776defaf5139ba72988e5da99e3da42b9823825de4"
-  [tools.py]="5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed"
-  [alltag.py]="058bd624d0cb8a960a6f79097060dd7c56a68bf63e7fb1812c2fa43d0dbb6640 3a8b9bde96438de2b110e5e4540b73d9afc3300a82039db06b381e464d82b548"
+  [tools.py]="5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed 7e8db847da1bd652d77196c4c7d3000ab2fa0c0426d546587d13933a91196cfc"
+  [alltag.py]="058bd624d0cb8a960a6f79097060dd7c56a68bf63e7fb1812c2fa43d0dbb6640 3a8b9bde96438de2b110e5e4540b73d9afc3300a82039db06b381e464d82b548 63d2e7ae703dc96e7f72c46b7f59305d1bed0f8e4defa2027c891ed3517e8174"
   [research.py]="ab10683ebcb770b9d230474da1083d3378b93b98cd2a5c96f8a792f66259dbcb"
 )
 
