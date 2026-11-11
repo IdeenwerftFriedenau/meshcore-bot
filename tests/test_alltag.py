@@ -329,6 +329,13 @@ async def test_fuel_by_postcode_through_tools(monkeypatch):
 
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(request)
+        if request.url.host == "nominatim.openstreetmap.org":
+            if request.url.params["postalcode"] == "12157":
+                return httpx.Response(200, json=[{"lat": "52.4652", "lon": "13.3464",
+                                                  "display_name": "12157, Schöneberg, Tempelhof-Schöneberg, Berlin"}])
+            if request.url.params["postalcode"] == "10115":
+                return httpx.Response(503)
+            return httpx.Response(200, json=[])
         if request.url.host == "api.zippopotam.us":
             if request.url.path.endswith("/00000"):
                 return httpx.Response(404, json={})
@@ -339,6 +346,8 @@ async def test_fuel_by_postcode_through_tools(monkeypatch):
         tools = Tools(Config(), Store(":memory:"), client)
         found = await tools.run("get_fuel_prices", {"fuel": "diesel", "place": "10115"})
         missing = await tools.run("get_fuel_prices", {"fuel": "diesel", "place": "00000"})
+        district = await tools.run("get_fuel_prices", {"fuel": "diesel", "place": "12157"})
+    assert district["text"].startswith("Spritpreise bei 12157 Schöneberg,")
     assert found["text"].startswith("Spritpreise bei 10115 Berlin,")
     station = next(r for r in seen if "tankerkoenig" in str(r.url))
     assert station.url.params["lat"] == "52.5320" and station.url.params["lng"] == "13.3922"
