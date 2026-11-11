@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Rollt die Alltagsdaten für #fragdenbot aus (Warnungen, Störungen, Weltraumwetter, Fußball, Luft, Pollen, Feiertage, Sprit). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit 9a798fd6724b6c5a18d47d9f76d625f19bf4827e auf GitHub und prüft jede Datei per SHA-256.
+# Holt den Code vom festen Commit 34273e11f2700729085af44c60ec532b5d95dff9 auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=9a798fd6724b6c5a18d47d9f76d625f19bf4827e
+COMMIT=34273e11f2700729085af44c60ec532b5d95dff9
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
@@ -27,7 +27,7 @@ fi
 declare -A WANT=(
   [assistant.py]="6821a46b537d83f84b458e776defaf5139ba72988e5da99e3da42b9823825de4"
   [tools.py]="5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed"
-  [alltag.py]="8e01e37d1c7adbfe008c82508debf72cf07bcc8dbfee617f7b78b9a8cf8ff40b"
+  [alltag.py]="058bd624d0cb8a960a6f79097060dd7c56a68bf63e7fb1812c2fa43d0dbb6640"
   [research.py]="ab10683ebcb770b9d230474da1083d3378b93b98cd2a5c96f8a792f66259dbcb"
   [test_alltag.py]="72ca4a965980271e016d6d11d1e531b68d66a5558981a86657a7a67e7bc63e2c"
 )
