@@ -590,8 +590,11 @@ async def fuel_prices(client: httpx.AsyncClient, lat: float, lon: float, fuel: s
     if not data.get("ok"):
         raise ValueError(str(data.get("message") or "Tankerkönig error"))
     stations = [s for s in data.get("stations") or [] if s.get("isOpen")]
+    if not stations and radius < 10:  # the countryside: look a little further
+        return await fuel_prices(client, lat, lon, fuel, 10.0, place)
     if not stations:
-        return {"text": f"Im Umkreis von {radius:.0f} km hat gerade keine Tankstelle geöffnet.", "sources": []}
+        where = f" um {place}" if place else ""
+        return {"text": f"Im Umkreis von {radius:.0f} km{where} hat gerade keine Tankstelle geöffnet.", "sources": []}
     parts = []
     for kind in kinds:
         priced = sorted((s for s in stations if isinstance(s.get(kind), (int, float)) and s[kind] > 0),
@@ -637,11 +640,40 @@ FOOT = re.compile(r"\b(bundesliga|2\. liga|zweite liga|3\. liga|dritte liga|tabe
                   r"(wie hat|hat|wann spielt) (der |die )?(union|hertha|bayern|bvb|dortmund|schalke|hsv|werder|"
                   r"gladbach|leverkusen|eintracht|stuttgart|cottbus))\b")
 AIRQ = re.compile(r"\b(luftqualitaet|luftguete|feinstaub|smog|stickstoffdioxid|stickoxid\w*|ozon(werte?|wert)?|"
-                  r"luft (gut|schlecht|sauber|dreckig)|wie ist die luft|luftverschmutzung|pm ?10|pm ?2.?5)\b")
+                  r"luft (gut|schlecht|sauber|dreckig|in|im|bei)|wie ist die luft|luftverschmutzung|pm ?10|pm ?2.?5)\b")
 POLL = re.compile(r"\b(pollen\w*|heuschnupfen|pollenflug|birkenpollen|graeserpollen|allergie\w*)\b")
 HOLI = re.compile(r"\b(feiertag\w*|ferien|schulferien|herbstferien|winterferien|osterferien|sommerferien|"
                   r"pfingstferien|weihnachtsferien|brueckentag\w*|schulfrei)\b")
 FUEL = re.compile(r"\b(sprit\w*|benzin\w*|diesel\w*|tanken|tankstelle\w*|super ?e ?(5|10)|e10|e5)\b")
+
+
+PLACE_WORDS = re.compile(
+    r"\b(?:in|im|bei|um|nahe|nähe|naehe|rund um|für|fuer|an der|an dem)\s+(?:der\s+|dem\s+|den\s+)?"
+    r"([A-ZÄÖÜ][\wäöüß.\-]*(?:[ -](?:[A-ZÄÖÜ][\wäöüß.\-]*|am|an der|im|bei|ob der|vor der|\(\w+\)))*)")
+NOT_PLACES = {"der", "dem", "den", "meiner", "meinem", "der nähe", "nähe", "naehe", "berlin", "moment", "momentan",
+              "zeit", "gerade", "diesel", "benzin", "super", "e5", "e10", "deutschland", "tankstelle", "luft"}
+
+
+FILLER = set("""wo wie was wann welche welcher welches ist sind gibt es kostet kosten preis preise preisen aktuell aktuelle
+heute gerade jetzt billig billigste billigsten guenstig guenstigste guenstigsten teuer teuerste die der das den bitte
+ich du mir zeig zeige sag sage nenn nenne luft spritpreis spritpreise tankstelle tankstellen liter plz hier super
+naehe umgebung umkreis gegend meiner mein meinem""".split())
+
+
+def place_in(question: str) -> str:
+    """'Diesel in Spandau' -> 'Spandau', 'Sprit 10115' -> '10115'; '' for here."""
+    postcode = re.search(r"\b(\d{5})\b", question)
+    if postcode:
+        return postcode.group(1)
+    for match in PLACE_WORDS.finditer(question):
+        name = match.group(1).strip(" .-?!")
+        if name and name.casefold() not in NOT_PLACES and not FUEL.search(fold(name)):
+            return name[:60]
+    # 'E10 Preise München': a capitalised word that is neither a question nor a fuel word.
+    words = [w.strip("?!.,") for w in question.split()]
+    names = [w for w in words if w[:1].isupper() and fold(w) not in FILLER and not FUEL.search(fold(w))
+             and not AIRQ.search(fold(w))]
+    return " ".join(names)[:60] if names and len(names) <= 3 else ""
 
 
 def alltag_request(question: str) -> tuple[str, dict] | None:
@@ -656,11 +688,13 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
     if POLL.search(folded):
         return "get_pollen", {}
     if AIRQ.search(folded):
-        return "get_air_quality", {}
+        place = place_in(question)
+        return "get_air_quality", {"place": place} if place else {}
     if FUEL.search(folded) and not re.search(r"\b(aktie|kurs|oelpreis|brent|wti)\b", folded):
         fuel = "diesel" if "diesel" in folded else "e10" if "e10" in folded else "e5" if re.search(
             r"\be5\b|super(?! ?e ?10)|benzin", folded) else ""
-        return "get_fuel_prices", {"fuel": fuel}
+        place = place_in(question)
+        return "get_fuel_prices", {"fuel": fuel, "place": place} if place else {"fuel": fuel}
     if HOLI.search(folded):
         kind = "ferien" if re.search(r"ferien|schulfrei", folded) and "feiertag" not in folded else (
             "feiertag" if re.search(r"feiertag|brueckentag", folded) else "")

@@ -218,8 +218,8 @@ RESEARCH_SCHEMAS = {
     ),
     "get_air_quality": tool(
         "get_air_quality",
-        "Luftqualität hier: Europäischer Luftqualitätsindex, Feinstaub, Stickstoffdioxid und Ozon (Modellwerte).",
-        {},
+        "Luftqualität: Europäischer Luftqualitätsindex, Feinstaub, Stickstoffdioxid und Ozon (Modellwerte).",
+        {"place": {"type": "string", "description": "Ort, Ortsteil oder PLZ; leer für hier"}},
         [],
     ),
     "get_pollen": tool(
@@ -238,7 +238,8 @@ RESEARCH_SCHEMAS = {
     "get_fuel_prices": tool(
         "get_fuel_prices",
         "Aktuelle Spritpreise der günstigsten offenen Tankstellen in der Nähe (Tankerkönig).",
-        {"fuel": {"type": "string", "description": "'diesel', 'e5', 'e10' oder leer für alle"}},
+        {"fuel": {"type": "string", "description": "'diesel', 'e5', 'e10' oder leer für alle"},
+         "place": {"type": "string", "description": "Ort, Ortsteil oder PLZ in Deutschland; leer für hier"}},
         [],
     ),
     "get_market_news": tool(
@@ -329,6 +330,32 @@ class Tools:
         return {"text": text.strip(), "sources": ["https://finance.yahoo.com/quote/" + symbol], "headlines": lines,
                 "label": label}
 
+    async def _place(self, name: str, *, anywhere: bool = False) -> tuple[float, float, str] | None:
+        """Postcode or place name -> coordinates; Berlin/Brandenburg first, with anywhere=True all of Germany."""
+        postcode = re.fullmatch(r"\s*(?:plz\s*)?(\d{5})\s*", name, re.I)
+        if postcode:
+            try:
+                data = await read_json(self.client, "GET", f"https://api.zippopotam.us/de/{postcode.group(1)}",
+                                       timeout=10, limit=200_000)
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code == 404:
+                    return None
+                raise
+            row = (data.get("places") or [None])[0]
+            if not row:
+                return None
+            return float(row["latitude"]), float(row["longitude"]), f"{postcode.group(1)} {row.get('place name', '')}"\
+                .strip()
+        if not anywhere:
+            return await self._berlin_place(name)
+        # All of Germany: the best-known place of that name wins (Open-Meteo ranks by size), e.g. München.
+        data = await read_json(
+            self.client, "GET", "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": name.strip(), "count": 1, "language": "de", "countryCode": "DE"}, timeout=10,
+        )
+        row = (data.get("results") or [None])[0]
+        return (row["latitude"], row["longitude"], row.get("name") or name.strip()) if row else None
+
     async def _berlin_place(self, name: str) -> tuple[float, float, str] | None:
         """A district or town in Berlin/Brandenburg, e.g. 'Steglitz' -> its coordinates."""
         data = await read_json(
@@ -360,8 +387,8 @@ class Tools:
                            get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
                            get_fundamentals={"asset", "about"}, get_insider_trades={"asset"},
                            get_warnings=set(), get_transit_disruptions={"line"}, get_space_weather=set(),
-                           get_football={"team", "league"}, get_air_quality=set(), get_pollen=set(),
-                           get_holidays={"kind", "day"}, get_fuel_prices={"fuel"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
+                           get_football={"team", "league"}, get_air_quality={"place"}, get_pollen=set(),
+                           get_holidays={"kind", "day"}, get_fuel_prices={"fuel", "place"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -493,6 +520,15 @@ class Tools:
         tz = self.config.station.timezone
         weather = self.config.weather
         place = weather.location or self.config.station.location
+        lat, lon = weather.latitude, weather.longitude
+        wanted = arguments.get("place", "").strip()
+        home = f"{norm(weather.location)} {norm(self.config.station.location)} hier"
+        if name in {"get_fuel_prices", "get_air_quality"} and wanted and norm(wanted) not in home:
+            found = await self._place(wanted, anywhere=True)
+            if not found:
+                return {"text": f"Den Ort „{wanted}“ finde ich nicht. Versuch es mit Ortsteil, Stadt oder "
+                                "Postleitzahl.", "sources": []}
+            lat, lon, place = found
         jobs = {
             "get_warnings": (300, lambda: warnings(self.client, tz)),
             "get_transit_disruptions": (180, lambda: disruptions(
@@ -500,11 +536,11 @@ class Tools:
             "get_space_weather": (900, lambda: space_weather(self.client, tz)),
             "get_football": (300, lambda: football(self.client, arguments.get("team", "").strip(),
                                                     arguments.get("league", "").strip().casefold(), tz)),
-            "get_air_quality": (1800, lambda: air_quality(self.client, weather.latitude, weather.longitude, place)),
+            "get_air_quality": (1800, lambda: air_quality(self.client, lat, lon, place)),
             "get_pollen": (3600, lambda: pollen(self.client)),
             "get_holidays": (3600, lambda: holidays(self.client, arguments.get("kind", "").strip().casefold(),
                                                     arguments.get("day", "").strip().casefold(), tz)),
-            "get_fuel_prices": (600, lambda: fuel_prices(self.client, weather.latitude, weather.longitude,
+            "get_fuel_prices": (600, lambda: fuel_prices(self.client, lat, lon,
                                                          arguments.get("fuel", "").strip().casefold(), place=place)),
         }
         ttl, fetch = jobs[name]

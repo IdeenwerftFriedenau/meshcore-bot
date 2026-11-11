@@ -299,3 +299,47 @@ async def test_one_incident_on_several_lines_is_named_once():
         text = (await disruptions(client, "https://bvg.test"))["text"]
     assert text == ("Störungen jetzt: S41, S42, S85: Wegen eines Notarzteinsatzes kommt es zu Verspätungen; "
                     "S5: 1 Fahrt fällt aus.")
+
+
+@pytest.mark.parametrize("question,args", [
+    ("Diesel in Spandau", {"fuel": "diesel", "place": "Spandau"}),
+    ("Sprit 10115", {"fuel": "", "place": "10115"}),
+    ("E10 Preise München", {"fuel": "e10", "place": "München"}),
+    ("Tankstelle bei Prenzlauer Berg", {"fuel": "", "place": "Prenzlauer Berg"}),
+    ("Diesel in Frankfurt am Main", {"fuel": "diesel", "place": "Frankfurt am Main"}),
+    ("Diesel in der Nähe", {"fuel": "diesel"}),
+    ("Super E5 in meiner Nähe", {"fuel": "e5"}),
+])
+def test_fuel_places(question, args):
+    assert alltag_request(question) == ("get_fuel_prices", args)
+
+
+def test_air_places():
+    assert alltag_request("Luft in Hamburg") == ("get_air_quality", {"place": "Hamburg"})
+    assert alltag_request("Wie ist die Luft in Neukölln?") == ("get_air_quality", {"place": "Neukölln"})
+
+
+@pytest.mark.asyncio
+async def test_fuel_by_postcode_through_tools(monkeypatch):
+    from meshcore_ai_bot.config import Config
+    from meshcore_ai_bot.store import Store
+    from meshcore_ai_bot.tools import Tools
+    monkeypatch.setenv(alltag.FUEL_KEY, KEY)
+    seen = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "api.zippopotam.us":
+            if request.url.path.endswith("/00000"):
+                return httpx.Response(404, json={})
+            return httpx.Response(200, json={"places": [{"place name": "Berlin", "latitude": "52.532",
+                                                         "longitude": "13.3922"}]})
+        return handler(request)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(Config(), Store(":memory:"), client)
+        found = await tools.run("get_fuel_prices", {"fuel": "diesel", "place": "10115"})
+        missing = await tools.run("get_fuel_prices", {"fuel": "diesel", "place": "00000"})
+    assert found["text"].startswith("Spritpreise bei 10115 Berlin,")
+    station = next(r for r in seen if "tankerkoenig" in str(r.url))
+    assert station.url.params["lat"] == "52.5320" and station.url.params["lng"] == "13.3922"
+    assert missing["text"].startswith("Den Ort „00000“ finde ich nicht.")
