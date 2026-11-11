@@ -179,6 +179,17 @@ PROFILE = re.compile(
     r"\b(chef\w*|ceo|boss|vorstandschef\w*|vorstandsvorsitz\w*|firmenchef\w*|konzernchef\w*|sitz|hauptsitz|"
     r"firmensitz|konzernsitz|wo sitzt|gegruendet|gruendung\w*|isin|branche|firmenprofil|unternehmensprofil|profil|"
     r"webseite|website|homepage|steckbrief)\b")
+# Insider trades ('Insider-Käufe heute', 'Hat der Chef von Rheinmetall gekauft?') go to insider.py.
+INSIDER = re.compile(
+    r"\binsider\w*|\bdirectors?\W*dealings?\b|\beigengeschaeft\w*|\bmanagers?\W*transactions?\b|"
+    r"\b(vorstand|vorstaende|chef\w*|ceo|management|aufsichtsrat)\w*\b.{0,40}\b(ge)?(kauft|verkauft)\b|"
+    r"\b(kauft|kaufen|verkauft|verkaufen)\b (der |die |das )?(vorstand|chef\w*|ceo|management)\b")
+INSIDER_WORDS = re.compile(
+    r"\b(insider\w*|directors?|dealings?|eigengeschaeft\w*|managers?|transactions?|trades?|trading|deals?|"
+    r"geschaefte?|kaeufe?|verkaeufe?|transaktionen|meldungen|vorstand|vorstaende|chef\w*|ceo|management|"
+    r"aufsichtsrat\w*|kauft|kaufen|gekauft|verkauft|verkaufen|neue|neuen|neueste\w*|letzte\w*|aktuelle\w*|"
+    r"gemeldet\w*|zeig\w*|liste|alle|gab|hat|haben|gibt|es|welche\w*|wer|of|today|heute\w*|gestern|woche|"
+    r"diese|dieser|deutschland|deutsche|bafin)\b")
 WORTH = re.compile(r"^(wie ?viel|was) (ist|sind) .{2,40} (wert|schwer)\b")
 
 
@@ -214,6 +225,13 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
     if re.search(r"\b(angst|gier|stimmung|fear|greed|sentiment)\b", folded) and (
             channel or re.search(r"krypto|bitcoin|boerse|markt", folded)):
         return {"assets": [], "advice": False, "overview": False, "mood": True}
+    trading = re.search(r"\baktien?\b|trade|kauf|kaeuf|gekauft|verkauf|geschaeft|dealing|transaktion|meldung|bafin",
+                        folded)
+    if INSIDER.search(folded) and (channel or known or trading):
+        rest = INSIDER_WORDS.sub(" ", folded)
+        hit = known_asset(rest)
+        name = hit[1] if hit else lookup_words(rest)
+        return {"assets": [name] if name else [], "advice": False, "overview": False, "insider": True}
     about = bool(PROFILE.search(folded)) and not FACTS.search(folded)
     facts = FACTS.search(folded) or WORTH.search(folded) or about
     if facts and not re.match(r"(was (ist|sind|bedeutet|heisst)|erklaer)\w* (ein|eine|das|der|die)?\s*"

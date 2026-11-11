@@ -59,6 +59,7 @@ CASES = [
     ("F", "aktie", "S", "KGV von Nvidia", r"^Nvidia.*KGV \d"),
     ("F", "aktie", "S", "Wer ist Chef von Siemens?", r"^Siemens: Chef "),
     ("F", "aktie", "S", "Bitcoin Kurs", r"^Bitcoin [\d.]+ €"),
+    ("F", "aktie", "S", "Insider-Käufe heute?", r"Insider-Meldungen bei der BaFin"),
     ("F", "gedaechtnis", "P", "Ich wohne in Steglitz.", r"[Gg]emerkt|Steglitz"),
     ("F", "gedaechtnis", "P", "Was weißt du über mich?", r"Steglitz"),
     ("F", "gedaechtnis", "P", "Vergiss mich", r"gelöscht|vergessen"),
@@ -92,6 +93,11 @@ CASES = [
     ("B", "kennzahlen", "B4", "Wer ist Chef von SAP?", r"Chef Christian Klein|Chef "),
     ("B", "kennzahlen", "B4", "ISIN Siemens", r"ISIN\s+DE0007236101"),
     ("B", "kennzahlen", "B4", "Wo sitzt Rheinmetall?", r"Sitz Düsseldorf"),
+    ("B", "kennzahlen", "B4", "ISIN Deutsche Post", r"Chef Tobias Meyer"),
+    ("B", "insider", "B6", "Insider Trades von heute", r"Insider-Meldungen bei der BaFin"),
+    ("B", "insider", "B6", "Insider Rheinmetall", r"^Rheinmetall Insider \(BaFin\)"),
+    ("B", "insider", "B6", "Hat der Chef von SAP Aktien gekauft?", r"^SAP Insider"),
+    ("B", "insider", "B6", "Insider Nvidia", r"^Nvidia Insider \(SEC"),
     ("B", "erklaerung", "B5", "Was ist ein KGV?", r"Kurs|Gewinn"),
     ("B", "erklaerung", "B5", "Was ist ein ETF?", r"Fonds|Index|ETF"),
     ("B", "alarm", "B6", "Alarme", r"keine Kursalarme"),
@@ -143,6 +149,7 @@ async def main(path: str, pause: float) -> None:
             packets = await drain(store)
             joined = " ".join(re.sub(r"^\[\d+/\d+\] ", "", p["text"]) for p in packets if p.get("stream") == "reply")
             joined = re.sub(r"^@\[[^\]]*\]\s*", "", joined).strip()
+            joined = re.sub(r"\s+", " ", joined)  # packet borders leave double spaces
             ok = bool(joined) and re.search(expect, joined, re.S) is not None and "schiefgegangen" not in joined
             results.append((kind, category, question, ok, joined))
             print(f"{'OK ' if ok else 'XX '}[{'fragdenbot' if kind == 'F' else 'börsenbot'}/{category}] {question!r} "

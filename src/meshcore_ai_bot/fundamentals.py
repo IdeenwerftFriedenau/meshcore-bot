@@ -332,9 +332,21 @@ def _text(claim: dict) -> str:
 
 
 def _current(claims: list[dict]) -> list[dict]:
-    """Statements still valid: preferred first, none with an end date (P582)."""
+    """Statements still valid: none with an end date (P582); preferred first, then the latest start (P580).
+
+    Wikidata often keeps a former CEO without an end date next to the successor, so the newest start wins.
+    """
     alive = [c for c in claims if c.get("rank") != "deprecated" and not (c.get("qualifiers") or {}).get("P582")]
-    return sorted(alive, key=lambda c: c.get("rank") != "preferred")
+    return sorted(alive, key=lambda c: (c.get("rank") == "preferred", _start(c)), reverse=True)
+
+
+def _start(claim: dict) -> str:
+    """'+2023-05-04T00:00:00Z' from the start-time qualifier, '' without one; sortable as text."""
+    for qualifier in (claim.get("qualifiers") or {}).get("P580") or []:
+        value = (qualifier.get("datavalue") or {}).get("value")
+        if isinstance(value, dict) and str(value.get("time", "")).startswith("+"):
+            return str(value["time"])
+    return ""
 
 
 async def profile(client: httpx.AsyncClient, claims: dict) -> dict:
