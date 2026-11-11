@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Rollt die Alltagsdaten für #fragdenbot aus (Warnungen, Störungen, Weltraumwetter, Fußball, Luft, Pollen, Feiertage, Sprit). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit d639df730fa5b21bee05027f33753a636fdb193b auf GitHub und prüft jede Datei per SHA-256.
+# Holt den Code vom festen Commit 37a1774b7767f3849910e39290ffcd2783f37764 auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
+#   bash deploy.sh restart viele -> zusätzlich der große Fragentest (deploy/alltag/viele_fragen.py, ca. 2 Min)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=d639df730fa5b21bee05027f33753a636fdb193b
+COMMIT=37a1774b7767f3849910e39290ffcd2783f37764
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
@@ -27,14 +28,14 @@ fi
 declare -A WANT=(
   [assistant.py]="3aff1ff0479d02aec5121b56fa312005f375cf109187ff7101ae2c6b07aebf44"
   [tools.py]="46db89c56c0be507b759b15edd2192eb21f522d1fa9b18352740548e214b6ac2"
-  [alltag.py]="ce669f12c88c4b5f7ff27b572fee4bb8584faa6665c84c31032d5e1dbfc3a1fc"
+  [alltag.py]="aa7b258a755a7d8ef2609ab9c2c1109542b006b57f6fb3a81fb68715a5e82854"
   [research.py]="ab10683ebcb770b9d230474da1083d3378b93b98cd2a5c96f8a792f66259dbcb"
-  [test_alltag.py]="733b9b74cd159d6ffdccd071f8d4197e5a1dc73d88fa473a39aef6de5967ab51"
+  [test_alltag.py]="048badb65c8f6dee24eec6560efcbefd473b6c0d1e3280137681c6805408fb0d"
 )
-# Erwarteter Vorstand auf dem Pi: Alltagsdaten 34273e1 (live seit 2026-11-11 18:49) oder 555ff24/02fb3b7/422d781 (live seit 19:04).
+# Erwarteter Vorstand auf dem Pi: Alltagsdaten 34273e1 (live seit 2026-11-11 18:49) oder 555ff24/02fb3b7/422d781 (19:04) oder d639df7 (live seit 19:10).
 declare -A EXPECT=(
   [assistant.py]="6821a46b537d83f84b458e776defaf5139ba72988e5da99e3da42b9823825de4 3aff1ff0479d02aec5121b56fa312005f375cf109187ff7101ae2c6b07aebf44"
-  [tools.py]="5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed 7e8db847da1bd652d77196c4c7d3000ab2fa0c0426d546587d13933a91196cfc"
+  [tools.py]="5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed 7e8db847da1bd652d77196c4c7d3000ab2fa0c0426d546587d13933a91196cfc 46db89c56c0be507b759b15edd2192eb21f522d1fa9b18352740548e214b6ac2"
   [alltag.py]="058bd624d0cb8a960a6f79097060dd7c56a68bf63e7fb1812c2fa43d0dbb6640 3a8b9bde96438de2b110e5e4540b73d9afc3300a82039db06b381e464d82b548 63d2e7ae703dc96e7f72c46b7f59305d1bed0f8e4defa2027c891ed3517e8174 ce669f12c88c4b5f7ff27b572fee4bb8584faa6665c84c31032d5e1dbfc3a1fc"
   [research.py]="ab10683ebcb770b9d230474da1083d3378b93b98cd2a5c96f8a792f66259dbcb"
 )
@@ -92,6 +93,10 @@ fi
 curl -fsSL "$RAW/$COMMIT/deploy/alltag/live_test.py" -o "$PKG/live_test.py" 2>/dev/null \
   || curl -fsSL "$RAW/claude/project-thread-5vd676/deploy/alltag/live_test.py" -o "$PKG/live_test.py"
 sudo "$PY" "$PKG/live_test.py" "$CONF"
+if [[ "${1:-}" == viele || "${2:-}" == viele ]]; then
+  curl -fsSL "$RAW/$COMMIT/deploy/alltag/viele_fragen.py" -o "$PKG/viele_fragen.py"
+  sudo "$PY" "$PKG/viele_fragen.py" "$CONF" 2>&1 | grep -v "HTTP Request"
+fi
 
 if [[ "${1:-}" == restart ]]; then
   sudo systemctl restart meshcore-gateway
