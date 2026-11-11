@@ -5,7 +5,7 @@ import sys
 
 import httpx
 
-from meshcore_ai_bot.fundamentals import fundamentals
+from meshcore_ai_bot.fundamentals import fundamentals, sec_contact
 from meshcore_ai_bot.markets import market_request
 
 QUESTIONS = ["KGV von Nvidia", "Umsatz Apple", "Wie viel ist Microsoft wert", "Kennzahlen SAP",
@@ -14,6 +14,9 @@ QUESTIONS = ["KGV von Nvidia", "Umsatz Apple", "Wie viel ist Microsoft wert", "K
 
 
 async def main() -> None:
+    contact = sec_contact()
+    print(f"SEC-Kontakt: {contact}" if contact else
+          "SEC-Kontakt fehlt (MESHCORE_SEC_CONTACT in /etc/meshcore-ai-bot/.env): US-Firmen kommen aus Wikidata.")
     ok = 0
     async with httpx.AsyncClient(follow_redirects=True) as client:
         for question in QUESTIONS:

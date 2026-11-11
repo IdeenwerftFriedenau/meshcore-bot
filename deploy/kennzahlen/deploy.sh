@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Rollt die Firmenkennzahlen im Börsenbot aus (PR #41). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit a5f7765824d4615612d163397cc59a73bfc59748 auf GitHub und prüft jede Datei per SHA-256.
+# Holt den Code vom festen Commit d7c3b9869b4c045c2da358ac6000c394ece038a7 auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=a5f7765824d4615612d163397cc59a73bfc59748
+COMMIT=d7c3b9869b4c045c2da358ac6000c394ece038a7
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
@@ -27,15 +27,15 @@ declare -A WANT=(
   [assistant.py]="4f7a08035c18e4c3f0208ab72887975c59d7ad066dc9e5aabbee2cb281be8fb6"
   [tools.py]="42efd85c0e7aabe966e01ae4ced5e8341c73b9247f6895d8b1aee50f589e5c8b"
   [markets.py]="7a1fece2877ea239189e818bcd3c49f1d2cb5113ac4650e32e0b5f58ca5fbbec"
-  [fundamentals.py]="06b5a69ae53d3d8c6d4bdba594556ee7372df95d8da19e70d126a29dc571f70a"
-  [test_fundamentals.py]="3e98558001a80ac6ad1656634788cb6df0f06aad37aa9445fd5beb2222facae2"
+  [fundamentals.py]="7b252114a064c35c3590da3f66c1f87eb160bfa7fbc535c7c0371af529849bb3"
+  [test_fundamentals.py]="43e3daeba6b8243434a88a5bec4f897ebe2ee633ec3fdcbcf6a8f4188b743ba6"
 )
-# Erwarteter Vorstand auf dem Pi: main 0ffa030 (Gedächtnis #40). fundamentals.py ist neu.
+# Erwarteter Vorstand auf dem Pi: main 0ffa030 (Gedächtnis #40) oder die erste Kennzahlen-Auslieferung a5f7765.
 declare -A EXPECT=(
-  [assistant.py]="c843b7747da94bec563b9cc7431bb3e90fce3a34726ba1e946dbed56b0ec6d8b"
-  [tools.py]="fa58e377124917992a98b2cc95a7872425a412f474ab690fc90162c490cd397f"
-  [markets.py]="1e7911016b3026aa79083233c29263040f0e1fa643b3941e6c77dca4f6f6f990"
-  [fundamentals.py]="neu"
+  [assistant.py]="c843b7747da94bec563b9cc7431bb3e90fce3a34726ba1e946dbed56b0ec6d8b 4f7a08035c18e4c3f0208ab72887975c59d7ad066dc9e5aabbee2cb281be8fb6"
+  [tools.py]="fa58e377124917992a98b2cc95a7872425a412f474ab690fc90162c490cd397f 42efd85c0e7aabe966e01ae4ced5e8341c73b9247f6895d8b1aee50f589e5c8b"
+  [markets.py]="1e7911016b3026aa79083233c29263040f0e1fa643b3941e6c77dca4f6f6f990 7a1fece2877ea239189e818bcd3c49f1d2cb5113ac4650e32e0b5f58ca5fbbec"
+  [fundamentals.py]="neu 06b5a69ae53d3d8c6d4bdba594556ee7372df95d8da19e70d126a29dc571f70a"
 )
 
 PKG=$(mktemp -d)
@@ -53,7 +53,7 @@ for f in "${FILES[@]}"; do
   new=$(sha256sum "$PKG/$f" | cut -d' ' -f1)
   if [[ -f "$SP/$f" ]]; then have=$(sha256sum "$SP/$f" | cut -d' ' -f1); else have=neu; fi
   [[ "$have" == "$new" ]] && continue
-  if [[ "${EXPECT[$f]}" != "$have" ]]; then
+  if [[ " ${EXPECT[$f]} " != *" $have "* ]]; then
     echo "ABBRUCH: $SP/$f hat unerwarteten Stand ($have). Nichts geändert." >&2
     exit 1
   fi
