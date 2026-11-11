@@ -286,3 +286,16 @@ async def test_disruptions_fall_back_to_vbb_instance(monkeypatch):
 
 async def _no_sleep(*_):
     return None
+
+
+@pytest.mark.asyncio
+async def test_one_incident_on_several_lines_is_named_once():
+    note = {"type": "warning", "text": "Wegen eines Notarzteinsatzes kommt es zu Verspätungen."}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=board(dep("S41", remarks=[note]), dep("S42", remarks=[note]),
+                                              dep("S85", remarks=[note]), dep("S5", cancelled=True)))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        text = (await disruptions(client, "https://bvg.test"))["text"]
+    assert text == ("Störungen jetzt: S41, S42, S85: Wegen eines Notarzteinsatzes kommt es zu Verspätungen; "
+                    "S5: 1 Fahrt fällt aus.")

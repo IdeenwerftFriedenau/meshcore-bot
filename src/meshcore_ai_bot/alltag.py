@@ -263,12 +263,20 @@ async def disruptions(client: httpx.AsyncClient, base: str, line: str = "", tz: 
     if not lines:
         return {"text": "Bei S-Bahn, U-Bahn, Tram und Bus in Berlin ist gerade keine Störung gemeldet.",
                 "sources": source}
-    parts = []
-    for name in lines[:4]:
-        text = next(iter(notes.get(name, {})), "")
-        gone = len(cancelled.get(name, ()))
-        parts.append(f"{name}: {text}" if text else f"{name}: {outages(gone)}")
-    more = f" Außerdem betroffen: {', '.join(lines[4:9])}." if len(lines) > 4 else ""
+    # One incident often hits several lines (S41, S42, S85): name it once with all of them.
+    grouped: dict[str, list[str]] = {}
+    for name in lines:
+        note = next(iter(notes.get(name, {})), "")
+        grouped.setdefault(note or "\0" + name, []).append(name)  # bare outages stay per line
+    parts, shown = [], []
+    for key, names in grouped.items():
+        if len(parts) == 3:
+            break
+        text = key if not key.startswith("\0") else outages(len(cancelled.get(names[0], ())))
+        parts.append(f"{', '.join(names)}: {text}")
+        shown += names
+    rest = [n for n in lines if n not in shown]
+    more = f" Außerdem betroffen: {', '.join(rest[:6])}." if rest else ""
     return {"text": "Störungen jetzt: " + "; ".join(parts) + "." + more, "sources": source}
 
 
