@@ -11,6 +11,7 @@ Figures change at most once a quarter, so every answer is kept for a day.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -40,6 +41,16 @@ HOME = {
     "FB2A.DE": "META", "TL0.DE": "TSLA", "NFC.DE": "NFLX", "AMD.DE": "AMD", "PTX.DE": "PLTR",
     "CCC3.DE": "KO", "1YD.DE": "AVGO", "2PP.DE": "PYPL", "BRYN.DE": "BRK-B",
 }
+# German and Dutch companies that file their annual report (20-F, IFRS) with the SEC as well:
+# fresher than Wikidata. Their figures are per ordinary share, so price and KGV use the home listing.
+ADR = {"SAP.DE": "SAP", "DBK.DE": "DB", "FME.DE": "FMS", "ASME.DE": "ASML"}
+IFRS = {
+    "revenue": ("Revenue", "RevenueFromContractsWithCustomers"),
+    "profit": ("ProfitLossAttributableToOwnersOfParent", "ProfitLoss"),
+    "eps": ("DilutedEarningsPerShare", "BasicEarningsPerShare"),
+    "cash": ("CashAndCashEquivalents",),
+}
+SIGNS = {"USD": "$", "EUR": "€", "GBP": "£", "CHF": "CHF", "JPY": "Yen"}
 # Earnings per share of these refer to another share class: no KGV from them.
 NO_PE = {"BRK-B", "BRK-A"}
 
@@ -177,34 +188,75 @@ async def concept(client: httpx.AsyncClient, number_: int, name: str, unit: str,
         if exc.response.status_code == 404:
             return []
         raise
+    if unit.startswith("*"):  # any currency, e.g. '*' -> EUR, '*/shares' -> EUR/shares
+        tail = unit[1:]
+        units = [u for u in (data.get("units") or {}) if re.fullmatch(r"[A-Z]{3}" + re.escape(tail), u)]
+        unit = units[0] if units else unit
     return _rows(data, unit)
 
 
-async def first(client, number_, names, unit, pick):
-    """The first concept name with data, preferring the one with the newest period."""
+async def first(client, number_, names, unit, pick, taxonomy: str = "us-gaap"):
+    """The concept name with data for the newest period; all names are asked at once."""
     found = None
-    for name in names:
-        value = pick(await concept(client, number_, name, unit))
+    results = await asyncio.gather(*(concept(client, number_, name, unit, taxonomy) for name in names))
+    for rows in results:
+        value = pick(rows)
         if value and (not found or value[1] > found[1]):
             found = value
     return found
+
+
+async def _currency(client, number_) -> str:
+    """Reporting currency of an IFRS filer, read from its revenue concept."""
+    for name in IFRS["revenue"]:
+        try:
+            data = await _json(client, SEC.format(cik=number_, taxonomy="ifrs-full", concept=name))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                continue
+            raise
+        units = [u for u in (data.get("units") or {}) if re.fullmatch(r"[A-Z]{3}", u)]
+        if units:
+            return units[0]
+    return ""
+
+
+async def ifrs_figures(client: httpx.AsyncClient, number_: int) -> dict | None:
+    """Annual 20-F figures of a foreign filer in its own currency (no quarterly XBRL for those)."""
+    code = await _currency(client, number_)
+    if not code:
+        return None
+    revenue, profit, eps, cash, shares = await asyncio.gather(
+        first(client, number_, IFRS["revenue"], code, trailing_growth, "ifrs-full"),
+        first(client, number_, IFRS["profit"], code, trailing, "ifrs-full"),
+        first(client, number_, IFRS["eps"], f"{code}/shares", trailing, "ifrs-full"),
+        first(client, number_, IFRS["cash"], code, latest, "ifrs-full"),
+        concept(client, number_, "EntityCommonStockSharesOutstanding", "shares", "dei"),
+    )
+    if not revenue and not profit:
+        return None
+    return {"source": "sec", "annual": True, "cik": number_, "currency": SIGNS.get(code, code), "code": code,
+            "revenue": revenue, "profit": profit, "eps": eps, "dividend": None, "cash": cash, "debt": None,
+            "shares": latest(shares)}
 
 
 async def sec_figures(client: httpx.AsyncClient, ticker: str) -> dict | None:
     number_ = await cik(client, ticker)
     if not number_:
         return None
-    revenue = await first(client, number_, REVENUE, "USD", trailing_growth)
-    profit = await first(client, number_, ("NetIncomeLoss",), "USD", trailing)
+    revenue, profit = await asyncio.gather(first(client, number_, REVENUE, "USD", trailing_growth),
+                                           first(client, number_, ("NetIncomeLoss",), "USD", trailing))
     if not revenue and not profit:
-        return None  # foreign filer (IFRS) or a fund: Wikidata knows more
-    eps = await first(client, number_, ("EarningsPerShareDiluted", "EarningsPerShareBasic"), "USD/shares", trailing)
-    dividend = await first(client, number_, ("CommonStockDividendsPerShareDeclared",), "USD/shares", trailing)
-    cash = await first(client, number_, CASH, "USD", latest)
-    debt = await first(client, number_, DEBT, "USD", latest)
-    shares = latest(await concept(client, number_, "EntityCommonStockSharesOutstanding", "shares", "dei"))
-    return {"source": "sec", "cik": number_, "currency": "$", "revenue": revenue, "profit": profit, "eps": eps,
-            "dividend": dividend, "cash": cash, "debt": debt, "shares": shares}
+        return await ifrs_figures(client, number_)  # foreign filer (20-F, IFRS) or a fund
+    eps, dividend, cash, debt, shares = await asyncio.gather(
+        first(client, number_, ("EarningsPerShareDiluted", "EarningsPerShareBasic"), "USD/shares", trailing),
+        first(client, number_, ("CommonStockDividendsPerShareDeclared",), "USD/shares", trailing),
+        first(client, number_, CASH, "USD", latest),
+        first(client, number_, DEBT, "USD", latest),
+        concept(client, number_, "EntityCommonStockSharesOutstanding", "shares", "dei"),
+    )
+    return {"source": "sec", "cik": number_, "currency": "$", "code": "USD", "revenue": revenue, "profit": profit,
+            "eps": eps, "dividend": dividend, "cash": cash, "debt": debt, "shares": latest(shares)}
 
 
 # ---------------------------------------------------------------- Wikidata (everyone else)
@@ -407,7 +459,7 @@ def sec_line(label: str, f: dict, price: float | None, paid: dict | None = None,
         if f["revenue"] and f["revenue"][0] > 0 and f["profit"][0] > 0 and not short:
             text += f" (Marge {ratio(f['profit'][0] / f['revenue'][0] * 100)} %)"
         parts.append(text)
-    if paid and paid.get("currency") == "USD":
+    if paid and paid.get("currency") == f.get("code", "USD"):
         if paid["count"]:
             parts.append(dividend_text(paid, short=short))
     elif f["dividend"] and f["dividend"][0] > 0:
@@ -427,9 +479,12 @@ def sec_line(label: str, f: dict, price: float | None, paid: dict | None = None,
     if not parts:
         return ""
     end = (f["revenue"] or f["profit"])[1]
+    span = "Geschäftsjahr" if f.get("annual") else "12 Monate"
     if short:
-        return f"{label} (12 Monate bis {months(end)}): " + ", ".join(parts) + "."
-    return f"{label}: " + ", ".join(parts) + f". Letzte 12 Monate bis {months(end)}, SEC-Berichte."
+        return f"{label} ({span} bis {months(end)}): " + ", ".join(parts) + "."
+    span = "Geschäftsjahr" if f.get("annual") else "Letzte 12 Monate"
+    report = "Jahresbericht bei der SEC" if f.get("annual") else "SEC-Berichte"
+    return f"{label}: " + ", ".join(parts) + f". {span} bis {months(end)}, {report}."
 
 
 def wikidata_line(label: str, f: dict, paid: dict | None = None, *, short: bool = False) -> str:
@@ -501,22 +556,23 @@ async def company(client: httpx.AsyncClient, symbol: str, label: str, *,
         text = profile_line(label, (figures or {}).get("profile") or {})
         return (text, f"https://www.wikidata.org/wiki/{figures['item']}") if text else None
     paid = await dividends(client, home)
-    if re.fullmatch(r"[A-Z]{1,5}(-[A-Z])?", home) and sec_contact():  # a US ticker: filings at the SEC
-        hit, figures = _cached("sec:" + home)
+    filer = ADR.get(symbol) or (home if re.fullmatch(r"[A-Z]{1,5}(-[A-Z])?", home) else "")
+    if filer and sec_contact():  # filings at the SEC: US companies and a few 20-F filers
+        hit, figures = _cached("sec:" + filer)
         if not hit:
             try:
-                figures = await sec_figures(client, home)
+                figures = await sec_figures(client, filer)
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                log.warning("SEC figures for %s failed: %s", home, exc)
+                log.warning("SEC figures for %s failed: %s", filer, exc)
                 figures = None  # Wikidata below still answers; the next question tries the SEC again
             else:
-                _keep("sec:" + home, figures)
+                _keep("sec:" + filer, figures)
         if figures:
-            figures = {**figures, "ticker": home}
+            figures = {**figures, "ticker": filer}
             price = None
             try:
-                data = await quote(client, home, label)
-                if data.get("currency") == "USD":
+                data = await quote(client, home, label)  # home listing: ordinary shares in the report currency
+                if data.get("currency") == figures.get("code", "USD"):
                     price = data["price"]
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 price = None

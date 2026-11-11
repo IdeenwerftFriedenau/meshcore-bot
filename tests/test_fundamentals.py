@@ -101,7 +101,16 @@ DIVIDENDS = {"NVDA": (180.0, "USD", paid((20, 0.01), (110, 0.01), (200, 0.01), (
              "SAP.DE": (240.0, "EUR", paid((180, 2.35), (545, 2.2)))}
 
 
-def sources(seen=None, sec=NVDA, price=180.0):
+SAP_20F = {  # ifrs-full concepts of a 20-F filer, in euro
+    "Revenue": {"EUR": [row("2024-01-01", "2024-12-31", 34.18e9, "20-F"), row("2025-01-01", "2025-12-31", 36.8e9, "20-F")]},
+    "ProfitLossAttributableToOwnersOfParent": {"EUR": [row("2025-01-01", "2025-12-31", 7.2e9, "20-F")]},
+    "DilutedEarningsPerShare": {"EUR/shares": [row("2025-01-01", "2025-12-31", 6.15, "20-F")]},
+    "CashAndCashEquivalents": {"EUR": [instant("2025-12-31", 9.5e9, "20-F")]},
+    "EntityCommonStockSharesOutstanding": {"shares": [instant("2026-02-20", 1.166e9, "20-F")]},
+}
+
+
+def sources(seen=None, sec=NVDA, price=180.0, ifrs=None):
     def respond(request):
         if seen is not None:
             seen.append(str(request.url))
@@ -110,12 +119,17 @@ def sources(seen=None, sec=NVDA, price=180.0):
         if host.endswith("sec.gov"):
             assert request.headers["user-agent"].endswith(" bot@example.org")
         if host == "www.sec.gov" and path == "/files/company_tickers.json":
-            return httpx.Response(200, json={"0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
-                                             "1": {"cik_str": 1, "ticker": "ASML", "title": "ASML"}})
+            tickers = {"0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
+                       "1": {"cik_str": 1, "ticker": "ASML", "title": "ASML"}}
+            if ifrs:
+                tickers["2"] = {"cik_str": 1000184, "ticker": "SAP", "title": "SAP SE"}
+            return httpx.Response(200, json=tickers)
         if host == "data.sec.gov":
             concept = path.rsplit("/", 1)[-1].removesuffix(".json")
-            if "CIK0001045810" in path and concept in sec:
+            if "CIK0001045810" in path and concept in sec and "/us-gaap/" in path or "/dei/" in path and "CIK0001045810" in path:
                 return httpx.Response(200, json={"units": sec[concept]})
+            if ifrs and "CIK0001000184" in path and concept in ifrs and "/us-gaap/" not in path:
+                return httpx.Response(200, json={"units": ifrs[concept]})
             return httpx.Response(404)
         if host == "www.wikidata.org":
             params = request.url.params
@@ -130,6 +144,8 @@ def sources(seen=None, sec=NVDA, price=180.0):
             return httpx.Response(200, json={"chart": {"result": [{
                 "meta": {"symbol": symbol, "currency": currency, "regularMarketPrice": close},
                 "events": {"dividends": events}}]}})
+        if path.startswith("/v8/finance/chart/SAP.DE"):
+            return httpx.Response(200, json=chart("SAP.DE", 240.0, RISING, currency="EUR", name="SAP"))
         if path.startswith("/v8/finance/chart/NVDA"):
             return httpx.Response(200, json=chart("NVDA", price, RISING, currency="USD", name="NVIDIA"))
         return httpx.Response(404)
@@ -368,3 +384,15 @@ async def test_sec_refusal_falls_back_to_wikidata():
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         text = (await key_figures(client, ["Nvidia"]))["text"]
     assert "Wikidata" in text and "Umsatz" in text
+
+
+async def test_german_20f_filer_uses_its_annual_report_at_the_sec():
+    seen: list[str] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(sources(seen, ifrs=SAP_20F))) as client:
+        result = await key_figures(client, ["SAP"])
+    text = result["text"]
+    assert text.startswith("SAP: Börsenwert 280 Mrd. €, KGV 39")  # 240 € x 1,166 Mrd. Aktien; 240 / 6,15
+    assert "Umsatz 36,8 Mrd. € (+8 %)" in text and "Gewinn 7,2 Mrd. €" in text
+    assert "Dividende 2,35 €/Aktie" in text and "Cash 9,5 Mrd. €" in text
+    assert "Geschäftsjahr bis 12/2025, Jahresbericht bei der SEC" in text and "Wikidata" not in text
+    assert any("ifrs-full" in u for u in seen)
