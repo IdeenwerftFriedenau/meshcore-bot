@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Rollt die Alltagsdaten für #fragdenbot aus (Warnungen, Störungen, Weltraumwetter, Fußball, Luft, Pollen, Feiertage, Sprit). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit 7977e3527e266509f8416cc53c2dc4a827495706 auf GitHub und prüft jede Datei per SHA-256.
+# Holt den Code vom festen Commit 9a798fd6724b6c5a18d47d9f76d625f19bf4827e auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=7977e3527e266509f8416cc53c2dc4a827495706
+COMMIT=9a798fd6724b6c5a18d47d9f76d625f19bf4827e
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
 CONF=/etc/meshcore-ai-bot/config.toml
 SP=$($PY -c 'import meshcore_ai_bot,os;print(os.path.dirname(meshcore_ai_bot.__file__))')
-FILES=(assistant.py tools.py alltag.py)
+FILES=(assistant.py tools.py alltag.py research.py)
 TESTS=(test_alltag.py)
 
 if [[ "${1:-}" == rollback ]]; then
@@ -27,14 +27,16 @@ fi
 declare -A WANT=(
   [assistant.py]="6821a46b537d83f84b458e776defaf5139ba72988e5da99e3da42b9823825de4"
   [tools.py]="5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed"
-  [alltag.py]="681bf386a5f9580a9b969ea778be3c35de44fe623a37bc7643d862444284c0d1"
-  [test_alltag.py]="3e01b26141e5824f86a7e9e9c07109d46a34ac0584ff0cc833246c0f3dda648e"
+  [alltag.py]="8e01e37d1c7adbfe008c82508debf72cf07bcc8dbfee617f7b78b9a8cf8ff40b"
+  [research.py]="ab10683ebcb770b9d230474da1083d3378b93b98cd2a5c96f8a792f66259dbcb"
+  [test_alltag.py]="72ca4a965980271e016d6d11d1e531b68d66a5558981a86657a7a67e7bc63e2c"
 )
-# Erwarteter Vorstand auf dem Pi: die Insider-Auslieferung 5a54619 (= main 6a6d725, live seit 2026-11-11 17:29).
+# Erwarteter Vorstand auf dem Pi: Insider-Auslieferung 5a54619 (= main 6a6d725) oder Alltagsdaten 7977e35.
 declare -A EXPECT=(
-  [assistant.py]="89d07cfb69a7d6b5914d71c0dc4ad9d3d2e089b9fa31a5c93e7cf11dff979ffe"
-  [tools.py]="5bec21a0a94357bb2d8ffe1ccb6857dc18afe9469e7e942fa01d3bd1d8f0a7c4"
-  [alltag.py]="neu"
+  [assistant.py]="89d07cfb69a7d6b5914d71c0dc4ad9d3d2e089b9fa31a5c93e7cf11dff979ffe 6821a46b537d83f84b458e776defaf5139ba72988e5da99e3da42b9823825de4"
+  [tools.py]="5bec21a0a94357bb2d8ffe1ccb6857dc18afe9469e7e942fa01d3bd1d8f0a7c4 5dc25bef9f1d4c0da8aca2f797d4429424a8da31ad465d5164ecbadc8e4062ed"
+  [alltag.py]="neu 681bf386a5f9580a9b969ea778be3c35de44fe623a37bc7643d862444284c0d1"
+  [research.py]="5026601bb1a0b84049c9d2ea224c2a4429190a11289609778005ee25880b2a7e"
 )
 
 PKG=$(mktemp -d)
