@@ -104,7 +104,7 @@ DIVIDENDS = {"NVDA": (180.0, "USD", paid((20, 0.01), (110, 0.01), (200, 0.01), (
 SAP_20F = {  # ifrs-full concepts of a 20-F filer, in euro
     "Revenue": {"EUR": [row("2024-01-01", "2024-12-31", 34.18e9, "20-F"), row("2025-01-01", "2025-12-31", 36.8e9, "20-F")]},
     "ProfitLossAttributableToOwnersOfParent": {"EUR": [row("2025-01-01", "2025-12-31", 7.2e9, "20-F")]},
-    "DilutedEarningsPerShare": {"EUR/shares": [row("2025-01-01", "2025-12-31", 6.15, "20-F")]},
+    "DilutedEarningsLossPerShare": {"EUR/shares": [row("2025-01-01", "2025-12-31", 6.15, "20-F")]},
     "CashAndCashEquivalents": {"EUR": [instant("2025-12-31", 9.5e9, "20-F")]},
     "EntityCommonStockSharesOutstanding": {"shares": [instant("2026-02-20", 1.166e9, "20-F")]},
 }
@@ -396,3 +396,10 @@ async def test_german_20f_filer_uses_its_annual_report_at_the_sec():
     assert "Dividende 2,35 €/Aktie" in text and "Cash 9,5 Mrd. €" in text
     assert "Geschäftsjahr bis 12/2025, Jahresbericht bei der SEC" in text and "Wikidata" not in text
     assert any("ifrs-full" in u for u in seen)
+
+
+async def test_kgv_from_market_value_and_profit_without_eps():
+    no_eps = {k: v for k, v in SAP_20F.items() if k != "DilutedEarningsLossPerShare"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(sources(ifrs=no_eps))) as client:
+        text = (await key_figures(client, ["SAP"]))["text"]
+    assert "KGV 38,9" in text  # 240 € x 1,166 Mrd. / 7,2 Mrd. €

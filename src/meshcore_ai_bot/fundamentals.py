@@ -47,7 +47,7 @@ ADR = {"SAP.DE": "SAP", "DBK.DE": "DB", "FME.DE": "FMS", "ASME.DE": "ASML"}
 IFRS = {
     "revenue": ("Revenue", "RevenueFromContractsWithCustomers"),
     "profit": ("ProfitLossAttributableToOwnersOfParent", "ProfitLoss"),
-    "eps": ("DilutedEarningsPerShare", "BasicEarningsPerShare"),
+    "eps": ("DilutedEarningsLossPerShare", "BasicEarningsLossPerShare"),
     "cash": ("CashAndCashEquivalents",),
 }
 SIGNS = {"USD": "$", "EUR": "€", "GBP": "£", "CHF": "CHF", "JPY": "Yen"}
@@ -451,6 +451,10 @@ def sec_line(label: str, f: dict, price: float | None, paid: dict | None = None,
             parts.append("KGV " + ratio(pe))
     elif f["eps"] and f["eps"][0] < 0:
         parts.append("KGV entfällt (Verlust)")
+    elif price and f["shares"] and f["profit"] and f["profit"][0] > 0 and f.get("ticker") not in NO_PE:
+        pe = price * f["shares"][0] / f["profit"][0]  # no earnings per share filed: market value / profit
+        if pe < 1000:
+            parts.append("KGV " + ratio(pe))
     if f["revenue"]:
         parts.append("Umsatz " + money(f["revenue"][0], cur) + change(f["revenue"][2] if len(f["revenue"]) > 2 else None))
     if f["profit"]:
