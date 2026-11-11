@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Rollt die Firmenkennzahlen im Börsenbot aus (PR #41). Als marc ausführen, nutzt sudo selbst.
-# Holt den Code vom festen Commit adbec7c4d4772fe629b49861a5158372b87487ad auf GitHub und prüft jede Datei per SHA-256.
+# Holt den Code vom festen Commit 265329b2a5b6f8020cee06c2aee8013b145f0a9b auf GitHub und prüft jede Datei per SHA-256.
 #   bash deploy.sh            -> Backup, Dateien, Live-Test (ohne Neustart)
 #   bash deploy.sh restart    -> zusätzlich meshcore-gateway neu starten (nötig, damit es wirkt)
 #   bash deploy.sh rollback <backupdir>
 set -euo pipefail
-COMMIT=adbec7c4d4772fe629b49861a5158372b87487ad
+COMMIT=265329b2a5b6f8020cee06c2aee8013b145f0a9b
 RAW=https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot
 BASE=/opt/meshcore-ai-bot
 PY=$BASE/current/.venv/bin/python
 CONF=/etc/meshcore-ai-bot/config.toml
 SP=$($PY -c 'import meshcore_ai_bot,os;print(os.path.dirname(meshcore_ai_bot.__file__))')
-FILES=(assistant.py tools.py markets.py fundamentals.py)
+FILES=(assistant.py tools.py markets.py fundamentals.py research.py)
 
 if [[ "${1:-}" == rollback ]]; then
   BK=${2:?Backup-Ordner angeben}
@@ -28,14 +28,16 @@ declare -A WANT=(
   [tools.py]="42efd85c0e7aabe966e01ae4ced5e8341c73b9247f6895d8b1aee50f589e5c8b"
   [markets.py]="7a1fece2877ea239189e818bcd3c49f1d2cb5113ac4650e32e0b5f58ca5fbbec"
   [fundamentals.py]="a1c618e67b14d4a9639fe8a28fbfb226d28dd2899bc79ed624c0a46f8f3a2d7f"
+  [research.py]="5026601bb1a0b84049c9d2ea224c2a4429190a11289609778005ee25880b2a7e"
   [test_fundamentals.py]="79517f516dbb63bfff5c7e75a04fbcc8976b8594cecf667af03e4e3828383baf"
 )
-# Erwarteter Vorstand auf dem Pi: main 0ffa030 (Gedächtnis #40) oder eine frühere Kennzahlen-Auslieferung (a5f7765, d7c3b98, 4f8a555).
+# Erwarteter Vorstand auf dem Pi: main 0ffa030 (Gedächtnis #40) oder eine frühere Kennzahlen-Auslieferung (a5f7765, d7c3b98, 4f8a555, adbec7c).
 declare -A EXPECT=(
   [assistant.py]="c843b7747da94bec563b9cc7431bb3e90fce3a34726ba1e946dbed56b0ec6d8b 4f7a08035c18e4c3f0208ab72887975c59d7ad066dc9e5aabbee2cb281be8fb6"
   [tools.py]="fa58e377124917992a98b2cc95a7872425a412f474ab690fc90162c490cd397f 42efd85c0e7aabe966e01ae4ced5e8341c73b9247f6895d8b1aee50f589e5c8b"
   [markets.py]="1e7911016b3026aa79083233c29263040f0e1fa643b3941e6c77dca4f6f6f990 7a1fece2877ea239189e818bcd3c49f1d2cb5113ac4650e32e0b5f58ca5fbbec"
-  [fundamentals.py]="neu 06b5a69ae53d3d8c6d4bdba594556ee7372df95d8da19e70d126a29dc571f70a 7b252114a064c35c3590da3f66c1f87eb160bfa7fbc535c7c0371af529849bb3 1f5d8ee04e16ff51239392239184ef59948c2cae7f559ad7697e99c5ab7ece98"
+  [fundamentals.py]="neu 06b5a69ae53d3d8c6d4bdba594556ee7372df95d8da19e70d126a29dc571f70a 7b252114a064c35c3590da3f66c1f87eb160bfa7fbc535c7c0371af529849bb3 1f5d8ee04e16ff51239392239184ef59948c2cae7f559ad7697e99c5ab7ece98 a1c618e67b14d4a9639fe8a28fbfb226d28dd2899bc79ed624c0a46f8f3a2d7f"
+  [research.py]="5cf69e85ac54acc6f0a43764412e5a17ba29ee0265a201ab212dbf6393a17f37"
 )
 
 PKG=$(mktemp -d)
