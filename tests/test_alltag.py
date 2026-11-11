@@ -266,3 +266,23 @@ def test_routing(question, tool, args):
 ])
 def test_not_routed(question):
     assert alltag_request(question) is None
+
+
+@pytest.mark.asyncio
+async def test_disruptions_fall_back_to_vbb_instance(monkeypatch):
+    monkeypatch.setattr(alltag.asyncio, "sleep", _no_sleep)
+    hosts = []
+
+    def busy(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        if request.url.host == "v6.bvg.transport.rest":
+            return httpx.Response(503)
+        return handler(request)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(busy)) as client:
+        result = await disruptions(client, "https://v6.bvg.transport.rest", "S1")
+    assert result["text"].startswith("S1: Wegen einer Reparatur")
+    assert "v6.vbb.transport.rest" in hosts
+
+
+async def _no_sleep(*_):
+    return None

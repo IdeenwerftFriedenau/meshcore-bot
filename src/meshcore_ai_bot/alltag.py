@@ -167,6 +167,7 @@ HUBS = {
     "900007102": "Gesundbrunnen", "900023201": "Zoo", "900100001": "Friedrichstraße",
     "900054105": "Innsbrucker Platz", "900078101": "Hermannplatz", "900056101": "Wittenbergplatz",
 }
+MIRROR = "https://v6.vbb.transport.rest"
 LINE = re.compile(r"\b(s ?\d{1,2}|u ?\d|m ?\d{1,2}|x ?\d{1,2}|n ?\d{1,3}|re ?\d{1,2}|rb ?\d{1,2}|bus ?\d{1,3}|"
                   r"tram ?\d{1,2}|fex)\b", re.I)
 
@@ -197,14 +198,33 @@ async def disruptions(client: httpx.AsyncClient, base: str, line: str = "", tz: 
     base = base.rstrip("/")
     wanted = line_name(line) if line else ""
 
+    gate = asyncio.Semaphore(3)  # transport.rest allows bursts of a few requests, not ten at once
+
+    # The public BVG instance often answers 503 under load; the VBB instance serves the same data.
+    bases = [base] + ([MIRROR] if "bvg.transport.rest" in base else [])
+
     async def board(stop: str):
-        data = await _json(client, f"{base}/stops/{stop}/departures",
-                           {"duration": 60, "results": 80, "remarks": "true", "language": "de"}, limit=3_000_000)
-        return data.get("departures", []) if isinstance(data, dict) else data
+        async with gate:
+            tries = bases * 2
+            for attempt, url in enumerate(tries):
+                try:
+                    data = await _json(client, f"{url}/stops/{stop}/departures",
+                                       {"duration": 60, "results": 80, "remarks": "true", "language": "de"},
+                                       limit=3_000_000)
+                    return data.get("departures", []) if isinstance(data, dict) else data
+                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else 0
+                    if attempt == len(tries) - 1 or (status and status not in {429, 500, 502, 503, 504}):
+                        raise
+                    await asyncio.sleep(0.5 if attempt == 0 else 1.5)
+            return []
 
     boards = await asyncio.gather(*(board(stop) for stop in HUBS), return_exceptions=True)
-    if all(isinstance(b, BaseException) for b in boards):
-        raise httpx.TransportError("BVG departures unreachable")
+    errors = [b for b in boards if isinstance(b, BaseException)]
+    for error in errors[:1]:
+        log.warning("BVG departures for disruptions failed: %r", error)
+    if len(errors) == len(boards):
+        raise httpx.TransportError(f"BVG departures unreachable: {errors[0]!r}"[:200])
     notes: dict[str, dict[str, None]] = {}
     cancelled: dict[str, set] = {}
     seen: set[str] = set()
