@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Rundumtest auf dem Pi, vom Handy startbar. Läuft im Hintergrund weiter, auch wenn die SSH-Verbindung abreißt.
 # Sendet nichts über Funk, ändert nichts an Bot, Konfig oder Datenbank (Testdatenbanken im Speicher).
-#   bash start.sh            -> starten (ca. 40-50 Minuten)
+#   bash start.sh               -> Rundumtest starten (ca. 40-50 Minuten)
+#   bash start.sh faehigkeiten  -> nur den Fähigkeitentest beider Kanäle (ca. 8-10 Minuten)
 #   bash start.sh status     -> läuft er noch?
 # Ergebnis: /tmp/rundumtest/kurz.txt (Kurzfassung), /tmp/rundumtest/bericht.txt (alles)
 set -euo pipefail
@@ -20,12 +21,25 @@ if pgrep -f "$DIR/lauf.sh" >/dev/null; then echo "Der Test läuft schon. Status:
 [[ -n "$COMMIT" ]] || { echo "COMMIT fehlt." >&2; exit 1; }
 
 mkdir -p "$DIR"
-for f in rundum.py massive_test.py kurz.py; do curl -fsSL "$RAW/deploy/rundumtest/$f" -o "$DIR/$f"; done
+for f in rundum.py massive_test.py kurz.py faehigkeiten.py; do curl -fsSL "$RAW/deploy/rundumtest/$f" -o "$DIR/$f"; done
 curl -fsSL "$RAW/scripts/boerse-test.py" -o "$DIR/boerse-test.py"
 curl -fsSL "$RAW/deploy/kennzahlen/live_test.py" -o "$DIR/kennzahlen_test.py"
 rm -f "$DIR/kurz.txt"
 sudo -v  # Passwort jetzt abfragen, nicht mitten im Hintergrundlauf
 
+if [[ "${1:-}" == faehigkeiten ]]; then
+cat > "$DIR/lauf.sh" <<RUN
+#!/usr/bin/env bash
+cd "$DIR"
+{
+  echo "Fähigkeitentest \$(date -Is) auf \$(hostname), Quelle \$(readlink -f /opt/meshcore-ai-bot/source)"
+  echo "################ FÄHIGKEITEN #fragdenbot und #börsenbot ################"
+  sudo "$PY" -I faehigkeiten.py "$CONF" 3 || echo "FEHLER faehigkeiten"
+  echo; echo "FERTIG \$(date -Is)"
+} > "$DIR/bericht.txt" 2>&1
+python3 "$DIR/kurz.py" "$DIR/bericht.txt" 40 > "$DIR/kurz.txt"
+RUN
+else
 cat > "$DIR/lauf.sh" <<RUN
 #!/usr/bin/env bash
 cd "$DIR"
@@ -44,8 +58,9 @@ cd "$DIR"
 } > "$DIR/bericht.txt" 2>&1
 python3 "$DIR/kurz.py" "$DIR/bericht.txt" 40 > "$DIR/kurz.txt"
 RUN
+fi
 chmod +x "$DIR/lauf.sh"
 nohup setsid "$DIR/lauf.sh" >/dev/null 2>&1 &
-echo "Rundumtest gestartet (dauert ca. 40-50 Minuten, läuft auch ohne offene Verbindung weiter)."
+echo "Test gestartet (läuft auch ohne offene Verbindung weiter)."
 echo "Stand prüfen:  bash $0 status"
 echo "Ergebnis:      cat $DIR/kurz.txt"

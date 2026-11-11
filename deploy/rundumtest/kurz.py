@@ -7,7 +7,7 @@ LINES = open(sys.argv[1] if len(sys.argv) > 1 else "/tmp/rundumtest/bericht.txt"
 LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 40
 KEEP = re.compile(r"^(Rundumtest |FERTIG|Dauer |1 echte|2 Börsen|3 Alarm|Echte Fragen:|Börsenbefehle:|\d+/\d+ OK|"
                   r"\d+ Fälle in|Annahme:|Antwortzeit:|Pakete:|Werkzeuge:|Auffälligkeiten:|Kategorien|"
-                  r"\d+/\d+ Kennzahlen|SEC-Kontakt|#{6,}|=+ ZUSAMMENFASSUNG)")
+                  r"\d+/\d+ Kennzahlen|SEC-Kontakt|Kanäle:|Fähigkeitentest|#{6,}|=+ ZUSAMMENFASSUNG)")
 BAD = re.compile(r"AUFFÄLLIG|^XX |^FEHLER")
 
 
