@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .alltag import (
+    AGENT,
     ALLTAG_TOOLS,
     air_quality,
     disruptions,
@@ -283,6 +284,7 @@ class Tools:
     def __init__(self, config: Config, store: Store, client: httpx.AsyncClient, *, offline: bool = False):
         self.config, self.store, self.client, self.offline = config, store, client, offline
         self.cache: dict[str, tuple[float, dict]] = {}
+        self.postcodes: dict[str, tuple[float, float, str]] = {}
         self.research = Research(config, client)
         self.last_good: dict[str, tuple[float, dict]] = {}
 
@@ -334,6 +336,23 @@ class Tools:
         """Postcode or place name -> coordinates; Berlin/Brandenburg first, with anywhere=True all of Germany."""
         postcode = re.fullmatch(r"\s*(?:plz\s*)?(\d{5})\s*", name, re.I)
         if postcode:
+            code = postcode.group(1)
+            if code in self.postcodes:
+                return self.postcodes[code]
+            # OpenStreetMap knows each postcode area (12157 -> Schöneberg); zippopotam.us only the town's centre.
+            try:
+                rows = await read_json(
+                    self.client, "GET", "https://nominatim.openstreetmap.org/search",
+                    params={"postalcode": code, "country": "de", "format": "json", "limit": 1}, headers=AGENT,
+                    timeout=10, limit=200_000)
+            except (httpx.HTTPError, ValueError):
+                rows = []
+            if rows:
+                parts = [part.strip() for part in str(rows[0].get("display_name", "")).split(",")]
+                district = next((part for part in parts[1:] if part and not part.isdigit()), "")
+                found = float(rows[0]["lat"]), float(rows[0]["lon"]), f"{code} {district}".strip()
+                self.postcodes[code] = found
+                return found
             try:
                 data = await read_json(self.client, "GET", f"https://api.zippopotam.us/de/{postcode.group(1)}",
                                        timeout=10, limit=200_000)
