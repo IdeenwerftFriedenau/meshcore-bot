@@ -1022,3 +1022,14 @@ async def test_grill_near_district_uses_its_coordinates():
     assert ", nahe Steglitz: REWE Schlangenbaderstraße 25" in text
     assert "/52.4600/13.3200/" in seen[0]
     assert "am nächsten" in home
+
+
+def test_grill_day_asked_by_weekday_leads_with_that_weekday():
+    from datetime import date
+
+    from meshcore_ai_bot.research import _day_label
+
+    today = date(2026, 11, 11)  # Wednesday
+    assert _day_label(date(2026, 11, 13), today, named=True) == "Freitag 13.11. (übermorgen)"
+    assert _day_label(date(2026, 11, 17), today, named=True) == "Dienstag 17.11."
+    assert _day_label(date(2026, 11, 13), today) == "Übermorgen (Fr 13.11.)"

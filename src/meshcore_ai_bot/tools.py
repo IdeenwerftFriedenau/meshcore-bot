@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .config import Config
+from .fundamentals import fundamentals, wiki
 from .http import read_json
+from .insider import insider_trades
 from .markets import (
     SPLIT,
     crypto_mood,
@@ -156,6 +158,24 @@ RESEARCH_SCHEMAS = {
         {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu drei mit Komma, z.B. 'SAP, Bitcoin'"}},
         [],
     ),
+    "get_fundamentals": tool(
+        "get_fundamentals",
+        "Kennzahlen einer Firma: Börsenwert, KGV, Dividende (mit letzter Zahlung), Umsatz mit Wachstum, Gewinn, "
+        "Cash und Schulden. US-Firmen aus den SEC-Berichten (letzte 12 Monate), andere wie DAX-Werte als "
+        "Jahreszahlen aus Wikidata. Mit about='ja' stattdessen das Firmenprofil: Chef, Sitz, Branche, "
+        "Gründungsjahr, ISIN, Webseite.",
+        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN, bis zu zwei mit Komma, z.B. 'Nvidia'"},
+         "about": {"type": "string", "description": "'ja' für das Firmenprofil statt der Kennzahlen"}},
+        ["asset"],
+    ),
+    "get_insider_trades": tool(
+        "get_insider_trades",
+        "Insider-Geschäfte (Directors' Dealings): Käufe und Verkäufe von Vorstand und Aufsichtsrat. Ohne asset die "
+        "heute bei der BaFin veröffentlichten Meldungen, mit asset die letzten Geschäfte dieser Firma "
+        "(deutsche Firmen BaFin, US-Firmen SEC Form 4).",
+        {"asset": {"type": "string", "description": "Name, Kürzel oder ISIN einer Firma, leer für alle von heute"}},
+        [],
+    ),
     "get_market_news": tool(
         "get_market_news",
         "Aktuelle Schlagzeilen zu einer Aktie, einem Coin oder Rohstoff (tagesschau, Yahoo Finance) plus Kurs. "
@@ -184,6 +204,7 @@ def schemas(config: Config) -> list[dict]:
             result += [RESEARCH_SCHEMAS["get_departures"], RESEARCH_SCHEMAS["get_journey"]]
         result += [RESEARCH_SCHEMAS["get_flights"], RESEARCH_SCHEMAS["get_planes_overhead"],
                    RESEARCH_SCHEMAS["get_grill_stands"], RESEARCH_SCHEMAS["get_quote"],
+                   RESEARCH_SCHEMAS["get_fundamentals"], RESEARCH_SCHEMAS["get_insider_trades"],
                    RESEARCH_SCHEMAS["get_market_news"]]
         if research.read_pages:
             result.append(RESEARCH_SCHEMAS["read_webpage"])
@@ -270,7 +291,7 @@ class Tools:
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
                            get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
-                           get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
+                           get_fundamentals={"asset", "about"}, get_insider_trades={"asset"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -345,6 +366,28 @@ class Tools:
         if name == "get_market_news":
             asset = arguments.get("asset", "").strip()
             return await research.cached(name, asset, 600, lambda: self.market_news(asset))
+        if name == "get_fundamentals":
+            assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]
+            if not assets:
+                return {"text": "Für Kennzahlen brauche ich den Namen einer Firma.", "sources": []}
+            about = arguments.get("about", "").strip().casefold() in {"ja", "yes", "true", "1"}
+            try:
+                return await research.cached(name, f"{'|'.join(assets)}|{about}", 24 * 3600,
+                                             lambda: fundamentals(self.client, assets, about=about))
+            except LookupError:
+                what = "kein Firmenprofil" if about else "keine Kennzahlen"
+                return {"text": f"Zu „{', '.join(assets)}“ finde ich {what}.", "sources": []}
+        if name == "get_insider_trades":
+            asset = arguments.get("asset", "").strip()
+
+            async def isin_of(label: str) -> str:
+                figures = await wiki(self.client, label)
+                return ((figures or {}).get("profile") or {}).get("isin", "")
+
+            try:
+                return await research.cached(name, asset, 900, lambda: insider_trades(self.client, asset, isin_of))
+            except LookupError:
+                return {"text": f"Zu „{asset}“ finde ich keine Insider-Geschäfte.", "sources": []}
         if name == "get_quote":
             tz = self.config.station.timezone
             assets = [a.strip() for a in SPLIT.split(arguments.get("asset", "")) if a.strip()]
