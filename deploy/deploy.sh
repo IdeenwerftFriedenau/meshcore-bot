@@ -50,11 +50,12 @@ gateway_map() {
   return 0
 }
 
-known_blob() {  # Gab es genau diesen Dateiinhalt irgendwann auf GitHub?
+known_blob() {  # Gab es genau diesen Dateiinhalt in der Vorgeschichte des neuen Stands?
   local blob
   # Manche Dateien auf dem Pi darf nur root lesen.
   blob=$($SUDO cat -- "$1" | git --git-dir="$CACHE" hash-object --stdin) || return 1
-  git --git-dir="$CACHE" cat-file -e "$blob" 2>/dev/null
+  # Nur die Vorgeschichte zählt: Eine Fassung aus einem anderen, noch offenen Branch ginge sonst verloren.
+  grep -qxF "$blob" "$WORK/known-blobs"
 }
 
 restart_and_verify() {
@@ -89,7 +90,7 @@ prune_backups() {
     [[ -n "$old" && "$old" == "$BACKUPS"/before-* ]] || continue
     $SUDO rm -rf -- "$old"
     say "Altes Backup entfernt: $old"
-  done < <(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d -name 'before-*' -printf '%T@ %p\n' 2>/dev/null \
+  done < <($SUDO find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d -name 'before-*' -printf '%T@ %p\n' 2>/dev/null \
            | sort -rn | tail -n +"$((KEEP + 1))" | cut -d' ' -f2-)
 }
 
@@ -98,7 +99,7 @@ MODE=${1:-}
 [[ -x "$PY" ]] || die "$PY fehlt. Das Bot-Paket ist hier nicht installiert."
 
 if [[ "$MODE" == rollback ]]; then
-  BK=${2:-$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d -name 'before-*' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)}
+  BK=${2:-$($SUDO find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d -name 'before-*' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)}
   [[ -n "$BK" ]] || die "Kein Backup unter $BACKUPS gefunden."
   say "Stelle wieder her: $BK"
   restore "$BK"
@@ -144,6 +145,7 @@ trap '$SUDO rm -rf "$WORK"' EXIT
 NEW=$WORK/src
 mkdir "$NEW"
 git --git-dir="$CACHE" archive "$COMMIT" | tar -x -C "$NEW"
+git --git-dir="$CACHE" rev-list --objects "$COMMIT" | cut -d' ' -f1 > "$WORK/known-blobs"
 
 SP=$(package_dir)
 OLD=$(readlink -f "$BASE/source" 2>/dev/null || true)
@@ -179,7 +181,7 @@ while IFS=$'\t' read -r name from; do
 done < <(gateway_map "$NEW")
 
 if ((${#DRIFT[@]})); then
-  say "Von Hand geändert (so nie auf GitHub gewesen), Zeilen anders als im neuen Stand:"
+  say "Von Hand geändert oder aus einem anderen Branch (nicht in der Vorgeschichte des neuen Stands), Zeilen anders als im neuen Stand:"
   for f in "${DRIFT[@]}"; do
     rel=${f#"$OLD"/}; [[ "$f" == "$SP"/* ]] && rel=src/meshcore_ai_bot/${f#"$SP"/}
     lines=$($SUDO diff -- "$f" "$NEW/$rel" 2>/dev/null | grep -c '^[<>]' || true)
@@ -194,7 +196,7 @@ if ((${#DRIFT[@]})); then
 fi
 if ((EXTRA)); then say "Im bisherigen Quellstand liegen $EXTRA fremde Dateien (etwa alte Patches). Sie bleiben dort."; fi
 if ((${#KEPT[@]})); then
-  say "Im Gateway-Ordner von Hand geändert, bleiben unverändert liegen:"
+  say "Im Gateway-Ordner von Hand geändert oder aus einem anderen Branch, bleiben unverändert liegen:"
   printf '  %s\n' "${KEPT[@]/#/$GATEWAY/}"
 fi
 
