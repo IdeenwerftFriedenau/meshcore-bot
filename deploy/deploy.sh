@@ -15,6 +15,7 @@
 #   FORCE=1   von Hand geänderte Dateien trotzdem ersetzen (sie liegen dann im Backup) und fehlende
 #             GitHub-Prüfungen übergehen
 #   SKIP_CI=1 nur die GitHub-Prüfungen übergehen (Notfallkorrektur)
+#   CI_WAIT=600 so viele Sekunden auf noch laufende GitHub-Prüfungen warten
 #   DEPS=1    geänderte Python-Abhängigkeiten mit pip nachinstallieren
 #   DIFF=1    bei pruefen die Unterschiede der von Hand geänderten Dateien ausgeben
 #   KEEP=10   so viele Deploy-Backups behalten (0 = nie aufräumen)
@@ -122,7 +123,8 @@ COMMIT=$(git --git-dir="$CACHE" rev-parse --verify -q "$REF^{commit}") || die "S
 say "Stand: $COMMIT ($(git --git-dir="$CACHE" log -1 --format=%s "$COMMIT"))"
 
 # 2. GitHub-Prüfungen müssen bestanden sein (Regel aus AGENTS.md).
-CI=$(curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/commits/$COMMIT/check-runs" 2>/dev/null \
+ci_state() {
+  curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/commits/$COMMIT/check-runs" 2>/dev/null \
   | "$PY" -I -c '
 import json, sys
 try:
@@ -133,10 +135,25 @@ if runs is None: print("unbekannt")
 elif not runs: print("keine")
 elif any(r.get("status") != "completed" for r in runs): print("laufen noch")
 elif all(r.get("conclusion") in ("success", "skipped", "neutral") for r in runs): print("bestanden")
-else: print("fehlgeschlagen")' || true)
+else: print("fehlgeschlagen")'
+}
+CI=$(ci_state || true)
+if [[ "${FORCE:-}" != 1 && "${SKIP_CI:-}" != 1 && $CHECK_ONLY == 0 ]]; then
+  # Right after a merge the checks have not started or are still running: wait instead of failing.
+  WAITED=0
+  while [[ ( "$CI" == keine || "$CI" == "laufen noch" ) && $WAITED -lt ${CI_WAIT:-600} ]]; do
+    say "GitHub-Prüfungen: $CI. Ich warte (bis zu $(( ${CI_WAIT:-600} / 60 )) Minuten) …"
+    sleep 30
+    WAITED=$((WAITED + 30))
+    CI=$(ci_state || true)
+  done
+fi
 CI=${CI:-unbekannt}
 say "GitHub-Prüfungen: $CI"
 if [[ "$CI" != bestanden && "${FORCE:-}" != 1 && "${SKIP_CI:-}" != 1 && $CHECK_ONLY == 0 ]]; then
+  if [[ "$CI" == keine || "$CI" == "laufen noch" ]]; then
+    die "Die GitHub-Prüfungen sind noch nicht fertig ($CI). Bitte in ein paar Minuten noch einmal starten."
+  fi
   die "Die GitHub-Prüfungen für diesen Stand sind nicht bestanden ($CI). Mit FORCE=1 übergehen."
 fi
 
