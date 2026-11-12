@@ -1,0 +1,21 @@
+[Unit]
+Description=Ideenwerft MeshCore USB Gateway
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=marc
+SupplementaryGroups=dialout
+WorkingDirectory=/home/marc/meshcore-gateway
+EnvironmentFile=/home/marc/meshcore-gateway/gateway.env
+ExecStart=/home/marc/meshcore-gateway/venv/bin/python /home/marc/meshcore-gateway/collector.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+StateDirectory=meshcore-gateway
+StateDirectoryMode=0700
+UMask=0077
+[Install]
+WantedBy=multi-user.target
