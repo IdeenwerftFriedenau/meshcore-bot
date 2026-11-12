@@ -1,0 +1,23 @@
+[Unit]
+Description=MeshCore-Bot: externe Datenquellen pruefen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root liest die geschuetzte Bot-Konfiguration; der Dienst darf sonst nichts veraendern.
+ExecStart=/opt/meshcore-ai-bot/current/.venv/bin/python -I /opt/meshcore-ai-bot/source/deploy/quellen/pruefen.py /etc/meshcore-ai-bot/config.toml
+# 1 bedeutet "Quelle gestoert" und ist ein Ergebnis, kein Dienstfehler. 2 ist ein defektes Pruefprogramm.
+SuccessExitStatus=1
+StateDirectory=meshcore-quellen
+StateDirectoryMode=0755
+TimeoutStartSec=900
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+# Nur noetig, wenn QUELLEN_FUNK_KANAL gesetzt wird (Meldung ueber die lokale Funkwarteschlange).
+ReadWritePaths=-/var/lib/meshcore-gateway
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=300M

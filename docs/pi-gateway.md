@@ -15,14 +15,11 @@ Memory-Bereich; der App-Nachrichtenverlauf ist davon getrennt.
 Eine unklare Funkannahme beendet die verbleibenden Antwortteile und erfordert eine
 neue Gateway-Verbindung.
 
-`deploy/existing-gateway/` enthält die zusammengeführten Ergänzungen für den
-bestehenden Ideenwerft-Collector und sein lokales Dashboard. Patches erst auf einer
-Kopie mit `patch --dry-run -p1` prüfen: Sie beziehen sich auf den Collector mit
-dynamischem Kanalempfang, nicht auf beliebige Fremdversionen. `channel_mirror.py`
-und `receive_channels.py` gehören neben den Collector, `pi_gateway_bridge.py`
-ebenfalls. Der App-Server muss bereits `receive_only: true` strikt als reinen
-Empfang behandeln und darf dabei keine Antwort erzeugen. Ohne diese Voraussetzung
-die App-Spiegelung nicht aktivieren.
+`deploy/existing-gateway/` enthält den vollständigen Collector samt Dienstdatei so, wie er auf
+dem Ideenwerft-Pi läuft; die Übersicht und die Schritte zur Wiederherstellung stehen in der
+[README dort](../deploy/existing-gateway/README.md). Der App-Server muss `receive_only: true`
+strikt als reinen Empfang behandeln und darf dabei keine Antwort erzeugen. Ohne diese
+Voraussetzung die App-Spiegelung nicht aktivieren.
 
 Der Collector muss beim Verbinden die Bridge erzeugen und starten, empfangene
 Kanalnachrichten an `receive()` übergeben, Kontakte mit `update_contacts()`
@@ -310,3 +307,40 @@ verschoben und wiederhergestellt werden. Dort zählen sie weiterhin zum
 Speicherlimit und unterliegen derselben 24-Stunden-Aufbewahrung. Laufende
 Aufnahmen müssen zuerst gestoppt werden. Gelöschte Aufnahmen sind nicht mehr
 über die normale MP3-Adresse abrufbar.
+
+## Ausrollen im Gateway-Betrieb
+
+`deploy/deploy.sh` rollt einen ganzen GitHub-Stand aus. Es ersetzt die früheren Skripte je
+Funktion. Auf dem Pi als normaler Benutzer starten; das Skript ruft `sudo` selbst.
+
+```
+curl -fsSL https://raw.githubusercontent.com/IdeenwerftFriedenau/meshcore-bot/main/deploy/deploy.sh -o /tmp/deploy.sh
+bash /tmp/deploy.sh pruefen          # nur prüfen und berichten, ändert nichts
+bash /tmp/deploy.sh main restart     # ausrollen und Gateway neu starten
+bash /tmp/deploy.sh rollback         # letzten Stand wiederherstellen
+```
+
+Das Skript holt den Stand per git, verlangt bestandene GitHub-Prüfungen und vergleicht vor dem
+Austausch jede Datei auf dem Pi mit der GitHub-Historie. Dateien, die es so nie auf GitHub gab,
+wurden von Hand geändert: Das Bot-Paket wird dann nicht überschrieben (`FORCE=1` erzwingt es, die
+alte Fassung liegt im Backup), Dateien neben dem Collector bleiben liegen und werden gemeldet.
+Lädt der neue Stand nicht oder startet der Gateway danach nicht, stellt das Skript den vorherigen
+Stand selbst wieder her. Von den Backups unter `/var/backups/meshcore-pi-v04/before-*` bleiben die
+zehn neuesten (`KEEP=0` schaltet das Aufräumen ab). Geänderte Python-Abhängigkeiten installiert
+das Skript nur mit `DEPS=1`.
+
+## Tägliche Quellenprüfung
+
+Der Timer `meshcore-quellen.timer` (vom Deploy-Skript eingerichtet) fragt jeden Morgen jede externe
+Datenquelle einmal ab: Wetter, BVG, BER, Kurse, Kennzahlen, Warnungen, Sprit und die übrigen. Es
+wird keine KI gefragt und nichts gesendet. Ergebnis ansehen:
+
+```
+bash /opt/meshcore-ai-bot/source/deploy/quellen/stand.sh
+```
+
+Gestörte Quellen stehen dort mit Grund und dem Zeitpunkt des ersten Ausfalls, außerdem im Journal
+(`journalctl -u meshcore-quellen`). Soll der Pi eine Änderung zusätzlich per Funk melden, in
+`/etc/systemd/system/meshcore-quellen.service.d/funk.conf` unter `[Service]` die Zeile
+`Environment=QUELLEN_FUNK_KANAL=#test` setzen. Gemeldet wird nur, wenn sich die Liste der gestörten
+Quellen ändert.

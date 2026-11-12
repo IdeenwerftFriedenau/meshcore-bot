@@ -787,7 +787,7 @@ WEATHER_WORDS = re.compile(
 WEATHER_SKIP = re.compile(
     r"warum|wieso|weshalb|was ist|was sind|erklär|erklaer|bedeut|invers|überreichweit|ueberreichweit|ausbreitung"
     r"|tropo|mütze|mutze|muetze|schal|jacke|handschuh|anziehen|klima|horoskop|sternzeichen|lied|witz|gedicht"
-    r"|wo kann|wo gibt|empfehl|tipp|rezept|koch|ausflug|unternehm", re.I)
+    r"|haiku|reim|neues|nachricht|schlagzeil|wo kann|wo gibt|empfehl|tipp|rezept|koch|ausflug|unternehm", re.I)
 
 
 def weather_question(question: str, default_location: str, home: str = "") -> dict | None:
