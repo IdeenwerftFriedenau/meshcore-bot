@@ -13,6 +13,7 @@ import socket
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import quote, urljoin, urlsplit
@@ -268,8 +269,10 @@ class Research:
             limit=500_000,
         )
         place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else None
-        if not place or not re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))):
-            return {"text": f"Keine Haltestelle „{stop}“ gefunden.", "sources": []}
+        if not place or not re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))) \
+                or not stop_matches(stop, plain(place.get("name"))):
+            return {"text": f"Keine Haltestelle „{stop}“ gefunden. Schreib den Namen bitte genauer, "
+                            "z.B. „Abfahrten Rathaus Steglitz“.", "sources": []}
         wanted = re.sub(r"\s+", "", line).casefold()
         label = LINE_KINDS.get(wanted, (line.strip().upper(), ""))[0]
         if wanted in {"ice", "ic", "fex"} or re.fullmatch(r"r[eb]\d+", wanted):
@@ -938,3 +941,25 @@ def line_matches(wanted: str, name: str, product: str) -> bool:
     if wanted in {"ice", "ic", "fex"}:
         return re.fullmatch(wanted + r"\d*", compact) is not None
     return compact == wanted
+
+
+def stop_matches(asked: str, found: str) -> bool:
+    """The search always returns its nearest guess: 'Blablubbhausen' must not become 'Genthin'."""
+    def words(text: str) -> list[str]:
+        text = text.casefold().replace("ß", "ss").replace("str.", "strasse ")
+        for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue")):
+            text = text.replace(a, b)
+        return re.findall(r"[a-z0-9]+", text)
+
+    asked_words = [w for w in words(asked) if len(w) >= 4 and w not in {"berlin", "bahnhof", "strasse", "platz"}]
+    found_words = words(found)
+    if not asked_words or not found_words:
+        return True  # 'Zoo', 'Hbf', 'ZOB': too short to judge
+    joined = "".join(found_words)
+    for word in asked_words:
+        for other in found_words:
+            if word[:4] == other[:4] or SequenceMatcher(None, word, other).ratio() >= 0.75:
+                return True
+        if word in joined or SequenceMatcher(None, word, joined).ratio() >= 0.75:
+            return True
+    return False

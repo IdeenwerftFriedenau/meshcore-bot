@@ -236,7 +236,12 @@ async def test_fuel_needs_key_then_lists_cheapest_open(client, monkeypatch):
 @pytest.mark.parametrize("question,tool,args", [
     ("Gibt es Unwetterwarnungen?", "get_warnings", {}),
     ("Hochwasser Spree?", "get_warnings", {}),
-    ("Störungen S-Bahn", "get_transit_disruptions", {"line": ""}),
+    ("Störungen S-Bahn", "get_transit_disruptions", {"line": "S-Bahn"}),
+    ("Störungen U-Bahn", "get_transit_disruptions", {"line": "U-Bahn"}),
+    ("Störung bei den Bussen?", "get_transit_disruptions", {"line": "Bus"}),
+    ("Störungen S-Bahn und U-Bahn", "get_transit_disruptions", {"line": ""}),
+    ("Gibt es Streiks bei der BVG?", "get_transit_disruptions", {"line": "streik"}),
+    ("Brückentage 2027", "get_holidays", {"kind": "brueckentag", "day": ""}),
     ("Fährt die S1?", "get_transit_disruptions", {"line": "S1"}),
     ("Fällt die M41 aus?", "get_transit_disruptions", {"line": "M41"}),
     ("Ist die Ringbahn gestört?", "get_transit_disruptions", {"line": "S41"}),
@@ -426,3 +431,27 @@ async def test_named_school_break():
         summer = await holidays(client, "sommerferien", today=date(2026, 11, 11))
     assert easter["text"] == "Osterferien in Berlin: vom 22.03. bis 02.04.2027."
     assert "Sommerferien" in summer["text"] and "keine Termine" in summer["text"]
+
+
+@pytest.mark.asyncio
+async def test_disruptions_by_kind_and_strike(client):
+    suburban = (await disruptions(client, "https://bvg.test", "S-Bahn"))["text"]
+    assert suburban.startswith("Störungen S-Bahn jetzt: S1: Wegen einer Reparatur") and "M4" not in suburban
+    trams = (await disruptions(client, "https://bvg.test", "Tram"))["text"]
+    assert "S1" not in trams and "S5" not in trams
+    strike = (await disruptions(client, "https://bvg.test", "streik"))["text"]
+    assert strike.startswith("Ob gestreikt wird, steht nicht in den Fahrplandaten. Störungen jetzt: S1")
+
+
+@pytest.mark.asyncio
+async def test_bridge_days():
+    def respond(request: httpx.Request) -> httpx.Response:
+        def day(when, name):
+            return {"startDate": when, "endDate": when, "name": [{"language": "DE", "text": name}]}
+        return httpx.Response(200, json=[day("2026-12-25", "1. Weihnachtsfeiertag"), day("2027-05-06", "Christi Himmelfahrt"),
+                                         day("2027-06-01", "Erfundener Dienstag")])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        text = (await holidays(http, "brueckentag", today=date(2026, 11, 12)))["text"]
+    assert text == ("Brückentage in Berlin (nächste 12 Monate): Fr 07.05.2027 (nach Christi Himmelfahrt); "
+                    "Mo 31.05.2027 (vor Erfundener Dienstag).")

@@ -200,8 +200,9 @@ RESEARCH_SCHEMAS = {
     "get_transit_disruptions": tool(
         "get_transit_disruptions",
         "Störungen, Bauarbeiten und Ausfälle bei S-Bahn, U-Bahn, Tram und Bus in Berlin (BVG/VBB). "
-        "Mit line nur diese Linie, z.B. 'S1', 'U7', 'M41'; ohne line alle betroffenen Linien.",
-        {"line": {"type": "string", "description": "Linie, z.B. 'S1'; leer für alle"}},
+        "Mit line nur diese Linie, z.B. 'S1', 'U7', 'M41', oder nur eine Art: 'U-Bahn', 'S-Bahn', 'Tram', 'Bus'; "
+        "ohne line alle betroffenen Linien.",
+        {"line": {"type": "string", "description": "Linie, z.B. 'S1', oder Art, z.B. 'U-Bahn'; leer für alle"}},
         [],
     ),
     "get_space_weather": tool(
@@ -234,7 +235,7 @@ RESEARCH_SCHEMAS = {
     "get_holidays": tool(
         "get_holidays",
         "Gesetzliche Feiertage und Schulferien in Berlin.",
-        {"kind": {"type": "string", "description": "'feiertag', 'ferien' oder leer für beides"},
+        {"kind": {"type": "string", "description": "'feiertag', 'ferien', 'brueckentag' oder leer für beides"},
          "day": {"type": "string", "description": "'heute', 'morgen' oder 'uebermorgen' für Ist-heute-Feiertag-Fragen"}},
         [],
     ),

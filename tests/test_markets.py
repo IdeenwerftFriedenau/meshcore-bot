@@ -548,3 +548,13 @@ def test_us_cents_are_named():
     from meshcore_ai_bot.markets import unit
 
     assert unit({"kind": "FUTURE", "currency": "USX"}) == " US-Cent"
+
+
+def test_no_uptrend_when_the_year_is_deep_in_the_red():
+    # Crash a year ago, flat since, a small bounce today: above both averages, but a quarter below last year.
+    closes = [100.0] * 30 + [70.0] * 334 + [75.0]
+    start = int(NOW.timestamp()) - (len(closes) - 1) * 86400
+    data = {"closes": [(start + i * 86400, c) for i, c in enumerate(closes)], "price": 75.0, "low52": 68.0,
+            "high52": 100.0, "kind": "CRYPTOCURRENCY"}
+    assert markets.signals(data)["trend"] == "flat"
+    assert assessment(data).startswith("kein klarer Trend")

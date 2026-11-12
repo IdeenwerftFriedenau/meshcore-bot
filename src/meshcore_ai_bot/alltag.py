@@ -168,6 +168,8 @@ HUBS = {
     "900054105": "Innsbrucker Platz", "900078101": "Hermannplatz", "900056101": "Wittenbergplatz",
 }
 MIRROR = "https://v6.vbb.transport.rest"
+KINDS = {"ubahn": ("subway", "U-Bahn"), "sbahn": ("suburban", "S-Bahn"), "tram": ("tram", "Tram"),
+         "strassenbahn": ("tram", "Tram"), "bus": ("bus", "Bus")}
 LINE = re.compile(r"\b(s ?\d{1,2}|u ?\d|m ?\d{1,2}|x ?\d{1,2}|n ?\d{1,3}|re ?\d{1,2}|rb ?\d{1,2}|bus ?\d{1,3}|"
                   r"tram ?\d{1,2}|fex)\b", re.I)
 
@@ -196,7 +198,9 @@ def outages(count: int) -> str:
 async def disruptions(client: httpx.AsyncClient, base: str, line: str = "", tz: str = "Europe/Berlin") -> dict:
     """Warnings and cancellations of one line, or the disrupted lines across Berlin."""
     base = base.rstrip("/")
-    wanted = line_name(line) if line else ""
+    kind = KINDS.get(re.sub(r"[\s-]+", "", line).casefold())  # 'U-Bahn' -> only subway lines
+    strike = line.strip().casefold() == "streik"  # the feed knows cancellations, not their reason
+    wanted = line_name(line) if line and not kind and not strike else ""
 
     gate = asyncio.Semaphore(3)  # transport.rest allows bursts of a few requests, not ten at once
 
@@ -236,6 +240,8 @@ async def disruptions(client: httpx.AsyncClient, base: str, line: str = "", tz: 
                 continue  # long-distance trains are not BVG/S-Bahn
             if not name or (wanted and name.upper() != wanted):
                 continue
+            if kind and info.get("product") != kind[0]:
+                continue
             seen.add(name)
             if row.get("cancelled"):
                 cancelled.setdefault(name, set()).add(str(row.get("tripId") or row.get("plannedWhen")))
@@ -261,8 +267,9 @@ async def disruptions(client: httpx.AsyncClient, base: str, line: str = "", tz: 
     lines = sorted(set(notes) | set(cancelled), key=lambda n: (
         0 if n.startswith("S") else 1 if n.startswith("U") else 2, n not in notes, -len(cancelled.get(n, ())), n))
     if not lines:
-        return {"text": "Bei S-Bahn, U-Bahn, Tram und Bus in Berlin ist gerade keine Störung gemeldet.",
-                "sources": source}
+        where = f"Bei der {kind[1]}" if kind else "Bei S-Bahn, U-Bahn, Tram und Bus"
+        lead = "Von einem Streik ist in den Fahrplandaten nichts zu sehen. " if strike else ""
+        return {"text": f"{lead}{where} in Berlin ist gerade keine Störung gemeldet.", "sources": source}
     # One incident often hits several lines (S41, S42, S85): name it once with all of them.
     grouped: dict[str, list[str]] = {}
     for name in lines:
@@ -277,7 +284,10 @@ async def disruptions(client: httpx.AsyncClient, base: str, line: str = "", tz: 
         shown += names
     rest = [n for n in lines if n not in shown]
     more = f" Außerdem betroffen: {', '.join(rest[:6])}." if rest else ""
-    return {"text": "Störungen jetzt: " + "; ".join(parts) + "." + more, "sources": source}
+    head = f"Störungen {kind[1]} jetzt: " if kind else "Störungen jetzt: "
+    if strike:
+        head = "Ob gestreikt wird, steht nicht in den Fahrplandaten. " + head
+    return {"text": head + "; ".join(parts) + "." + more, "sources": source}
 
 
 # ---------------------------------------------------------------- space weather (NOAA SWPC)
@@ -512,12 +522,37 @@ async def pollen(client: httpx.AsyncClient, region: int = 50) -> dict:
 HOLIDAYS = "https://openholidaysapi.org/{kind}"
 
 
+async def bridge_days(client: httpx.AsyncClient, params: dict, today: date) -> dict:
+    """Holidays on a Tuesday or Thursday: one day off makes a long weekend."""
+    public = await _json(client, HOLIDAYS.format(kind="PublicHolidays"), params)
+    found = []
+    for item in public if isinstance(public, list) else []:
+        try:
+            day = date.fromisoformat(item["startDate"])
+            name = next((n["text"] for n in item.get("name") or [] if n.get("language") == "DE"), "")
+        except (KeyError, ValueError, TypeError):
+            continue
+        bridge = day - timedelta(days=1) if day.weekday() == 1 else day + timedelta(days=1) if day.weekday() == 3 else None
+        if bridge and bridge > today and name:
+            found.append((bridge, f"{'Mo' if day.weekday() == 1 else 'Fr'} {bridge:%d.%m.%Y} "
+                                  f"({'vor' if day.weekday() == 1 else 'nach'} {name})"))
+    source = ["https://www.openholidaysapi.org/"]
+    if not found:
+        return {"text": "In den nächsten 12 Monaten liegt in Berlin kein Feiertag auf einem Dienstag oder Donnerstag, "
+                        "also kein Brückentag.", "sources": source}
+    found.sort()
+    return {"text": "Brückentage in Berlin (nächste 12 Monate): " + "; ".join(text for _, text in found[:5]) + ".",
+            "sources": source}
+
+
 async def holidays(client: httpx.AsyncClient, kind: str = "", day: str = "", tz: str = "Europe/Berlin",
                    today: date | None = None) -> dict:
     """Public holidays and school holidays in Berlin. kind: 'feiertag', 'ferien' or both; day: 'heute'/'morgen'."""
     today = today or datetime.now(ZoneInfo(tz)).date()
     params = {"countryIsoCode": "DE", "subdivisionCode": "DE-BE", "languageIsoCode": "DE",
               "validFrom": f"{today - timedelta(days=40):%Y-%m-%d}", "validTo": f"{today + timedelta(days=400):%Y-%m-%d}"}
+    if kind == "brueckentag":
+        return await bridge_days(client, params, today)
     named = kind if kind.endswith("ferien") and kind != "ferien" else ""  # 'osterferien' -> only that break
     want_public = not kind.endswith("ferien")
     want_school = kind != "feiertag"
@@ -744,7 +779,7 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
         named = re.search(r"\b(herbst|winter|oster|pfingst|sommer|weihnachts)ferien\b", folded)
         kind = named.group(0) if named and "feiertag" not in folded else (
             "ferien" if re.search(r"ferien|schulfrei", folded) and "feiertag" not in folded else (
-            "feiertag" if re.search(r"feiertag|brueckentag", folded) else ""))
+            "brueckentag" if "brueckentag" in folded else "feiertag" if "feiertag" in folded else ""))
         day = next((d for d in ("uebermorgen", "morgen", "heute") if re.search(rf"\b{d}\b", folded)), "")
         return "get_holidays", {"kind": kind, "day": "" if kind.endswith("ferien") else day}
     team = next((name for name in TEAMS if re.search(rf"\b{re.escape(name)}\b", folded)), "")
@@ -761,7 +796,14 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
     if DISRUPT.search(folded) or RUNS.search(folded):
         if not line and bus:
             return "get_transit_disruptions", {"line": bus.group(1)}
-        if line or re.search(r"\b(bvg|s ?bahn|u ?bahn|tram|bus|bahn|oepnv|nahverkehr|ringbahn|linie)\b", folded):
-            name = line_name(line.group(0)) if line else ("S41" if "ringbahn" in folded else "")
+        if line or re.search(r"\b(bvg|s ?bahn\w*|u ?bahn\w*|tram|strassenbahn\w*|bus|busse\w*|bahn|oepnv|nahverkehr|"
+                             r"ringbahn|linie)\b", folded):
+            if not line and re.search(r"\bstreik", folded):
+                return "get_transit_disruptions", {"line": "streik"}
+            kind = next((label for pattern, label in (
+                (r"\bu ?bahn", "U-Bahn"), (r"\b(tram|strassenbahn)", "Tram"), (r"\bbus(se|sen)?\b", "Bus"),
+                (r"\bs ?bahn", "S-Bahn")) if re.search(pattern, folded)), "")
+            both = len(re.findall(r"\b(?:u ?bahn|s ?bahn|tram|strassenbahn|bus)", folded)) > 1
+            name = line_name(line.group(0)) if line else ("S41" if "ringbahn" in folded else "" if both else kind)
             return "get_transit_disruptions", {"line": name}
     return None
