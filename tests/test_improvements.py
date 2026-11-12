@@ -130,6 +130,47 @@ async def test_departures_from_transport_rest():
     )
 
 
+@pytest.mark.parametrize("line,expected", [
+    ("S1", "Abfahrten S Friedenau (Berlin) (Echtzeit, BVG/VBB): 13:07 S1 → Wannsee."),
+    ("bus", "Abfahrten S Friedenau (Berlin) (Echtzeit, BVG/VBB): 13:10 187 → Rathaus Steglitz; 13:12 M48 → Mohrenstr.."),
+    ("m48", "Abfahrten S Friedenau (Berlin) (Echtzeit, BVG/VBB): 13:12 M48 → Mohrenstr.."),
+    ("U9", "S Friedenau (Berlin): In den nächsten 60 Minuten keine Abfahrt für U9 gefunden."),
+    ("u-bahn", "S Friedenau (Berlin): In den nächsten 60 Minuten keine Abfahrt für U-Bahnen gefunden."),
+])
+async def test_departures_only_for_the_asked_line(line, expected):
+    def respond(request):
+        if request.url.path == "/locations":
+            return httpx.Response(200, json=[{"type": "stop", "id": "900061101", "name": "S Friedenau (Berlin)"}])
+        assert request.url.params["results"] == "40"
+        return httpx.Response(200, json={"departures": [
+            {"when": "2026-11-07T13:07:00+01:00", "direction": "Wannsee", "line": {"name": "S1", "product": "suburban"}},
+            {"when": "2026-11-07T13:10:00+01:00", "direction": "Rathaus Steglitz",
+             "line": {"name": "187", "product": "bus"}},
+            {"when": "2026-11-07T13:12:00+01:00", "direction": "Mohrenstr.", "line": {"name": "M48", "product": "bus"}},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await Tools(Config(), Store(":memory:"), client).run(
+            "get_departures", {"stop": "S Friedenau", "line": line})
+    assert result["text"] == expected
+
+
+def test_day_description_follows_the_sunshine():
+    from meshcore_ai_bot.tools import day_description
+    day = {"weather_code": [3], "sunshine_duration": [8 * 3600], "daylight_duration": [9 * 3600]}
+    assert day_description(day, 0) == "überwiegend sonnig"
+    assert day_description({**day, "sunshine_duration": [3.5 * 3600]}, 0) == "wechselnd bewölkt"
+    assert day_description({**day, "sunshine_duration": [600]}, 0) == "bedeckt"
+
+
+def test_landing_flights_and_explain_questions():
+    from meshcore_ai_bot.assistant import flight_request
+    from meshcore_ai_bot.markets import market_request
+    assert flight_request("Welche Flüge landen gleich am BER?")[1]["direction"] == "ankunft"
+    assert market_request("Erklär mir Dividende", channel=True) is None
+    assert market_request("Dividende SAP", channel=True) is not None
+
+
 async def test_departures_fall_back_when_bvg_instance_is_busy():
     hosts = []
 
@@ -644,16 +685,20 @@ def test_hour_exact_sun_and_rain():
     target = (base + timedelta(days=1)).date().isoformat()
     hourly = {"time": [h["time"].isoformat() for h in hours], "sunshine_duration": [h["sun_s"] for h in hours],
               "precipitation": [h["mm"] for h in hours], "precipitation_probability": [h["prob"] for h in hours]}
-    assert windows({"hourly": hourly}, target, "sun") == " (10–13 Uhr)"
-    assert windows({"hourly": hourly}, target, "rain") == ", Regen vor allem 15–17 Uhr"
+    # The feed stamps each hour at its END: the value at 10:00 is the sunshine from 9 to 10.
+    assert windows({"hourly": hourly}, target, "sun") == " (9–12 Uhr)"
+    assert windows({"hourly": hourly}, target, "rain") == ", Regen vor allem 14–16 Uhr"
 
 
 @pytest.mark.parametrize("question,expected", [
     ("naechster zug ab s friedenau", {"stop": "s friedenau", "trains": "ja"}),
-    ("wann kommt der nächste Bus am Knausplatz", {"stop": "Knausplatz"}),
+    ("wann kommt der nächste Bus am Knausplatz", {"stop": "Knausplatz", "line": "bus"}),
+    ("Wann fährt die S1 ab Friedenau?", {"stop": "Friedenau", "line": "S1"}),
+    ("U9 ab Walther-Schreiber-Platz", {"stop": "Walther-Schreiber-Platz", "line": "U9"}),
+    ("Abfahrten Straße des 17. Juni", {"stop": "Straße des 17. Juni"}),
     ("Züge ab Berlin Hbf", {"stop": "Berlin Hbf", "trains": "ja"}),
     ("nächste Abfahrt Breslauer Platz", {"stop": "Breslauer Platz"}),
-    ("Wann fährt der nächste ICE von Berlin Hbf nach Hamburg", {"stop": "Berlin Hbf", "trains": "ja"}),
+    ("Wann fährt der nächste ICE von Berlin Hbf nach Hamburg", {"stop": "Berlin Hbf", "trains": "ja", "line": "ICE"}),
     ("Was ist ein Zug?", None),
     ("Was kostet ein Ticket von Spandau nach Hamburg", None),
     ("Wie lange fährt man von Spandau nach Hamburg mit dem Zug", None),
@@ -756,7 +801,7 @@ def test_typos_fixed_before_routing(typed, expected):
     ("was fliegt da grad", ("flight", ("get_planes_overhead", {}))),
     ("wann landet fr146", ("flight", ("get_flights", {"direction": "ankunft", "query": "FR146"}))),
     ("ist der flug aus london gelandet", ("flight", ("get_flights", {"direction": "ankunft", "query": "london"}))),
-    ("wann faehrt die s1 ab friedenau", ("transit", {"stop": "friedenau"})),
+    ("wann faehrt die s1 ab friedenau", ("transit", {"stop": "friedenau", "line": "S1"})),
     ("abfarten rathaus steglitz", ("transit", {"stop": "rathaus steglitz"})),
     ("wie komm ich zum alex", ("journey", {"origin": "S Friedenau", "destination": "Alexanderplatz"})),
     ("wie komme ich zum flughafen ber", ("journey", {"origin": "S Friedenau", "destination": "flughafen ber"})),

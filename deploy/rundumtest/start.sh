@@ -25,7 +25,7 @@ for f in rundum.py massive_test.py kurz.py faehigkeiten.py; do curl -fsSL "$RAW/
 curl -fsSL "$RAW/scripts/boerse-test.py" -o "$DIR/boerse-test.py"
 curl -fsSL "$RAW/deploy/kennzahlen/live_test.py" -o "$DIR/kennzahlen_test.py"
 rm -f "$DIR/kurz.txt"
-sudo -v  # Passwort jetzt abfragen, nicht mitten im Hintergrundlauf
+sudo -n true 2>/dev/null || sudo -v  # Passwort nur abfragen, wenn sudo eines braucht (nicht mitten im Hintergrundlauf)
 
 if [[ "${1:-}" == faehigkeiten ]]; then
 cat > "$DIR/lauf.sh" <<RUN

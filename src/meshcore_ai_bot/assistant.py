@@ -1133,6 +1133,25 @@ def home_departures(question: str, stop: str) -> dict | None:
     args = {"stop": stop}
     if TRAIN_WORDS.search(text):
         args["trains"] = "ja"
+    return wanted_line(text, args)
+
+
+LINE = re.compile(r"\b(?:die|der|den|linie|bus|tram)?\s*((?:[SU]|RE|RB|M|X|N)\s?\d{1,3}|\d{3}|ICE|IC|FEX)\b", re.I)
+MODES = (("s-bahn", r"\bs-?bahn(en)?\b"), ("u-bahn", r"\bu-?bahn(en)?\b"),
+         ("tram", r"\b(tram|stra(ß|ss)enbahn)(en)?\b"), ("bus", r"\bbus(se)?\b"))
+
+
+def wanted_line(text: str, args: dict) -> dict:
+    """'Wann fährt die S1 ab Friedenau?' -> only the S1; 'Wann kommt der Bus?' -> only buses."""
+    before_stop = STOP.sub("", text) or text  # a number inside the stop name is not a line
+    found = LINE.search(before_stop)
+    if found:
+        args["line"] = found.group(1).replace(" ", "").upper()
+        return args
+    for mode, pattern in MODES:
+        if re.search(pattern, before_stop, re.I):
+            args["line"] = mode
+            break
     return args
 
 
@@ -1159,7 +1178,7 @@ def transit_request(question: str) -> dict | None:
     args = {"stop": stop}
     if TRAIN_WORDS.search(text):
         args["trains"] = "ja"
-    return args
+    return wanted_line(text, args)
 
 
 PLANES = re.compile(
@@ -1170,7 +1189,7 @@ RESCUE = re.compile(r"rettungs(hubschrauber|heli\w*)|\bchristoph\s?\d|\bheli(kop
 FLIGHT_NO = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{1,4}[A-Z]?\b")
 FLIGHT_NO_LOWER = re.compile(r"\b([a-z]{2}|[a-z]\d|\d[a-z])\s?\d{2,4}\b")
 BER = re.compile(r"\bBER\b|flughafen|airport|schönefeld|schoenefeld", re.I)
-ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landung|gelandet|kommt .*an\b|ankommen", re.I)
+ARRIVE = re.compile(r"ankunft|ankünfte|ankuenfte|landet|landen|landung|gelandet|komm(t|en) .*an\b|ankommen", re.I)
 DEPART = re.compile(r"abflug|abflüge|abfluege|fliegt .*ab\b|abfliegen|startet|starten|flüge|fluege|flug\b", re.I)
 
 
