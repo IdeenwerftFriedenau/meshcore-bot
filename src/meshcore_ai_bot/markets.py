@@ -234,7 +234,7 @@ def market_request(question: str, *, channel: bool = False) -> dict | None:
         return {"assets": [name] if name else [], "advice": False, "overview": False, "insider": True}
     about = bool(PROFILE.search(folded)) and not FACTS.search(folded)
     facts = FACTS.search(folded) or WORTH.search(folded) or about
-    if facts and not re.match(r"(was (ist|sind|bedeutet|heisst)|erklaer)\w* (ein|eine|das|der|die)?\s*"
+    if facts and not re.match(r"(was (ist|sind|bedeutet|heisst)|erklaer)\w* ((mir|uns|bitte|mal|kurz|doch) )*(ein|eine|einen|das|der|die|den)?\s*"
                               r"(kgv|kbv|eps|dividende|bilanz|kennzahl|marktkap|boersenwert)\w*\s*\??$", folded):
         rest = PROFILE.sub(" ", FACTS.sub(" ", folded))
         known = known_asset(rest) or known_asset(text)

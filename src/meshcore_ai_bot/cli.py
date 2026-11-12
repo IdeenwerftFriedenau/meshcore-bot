@@ -66,6 +66,7 @@ async def simulate(config, cases, *, offline: bool):
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             assistant = Assistant(config, store, client, offline=offline)
             engine = Engine(config, store, assistant)
+            engine.watch = None  # no background market checks: the simulation closes its store right after
             results = []
             for index, case in enumerate(cases):
                 sender = case.get("sender", "Demo" + str(index))

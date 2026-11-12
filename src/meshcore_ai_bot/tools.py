@@ -126,6 +126,8 @@ RESEARCH_SCHEMAS = {
         {
             "stop": {"type": "string", "description": "Haltestellenname, z.B. 'S Friedenau' oder 'Berlin Hbf'"},
             "trains": {"type": "string", "description": "'ja' für nur Züge (Fern- und Regionalverkehr)"},
+            "line": {"type": "string", "description": "Nur diese Linie oder Art, z.B. 'S1', 'U9', 'M48', 'bus', "
+                                                       "'s-bahn', 'u-bahn', 'tram'"},
         },
         ["stop"],
     ),
@@ -400,7 +402,7 @@ class Tools:
             if self.config.research.read_pages:
                 allowed["read_webpage"] = {"url"}
             if self.config.research.transit_url:
-                allowed["get_departures"] = {"stop", "trains"}
+                allowed["get_departures"] = {"stop", "trains", "line"}
                 allowed["get_journey"] = {"origin", "destination", "when", "arrive", "only", "direct"}
             allowed.update(get_flights={"direction", "query"}, get_planes_overhead={"area"},
                            get_grill_stands={"day", "place", "near"}, get_quote={"asset", "advice"},
@@ -428,8 +430,9 @@ class Tools:
         if name == "get_departures":
             stop = arguments.get("stop", "")
             trains = arguments.get("trains", "").strip().casefold() in {"ja", "true", "1", "yes"}
+            line = arguments.get("line", "").strip()
             return await research.cached(
-                name, f"{stop}|{trains}", 30, lambda: research.departures(stop, trains)
+                name, f"{stop}|{trains}|{line.casefold()}", 30, lambda: research.departures(stop, trains, line=line)
             )
         if name == "get_journey":
             origin, destination = arguments.get("origin", ""), arguments.get("destination", "")
@@ -667,7 +670,7 @@ class Tools:
                     "forecast_days": 7,
                     "wind_speed_unit": "kmh",
                     "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_gusts_10m",
-                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max,sunshine_duration",
+                    "daily": "weather_code,temperature_2m_min,temperature_2m_max,precipitation_probability_max,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max,sunshine_duration,daylight_duration",
                     "hourly": "sunshine_duration,precipitation,precipitation_probability",
                 },
             )
@@ -854,6 +857,8 @@ def hourly_rows(hourly: dict) -> list[dict]:
             value = values[n] if isinstance(values, list) and n < len(values) else None
             return value if type(value) in {int, float} else None
 
+        # Open-Meteo sums each value over the hour BEFORE its timestamp: "17:00" is 16–17 Uhr.
+        when -= timedelta(hours=1)
         rows.append({"time": when, "sun_s": pick("sunshine_duration"), "mm": pick("precipitation"),
                      "prob": pick("precipitation_probability")})
     return rows
@@ -915,7 +920,33 @@ def day_description(daily: dict, i: int) -> str:
         sunny = (daily["sunshine_duration"][i] or 0) >= 2 * 3600
     except (KeyError, IndexError, TypeError):
         sunny = False
-    return "Sonne und Schauer" if sunny and text in {"Nieselregen", "Regen"} else text
+    if sunny and text in {"Nieselregen", "Regen"}:
+        return "Sonne und Schauer"
+    if text in {"bedeckt", "leicht bewölkt", "Nebel"}:
+        # The daily code is the worst hour of the whole day, nights included; sunshine tells the day itself.
+        share = sun_share(daily, i)
+        if share is not None and share >= 0.6:
+            return "überwiegend sonnig"
+        if share is not None and share >= 0.3 and text != "leicht bewölkt":
+            return "wechselnd bewölkt"
+    return text
+
+
+def sun_share(daily: dict, i: int) -> float | None:
+    """Share of the daylight with sunshine; without the day length a short winter day is assumed."""
+    try:
+        sun = daily["sunshine_duration"][i]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if type(sun) not in {int, float}:
+        return None
+    try:
+        light = daily["daylight_duration"][i]
+    except (KeyError, IndexError, TypeError):
+        light = None
+    if type(light) not in {int, float} or light <= 0:
+        light = 10 * 3600
+    return sun / light
 
 
 def weather_description(code: int) -> str:

@@ -253,7 +253,7 @@ class Research:
 
     # Public transport -------------------------------------------------------------------------------
 
-    async def departures(self, stop: str, trains: bool = False, suburban: bool = False) -> dict:
+    async def departures(self, stop: str, trains: bool = False, suburban: bool = False, line: str = "") -> dict:
         base = self.config.research.transit_url.rstrip("/")
         stop = stop.strip()
         if not base:
@@ -270,9 +270,14 @@ class Research:
         place = places[0] if isinstance(places, list) and places and isinstance(places[0], dict) else None
         if not place or not re.fullmatch(r"[\w:-]{1,40}", str(place.get("id", ""))):
             return {"text": f"Keine Haltestelle „{stop}“ gefunden.", "sources": []}
+        wanted = re.sub(r"\s+", "", line).casefold()
+        label = LINE_KINDS.get(wanted, (line.strip().upper(), ""))[0]
+        if wanted in {"ice", "ic", "fex"} or re.fullmatch(r"r[eb]\d+", wanted):
+            trains = True
         data = await self._transit(
             f"{base}/stops/{place['id']}/departures",
-            params={"duration": 90 if trains else 30, "results": 8, "remarks": "false",
+            params={"duration": 90 if trains else 60 if wanted else 30, "results": 40 if wanted else 8,
+                    "remarks": "false",
                     **({"bus": "false", "tram": "false", "subway": "false", "ferry": "false",
                         **({} if suburban else {"suburban": "false"})}
                        if trains else {})},
@@ -292,6 +297,8 @@ class Research:
             direction = plain(row.get("direction"))
             if not when or not line:
                 continue
+            if wanted and not line_matches(wanted, line, plain((row.get("line") or {}).get("product"))):
+                continue
             try:
                 clock = datetime.fromisoformat(str(when)).astimezone(tz).strftime("%H:%M")
             except ValueError:
@@ -305,6 +312,10 @@ class Research:
             if len(entries) >= 6:
                 break
         name = plain(place.get("name")) or stop
+        if not entries and wanted:
+            minutes = 90 if trains else 60
+            return {"text": f"{name}: In den nächsten {minutes} Minuten keine Abfahrt für {label} gefunden.",
+                    "sources": []}
         if not entries and trains and not suburban:
             # A 'Zug' at an S-Bahn-only station such as S Friedenau is the S-Bahn.
             return await self.departures(stop, trains=True, suburban=True)
@@ -913,3 +924,17 @@ async def grill_stands(client: httpx.AsyncClient, lat: float, lon: float, tz: st
         return {"text": f"GaumenSchmaus: keinen Stand zu „{place.strip()}“ in den nächsten Tagen gefunden.",
                 "sources": source}
     return {"text": "GaumenSchmaus: in den nächsten Tagen kein Grillwagen in der Nähe gefunden.", "sources": source}
+
+
+LINE_KINDS = {"bus": ("Busse", "bus"), "s-bahn": ("S-Bahnen", "suburban"), "u-bahn": ("U-Bahnen", "subway"),
+              "tram": ("Straßenbahnen", "tram")}
+
+
+def line_matches(wanted: str, name: str, product: str) -> bool:
+    """wanted is 's1', 'm48', 'ice' or a kind such as 'bus'; name is the feed's line name such as 'S1' or 'ICE 1601'."""
+    if wanted in LINE_KINDS:
+        return product == LINE_KINDS[wanted][1]
+    compact = re.sub(r"\s+", "", name).casefold()
+    if wanted in {"ice", "ic", "fex"}:
+        return re.fullmatch(wanted + r"\d*", compact) is not None
+    return compact == wanted

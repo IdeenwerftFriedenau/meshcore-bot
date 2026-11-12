@@ -343,7 +343,7 @@
   "Börse heute?": "get_quote",
   "Hallo": "ki",
   "Was bedeutet KGV?": "ki",
-  "Erklär mir Dividende": "get_fundamentals",
+  "Erklär mir Dividende": "ki",
   "Was ist der Unterschied zwischen Aktie und ETF?": "ki",
   "Wie kaufe ich Aktien?": "get_quote",
   "Was ist ein Sparplan?": "ki",

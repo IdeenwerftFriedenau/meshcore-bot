@@ -165,7 +165,8 @@ def test_personal_routes():
     assert weather_question("Wetter in Berlin?", "Berlin-Friedenau", "Potsdam")["location"] == "Berlin-Friedenau"
     assert weather_question("Wetter in Hamburg?", "Berlin-Friedenau", "Potsdam")["location"] == "Hamburg"
     assert home_departures("Nächste Bahn?", "Rathaus Steglitz") == {"stop": "Rathaus Steglitz"}
-    assert home_departures("Wann fährt mein Bus?", "Rathaus Steglitz") == {"stop": "Rathaus Steglitz"}
+    assert home_departures("Wann fährt mein Bus?", "Rathaus Steglitz") == {
+        "stop": "Rathaus Steglitz", "line": "bus"}
     assert home_departures("Nächste Bahn nach Potsdam", "Rathaus Steglitz") is None
     assert home_departures("Nächste Bahn?", "") is None
     assert own_stocks_request("Wie stehen meine Aktien?", ["SAP", "Siemens"])["assets"] == ["SAP", "Siemens"]
