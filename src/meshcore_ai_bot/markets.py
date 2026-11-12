@@ -625,6 +625,10 @@ def signals(data: dict) -> dict:
         trend = "down"
     else:
         trend = "flat"
+    # Averages lag: a price above them is no uptrend when the year is clearly in the red, and the other way round.
+    year = performance(data, 365)
+    if year is not None and ((trend == "up" and year <= -10) or (trend == "down" and year >= 10)):
+        trend = "flat"
     position = None
     if _ok(data["low52"], data["high52"]) and data["high52"] > data["low52"]:
         position = (price - data["low52"]) / (data["high52"] - data["low52"])

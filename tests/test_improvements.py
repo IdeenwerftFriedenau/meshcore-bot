@@ -1096,3 +1096,18 @@ def test_grill_day_asked_by_weekday_leads_with_that_weekday():
     assert _day_label(date(2026, 11, 13), today, named=True) == "Freitag 13.11. (übermorgen)"
     assert _day_label(date(2026, 11, 17), today, named=True) == "Dienstag 17.11."
     assert _day_label(date(2026, 11, 13), today) == "Übermorgen (Fr 13.11.)"
+
+
+@pytest.mark.parametrize("asked,found,ok", [
+    ("Blablubbhausen", "Genthin, Bahnhof", False),
+    ("Blablubbhausen", "S+U Schönhauser Allee (Berlin)", False),
+    ("Kotti", "U Kottbusser Tor (Berlin)", True),
+    ("Zoo", "S+U Zoologischer Garten Bhf (Berlin)", True),
+    ("Rathuas Steglitz", "S+U Rathaus Steglitz (Berlin)", True),
+    ("Hbf", "S+U Berlin Hauptbahnhof", True),
+    ("Suedkreuz", "S Südkreuz Bhf (Berlin)", True),
+    ("Hauptstr", "Hauptstr./Rubensstr. (Berlin)", True),
+])
+def test_unknown_stops_are_not_guessed(asked, found, ok):
+    from meshcore_ai_bot.research import stop_matches
+    assert stop_matches(asked, found) is ok
