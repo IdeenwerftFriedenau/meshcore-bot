@@ -16,6 +16,7 @@
 #             GitHub-Prüfungen übergehen
 #   SKIP_CI=1 nur die GitHub-Prüfungen übergehen (Notfallkorrektur)
 #   DEPS=1    geänderte Python-Abhängigkeiten mit pip nachinstallieren
+#   DIFF=1    bei pruefen die Unterschiede der von Hand geänderten Dateien ausgeben
 #   KEEP=10   so viele Deploy-Backups behalten (0 = nie aufräumen)
 set -euo pipefail
 
@@ -50,7 +51,10 @@ gateway_map() {
 }
 
 known_blob() {  # Gab es genau diesen Dateiinhalt irgendwann auf GitHub?
-  git --git-dir="$CACHE" cat-file -e "$(git --git-dir="$CACHE" hash-object "$1")" 2>/dev/null
+  local blob
+  # Manche Dateien auf dem Pi darf nur root lesen.
+  blob=$($SUDO cat -- "$1" | git --git-dir="$CACHE" hash-object --stdin) || return 1
+  git --git-dir="$CACHE" cat-file -e "$blob" 2>/dev/null
 }
 
 restart_and_verify() {
@@ -151,10 +155,19 @@ DRIFT=()
 while IFS= read -r -d '' f; do
   known_blob "$f" || DRIFT+=("$f")
 done < <(find "$SP" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' -print0)
+# Im bisherigen Quellstand zählt nur, was der neue Stand ersetzt. Fremde Dateien dort (etwa alte
+# Patch-Dateien) bleiben im alten Ordner liegen und stören nicht.
+EXTRA=0
 if [[ -n "$OLD" && -d "$OLD" ]]; then
   while IFS= read -r -d '' f; do
+    rel=${f#"$OLD"/}
+    if [[ ! -e "$NEW/$rel" ]]; then
+      known_blob "$f" || EXTRA=$((EXTRA + 1))
+      continue
+    fi
+    $SUDO cmp -s "$f" "$NEW/$rel" && continue
     known_blob "$f" || DRIFT+=("$f")
-  done < <(find "$OLD" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name source-commit.txt \
+  done < <($SUDO find "$OLD" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name source-commit.txt \
              ! -path '*/.venv/*' ! -path '*/.git/*' ! -path '*.egg-info/*' ! -path '*/.pytest_cache/*' \
              ! -path '*/.ruff_cache/*' -print0)
 fi
@@ -166,9 +179,20 @@ while IFS=$'\t' read -r name from; do
 done < <(gateway_map "$NEW")
 
 if ((${#DRIFT[@]})); then
-  say "Von Hand geändert (so nie auf GitHub gewesen):"
-  printf '  %s\n' "${DRIFT[@]}"
+  say "Von Hand geändert (so nie auf GitHub gewesen), Zeilen anders als im neuen Stand:"
+  for f in "${DRIFT[@]}"; do
+    rel=${f#"$OLD"/}; [[ "$f" == "$SP"/* ]] && rel=src/meshcore_ai_bot/${f#"$SP"/}
+    lines=$($SUDO diff -- "$f" "$NEW/$rel" 2>/dev/null | grep -c '^[<>]' || true)
+    printf '  %s (%s)\n' "$f" "${lines:-?}"
+  done
+  if [[ "${DIFF:-}" == 1 ]]; then
+    for f in "${DRIFT[@]}"; do
+      rel=${f#"$OLD"/}; [[ "$f" == "$SP"/* ]] && rel=src/meshcore_ai_bot/${f#"$SP"/}
+      $SUDO diff -u --label "Pi: $f" --label "GitHub: $rel" -- "$f" "$NEW/$rel" || true
+    done
+  fi
 fi
+if ((EXTRA)); then say "Im bisherigen Quellstand liegen $EXTRA fremde Dateien (etwa alte Patches). Sie bleiben dort."; fi
 if ((${#KEPT[@]})); then
   say "Im Gateway-Ordner von Hand geändert, bleiben unverändert liegen:"
   printf '  %s\n' "${KEPT[@]/#/$GATEWAY/}"
