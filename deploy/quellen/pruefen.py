@@ -48,6 +48,7 @@ CHECKS = [
     ("Pollen (DWD)", "get_pollen", {}, r"\w"),
     ("Feiertage und Ferien", "get_holidays", {"kind": "feiertag", "day": ""}, r"\d"),
     ("Spritpreise (Tankerkönig)", "get_fuel_prices", {"fuel": "diesel", "place": ""}, r"\d,\d|Schlüssel"),
+    ("Straßenpumpen (Quellcode)", "get_water_pumps", {"place": ""}, r"Pumpe|Quellcode kennt"),
     ("Nachrichten", "search_news", {"query": "Berlin"}, r"\w"),
     ("Wikipedia", "search_wikipedia", {"query": "Berlin"}, r"Berlin"),
     ("Orte in der Nähe", "find_local_places", {"query": "Apotheke", "location": "Friedenau"}, r"\w"),

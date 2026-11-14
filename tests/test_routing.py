@@ -31,5 +31,5 @@ async def test_questions_reach_the_expected_function(topic):
 def test_list_covers_every_route_family():
     routes = {route for questions in KNOWN.values() for route in questions.values()}
     assert {"ki", "direkt", "get_weather", "get_departures", "get_journey", "get_flights", "get_quote",
-            "get_fundamentals", "get_fuel_prices", "get_warnings", "get_grill_stands"} <= routes
+            "get_fundamentals", "get_fuel_prices", "get_warnings", "get_grill_stands", "get_water_pumps"} <= routes
     assert sum(len(questions) for questions in KNOWN.values()) >= 300

@@ -455,3 +455,113 @@ async def test_bridge_days():
         text = (await holidays(http, "brueckentag", today=date(2026, 11, 12)))["text"]
     assert text == ("Brückentage in Berlin (nächste 12 Monate): Fr 07.05.2027 (nach Christi Himmelfahrt); "
                     "Mo 31.05.2027 (vor Erfundener Dienstag).")
+
+
+# ---------------------------------------------------------------- street pumps (Quellcode)
+
+QC_CONFIG = "window.QC_CONFIG = {\n  supabaseUrl: 'https://abc.supabase.co',\n  supabaseKey: 'sb_publishable_TEST'\n};"
+HERE = (52.4711, 13.3317)
+PUMPS = [
+    {"id": "a", "lat": 52.4701, "lng": 13.3317, "address": None, "district": "Friedenau", "ref": "29",
+     "current_status": "unknown", "last_confirmed_at": None},
+    {"id": "b", "lat": 52.4760, "lng": 13.3390, "address": "Rheinstraße 5", "district": "Friedenau", "ref": "12",
+     "current_status": "working", "last_confirmed_at": "2026-11-13T09:00:00Z"},
+    {"id": "c", "lat": 52.4720, "lng": 13.3250, "address": None, "district": "Friedenau", "ref": None,
+     "current_status": "broken", "last_confirmed_at": "2026-11-01T09:00:00Z"},
+]
+
+
+def quellcode(pumps=PUMPS, fountains=(), seen=None):
+    def respond(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
+        if request.url.host == "quellcode-berlin.netlify.app":
+            return httpx.Response(200, text=QC_CONFIG)
+        if request.url.host == "nominatim.openstreetmap.org":
+            return httpx.Response(200, json={"address": {"road": "Handjerystraße"}})
+        assert request.headers["apikey"] == "sb_publishable_TEST"
+        lats = [float(v[4:]) for k, v in request.url.params.multi_items() if k == "lat"]
+        rows = list(pumps) if request.url.path.endswith("/pumps") else list(fountains)
+        return httpx.Response(200, json=[r for r in rows if lats[0] <= r["lat"] <= lats[1]])
+    return httpx.MockTransport(respond)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_quellcode():
+    alltag._quellcode.clear()
+    alltag._streets.clear()
+
+
+async def test_water_pumps_names_running_water_and_nearest():
+    seen = []
+    async with httpx.AsyncClient(transport=quellcode(seen=seen)) as client:
+        result = await alltag.water_pumps(client, *HERE, "Friedenau")
+    text = result["text"]
+    assert text.startswith("Straßenpumpen nahe Friedenau (Quellcode): Wasser läuft: Nr. 12 Rheinstraße 5 (Friedenau)")
+    assert "(geprüft 13.11.)" in text
+    assert "Nächste: Nr. 29 Handjerystraße (Friedenau), 110 m Richtung Süd, noch ungeprüft" in text
+    assert "Im Umkreis 1 km 3 Pumpen: 1 mit Wasser, 1 ohne, 1 ungeprüft" in text
+    assert len(text) < 450
+    box = next(r for r in seen if r.url.path.endswith("/pumps"))
+    assert ("limit", "400") in box.url.params.multi_items()  # only the box around us, never the whole map
+
+
+async def test_water_pumps_looks_further_and_outside_berlin():
+    far = [{**PUMPS[1], "lat": 52.50}]
+    async with httpx.AsyncClient(transport=quellcode(pumps=far)) as client:
+        found = await alltag.water_pumps(client, *HERE)
+    assert "Wasser läuft: Nr. 12" in found["text"] and "3,3 km Richtung Nord" in found["text"]
+    async with httpx.AsyncClient(transport=quellcode(pumps=[])) as client:
+        none = await alltag.water_pumps(client, 52.39, 13.06, "Potsdam")
+    assert none["text"].startswith("Quellcode kennt nahe Potsdam keine Straßenpumpe")
+
+
+async def test_drinking_fountains():
+    fountains = [{"id": "f", "lat": 52.4730, "lng": 13.3340, "name": "Wiener Trinkbrunnen", "operator": None,
+                  "seasonal": True}]
+    async with httpx.AsyncClient(transport=quellcode(fountains=fountains)) as client:
+        result = await alltag.water_pumps(client, *HERE, kind="trinkbrunnen")
+    assert result["text"] == ("Trinkbrunnen in der Nähe (Quellcode): Handjerystraße (Wiener Trinkbrunnen), "
+                              "260 m Richtung Nordost (nur im Sommer).")
+
+
+async def test_quellcode_config_change_is_an_error():
+    def respond(request):
+        return httpx.Response(200, text="window.QC_CONFIG = {};")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(ValueError):
+            await alltag.water_pumps(client, *HERE)
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Wo ist die nächste Pumpe mit Wasser?", ("get_water_pumps", {})),
+    ("Straßenbrunnen in Friedenau", ("get_water_pumps", {"place": "Friedenau"})),
+    ("Notwasser Schöneberg", ("get_water_pumps", {"place": "Schöneberg"})),
+    ("Gibt es einen Trinkbrunnen in der Nähe?", ("get_water_pumps", {"kind": "trinkbrunnen"})),
+    ("Funktioniert die Pumpe in der Handjerystraße?", ("get_water_pumps", {"place": "Handjerystraße"})),
+    ("Meine Wärmepumpe ist kaputt", None),
+    ("Wo ist der Neptunbrunnen?", None),
+    ("Was ist ein Straßenbrunnen?", None),
+])
+def test_pump_questions(question, expected):
+    assert alltag_request(question) == expected
+
+
+async def test_tools_find_pumps_at_a_street():
+    from meshcore_ai_bot.config import Config
+    from meshcore_ai_bot.store import Store
+    from meshcore_ai_bot.tools import Tools
+
+    def respond(request):
+        if request.url.host == "geocoding-api.open-meteo.com":
+            return httpx.Response(200, json={"results": []})
+        if request.url.host == "nominatim.openstreetmap.org" and request.url.path == "/search":
+            return httpx.Response(200, json=[{"lat": "52.4712", "lon": "13.3318",
+                                              "display_name": "Handjerystraße, Friedenau, Berlin"}])
+        return quellcode().handler(request)
+    config = Config()
+    config.research.enabled = True
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        tools = Tools(config, Store(":memory:"), client)
+        result = await tools.run("get_water_pumps", {"place": "Handjerystraße"})
+    assert result["text"].startswith("Straßenpumpen nahe Handjerystraße (Quellcode): Wasser läuft: Nr. 12")

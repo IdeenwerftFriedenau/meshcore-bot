@@ -21,6 +21,7 @@ from .alltag import (
     pollen,
     space_weather,
     warnings,
+    water_pumps,
 )
 from .config import Config
 from .fundamentals import fundamentals, wiki
@@ -246,6 +247,14 @@ RESEARCH_SCHEMAS = {
          "place": {"type": "string", "description": "Ort, Ortsteil oder PLZ in Deutschland; leer für hier"}},
         [],
     ),
+    "get_water_pumps": tool(
+        "get_water_pumps",
+        "Berliner Straßenbrunnen (Handpumpen, Notwasser) in der Nähe mit gemeldetem Zustand (Wasser läuft, "
+        "kein Wasser, ungeprüft) von der Gemeinschaftskarte Quellcode; mit kind='trinkbrunnen' die nächsten Trinkbrunnen.",
+        {"place": {"type": "string", "description": "Ortsteil, Straße oder PLZ in Berlin; leer für hier"},
+         "kind": {"type": "string", "description": "'trinkbrunnen' für Trinkbrunnen, sonst leer"}},
+        [],
+    ),
     "get_market_news": tool(
         "get_market_news",
         "Aktuelle Schlagzeilen zu einer Aktie, einem Coin oder Rohstoff (tagesschau, Yahoo Finance) plus Kurs. "
@@ -389,6 +398,22 @@ class Tools:
                 return row["latitude"], row["longitude"], row.get("name") or name.strip()
         return None
 
+    async def _berlin_street(self, name: str) -> tuple[float, float, str] | None:
+        """A street or square in Berlin, e.g. 'Handjerystraße', from OpenStreetMap; the one near the station first
+        (Berlin has several streets of the same name)."""
+        lat, lon = self.config.weather.latitude, self.config.weather.longitude
+        try:
+            rows = await read_json(
+                self.client, "GET", "https://nominatim.openstreetmap.org/search",
+                params={"q": f"{name.strip()}, Berlin", "countrycodes": "de", "format": "json", "limit": 1,
+                        "viewbox": f"{lon - 0.12:.3f},{lat + 0.08:.3f},{lon + 0.12:.3f},{lat - 0.08:.3f}"},
+                headers=AGENT, timeout=10, limit=200_000)
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not rows or "Berlin" not in str(rows[0].get("display_name", "")):
+            return None
+        return float(rows[0]["lat"]), float(rows[0]["lon"]), name.strip()
+
     async def run(self, name: str, arguments: dict, *, allowed_urls: set[str] | None = None) -> dict:
         allowed = {
             "get_weather": {"location", "period"},
@@ -410,7 +435,7 @@ class Tools:
                            get_fundamentals={"asset", "about"}, get_insider_trades={"asset"},
                            get_warnings=set(), get_transit_disruptions={"line"}, get_space_weather=set(),
                            get_football={"team", "league"}, get_air_quality={"place"}, get_pollen=set(),
-                           get_holidays={"kind", "day"}, get_fuel_prices={"fuel", "place"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
+                           get_holidays={"kind", "day"}, get_fuel_prices={"fuel", "place"}, get_water_pumps={"place", "kind"}, get_market_news={"asset"}, get_market_movers=set(), get_market_mood=set())
         if name not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[name]:
             raise ValueError("Unsupported tool or arguments")
         limit = 600 if name == "read_webpage" else 160
@@ -546,8 +571,13 @@ class Tools:
         lat, lon = weather.latitude, weather.longitude
         wanted = arguments.get("place", "").strip()
         home = f"{norm(weather.location)} {norm(self.config.station.location)} hier"
-        if name in {"get_fuel_prices", "get_air_quality"} and wanted and norm(wanted) not in home:
-            found = await self._place(wanted, anywhere=True)
+        if name in {"get_fuel_prices", "get_air_quality", "get_water_pumps"} and wanted and norm(wanted) not in home:
+            street = name == "get_water_pumps" and re.search(
+                r"(stra(ss|ß)e|str\.?|platz|weg|damm|allee|ufer|ring|chaussee|gasse|steig|zeile|markt)\b", wanted, re.I)
+            found = await self._berlin_street(wanted) if street else None
+            found = found or await self._place(wanted, anywhere=name != "get_water_pumps")
+            if not found and name == "get_water_pumps" and not street:
+                found = await self._berlin_street(wanted)
             if not found:
                 return {"text": f"Den Ort „{wanted}“ finde ich nicht. Versuch es mit Ortsteil, Stadt oder "
                                 "Postleitzahl.", "sources": []}
@@ -565,6 +595,8 @@ class Tools:
                                                     arguments.get("day", "").strip().casefold(), tz)),
             "get_fuel_prices": (600, lambda: fuel_prices(self.client, lat, lon,
                                                          arguments.get("fuel", "").strip().casefold(), place=place)),
+            "get_water_pumps": (600, lambda: water_pumps(self.client, lat, lon, wanted and place,
+                                                         arguments.get("kind", "").strip().casefold(), tz)),
         }
         ttl, fetch = jobs[name]
         key = "|".join(f"{k}={v}" for k, v in sorted(arguments.items()))

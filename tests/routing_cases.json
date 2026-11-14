@@ -206,7 +206,15 @@
   "Erste Hilfe Kurs Berlin": "ki",
   "Wann kommt der Bus?": "get_departures",
   "Kurs auf Hamburg": "ki",
-  "Wie viel ist ein Pfund in Gramm?": "ki"
+  "Wie viel ist ein Pfund in Gramm?": "ki",
+  "Wo ist die nächste Pumpe mit Wasser?": "get_water_pumps",
+  "Straßenbrunnen in Friedenau": "get_water_pumps",
+  "Gibt es einen Trinkbrunnen in der Nähe?": "get_water_pumps",
+  "Notwasser Schöneberg": "get_water_pumps",
+  "Funktioniert die Pumpe in der Handjerystraße?": "get_water_pumps",
+  "Wo ist der Neptunbrunnen?": "ki",
+  "Meine Wärmepumpe ist kaputt, was tun?": "ki",
+  "Was ist ein Straßenbrunnen?": "ki"
  },
  "boerse": {
   "KGV von Nvidia": "get_fundamentals",
