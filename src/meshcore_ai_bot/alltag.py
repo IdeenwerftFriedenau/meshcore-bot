@@ -9,6 +9,8 @@ Free official or community sources meant for automated use, no key except the op
 - Air: Open-Meteo air quality (CAMS); pollen: DWD Pollenflug-Gefahrenindex.
 - Holidays: OpenHolidays API (public and school holidays in Berlin).
 - Fuel: Tankerkönig (MTS-K), only with MESHCORE_TANKERKOENIG_KEY in the environment or /etc/meshcore-ai-bot/.env.
+- Street pumps and drinking fountains: Quellcode (quellcode-berlin.netlify.app), a community map of Berlin's
+  street pumps (OpenStreetMap positions, status reported on site), read with the page's public browser key.
 """
 
 from __future__ import annotations
@@ -661,10 +663,161 @@ async def fuel_prices(client: httpx.AsyncClient, lat: float, lon: float, fuel: s
                     + ". ".join(parts) + ". Daten: Tankerkönig (CC BY 4.0).", "sources": ["https://creativecommons.tankerkoenig.de"]}
 
 
+# ---------------------------------------------------------------- street pumps (Quellcode)
+
+QUELLCODE_PAGE = "https://quellcode-berlin.netlify.app/"
+QUELLCODE_CONFIG = QUELLCODE_PAGE + "config.js"
+PUMP_STATES = {"working": "Wasser läuft", "broken": "kein Wasser", "missing": "nicht auffindbar"}
+_quellcode: dict = {}
+
+
+async def quellcode_access(client: httpx.AsyncClient) -> tuple[str, str]:
+    """(database URL, public key) as the Quellcode page itself publishes them in config.js; kept for a day."""
+    now = datetime.now().timestamp()
+    if _quellcode.get("until", 0) > now:
+        return _quellcode["url"], _quellcode["key"]
+    text = (await read_bytes(client, "GET", QUELLCODE_CONFIG, headers=AGENT, timeout=15, limit=20_000)).decode()
+    url = re.search(r"supabaseUrl\s*:\s*['\"](https://[a-z0-9]+\.supabase\.co)['\"]", text)
+    key = re.search(r"supabaseKey\s*:\s*['\"](sb_publishable_[\w-]+)['\"]", text)
+    if not url or not key:
+        raise ValueError("Quellcode config.js changed")
+    _quellcode.update(url=url.group(1), key=key.group(1), until=now + 24 * 3600)
+    return url.group(1), key.group(1)
+
+
+def metres(lat: float, lon: float, lat2: float, lon2: float) -> float:
+    from math import asin, cos, radians, sin, sqrt
+    a = sin(radians(lat2 - lat) / 2) ** 2 + cos(radians(lat)) * cos(radians(lat2)) * sin(radians(lon2 - lon) / 2) ** 2
+    return 2 * 6_371_000 * asin(sqrt(a))
+
+
+def distance(m: float) -> str:
+    return f"{round(m / 10) * 10:.0f} m" if m < 950 else f"{comma(m / 1000)} km"
+
+
+async def _quellcode_rows(client: httpx.AsyncClient, table: str, columns: str, lat: float, lon: float,
+                          span: float) -> list[dict]:
+    """Rows of a Quellcode table inside a box around the point: the bot never loads the whole map."""
+    url, key = await quellcode_access(client)
+    params = [("select", columns), ("lat", f"gte.{lat - span:.5f}"), ("lat", f"lte.{lat + span:.5f}"),
+              ("lng", f"gte.{lon - span * 1.6:.5f}"), ("lng", f"lte.{lon + span * 1.6:.5f}"), ("limit", "400")]
+    rows = await read_json(client, "GET", f"{url}/rest/v1/{table}", params=params, timeout=15, limit=1_000_000,
+                           headers={**AGENT, "apikey": key, "Authorization": f"Bearer {key}"})
+    if not isinstance(rows, list):
+        raise ValueError("Unexpected Quellcode data")
+    found = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("lat"), (int, float)) and isinstance(row.get("lng"), (int, float)):
+            found.append({**row, "m": metres(lat, lon, row["lat"], row["lng"])})
+    return sorted(found, key=lambda r: r["m"])
+
+
+COMPASS = ["Nord", "Nordost", "Ost", "Südost", "Süd", "Südwest", "West", "Nordwest"]
+
+
+def heading(lat: float, lon: float, lat2: float, lon2: float) -> str:
+    from math import atan2, cos, degrees, radians
+    angle = degrees(atan2((lon2 - lon) * cos(radians(lat)), lat2 - lat)) % 360
+    return COMPASS[round(angle / 45) % 8]
+
+
+_streets: dict = {}
+
+
+async def street_of(client: httpx.AsyncClient, lat: float, lon: float) -> str:
+    """'Handjerystraße' for a point, from OpenStreetMap; '' when unknown. The pumps carry few addresses."""
+    spot = (round(lat, 5), round(lon, 5))
+    if spot in _streets:
+        return _streets[spot]
+    wait = _streets.get("next", 0) - datetime.now().timestamp()  # Nominatim allows one request per second
+    if wait > 0:
+        await asyncio.sleep(min(wait, 1.1))
+    _streets["next"] = datetime.now().timestamp() + 1.1
+    try:
+        data = await read_json(client, "GET", "https://nominatim.openstreetmap.org/reverse",
+                               params={"lat": f"{lat:.6f}", "lon": f"{lon:.6f}", "zoom": 17, "format": "json"},
+                               headers=AGENT, timeout=8, limit=100_000)
+    except (httpx.HTTPError, ValueError):
+        return ""
+    address = (data or {}).get("address") or {}
+    street = str(address.get("road") or address.get("pedestrian") or address.get("square") or "").strip()[:50]
+    if len(_streets) > 2000:
+        _streets.clear()
+    _streets[spot] = street
+    return street
+
+
+async def _spot(client: httpx.AsyncClient, row: dict, lat: float, lon: float, label: str) -> str:
+    """'Nr. 26 Handjerystraße (Friedenau), 350 m Richtung Nordost'"""
+    ref = str(row.get("ref") or "").strip()
+    street = str(row.get("address") or "").strip()[:50] or await street_of(client, row["lat"], row["lng"])
+    district = str(row.get("district") or "").strip()
+    where = f"{street} ({district})" if street and district else street or district
+    name = " ".join(filter(None, [f"Nr. {ref}" if ref else "", where])) or label
+    away = distance(row["m"]) + ("" if row["m"] < 60 else f" Richtung {heading(lat, lon, row['lat'], row['lng'])}")
+    return f"{name}, {away}"
+
+
+def _checked(row: dict, tz: ZoneInfo) -> str:
+    try:
+        moment = datetime.fromisoformat(str(row.get("last_confirmed_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return f" (geprüft {moment.astimezone(tz):%d.%m.})"
+
+
+async def water_pumps(client: httpx.AsyncClient, lat: float, lon: float, place: str = "", kind: str = "",
+                      tz: str = "Europe/Berlin") -> dict:
+    """Nearest street pumps with their reported state, or with kind='trinkbrunnen' the nearest drinking fountains."""
+    sources = [QUELLCODE_PAGE]
+    where = f"nahe {place}" if place else "in der Nähe"
+    if kind == "trinkbrunnen":
+        rows = await _quellcode_rows(client, "fountains", "id,lat,lng,name,operator,seasonal", lat, lon, 0.02)
+        if not rows:
+            rows = await _quellcode_rows(client, "fountains", "id,lat,lng,name,operator,seasonal", lat, lon, 0.06)
+        if not rows:
+            return {"text": f"Quellcode kennt {where} keinen Trinkbrunnen (nur Berlin).", "sources": sources}
+        parts = []
+        for row in rows[:3]:
+            name = str(row.get("name") or "").strip()[:40]
+            spot = await _spot(client, {**row, "ref": "", "district": name}, lat, lon, "Trinkbrunnen")
+            parts.append(spot + (" (nur im Sommer)" if row.get("seasonal") else ""))
+        return {"text": f"Trinkbrunnen {where} (Quellcode): " + "; ".join(parts) + ".", "sources": sources}
+    columns = "id,lat,lng,address,district,ref,current_status,last_confirmed_at"
+    rows = await _quellcode_rows(client, "pumps", columns, lat, lon, 0.012)
+    if not [r for r in rows if r.get("current_status") == "working"]:
+        rows = await _quellcode_rows(client, "pumps", columns, lat, lon, 0.04)  # look further for running water
+    if not rows:
+        return {"text": f"Quellcode kennt {where} keine Straßenpumpe (die Karte deckt nur Berlin ab).",
+                "sources": sources}
+    zone = ZoneInfo(tz)
+    working = [r for r in rows if r.get("current_status") == "working"][:2]
+    parts = []
+    if working:
+        spots = [await _spot(client, r, lat, lon, "Pumpe") + _checked(r, zone) for r in working]
+        parts.append("Wasser läuft: " + "; ".join(spots))
+    nearest = rows[0]
+    if not working or nearest["m"] < working[0]["m"] - 150:
+        state = PUMP_STATES.get(nearest.get("current_status"), "noch ungeprüft")
+        parts.append(f"Nächste: {await _spot(client, nearest, lat, lon, 'Pumpe')}, {state}")
+    close = [r for r in rows if r["m"] <= 1000]
+    if close:
+        count = {s: sum(r.get("current_status") == s for r in close) for s in ("working", "broken", "missing")}
+        open_ = len(close) - sum(count.values())
+        tally = [f"{count['working']} mit Wasser" if count["working"] else "",
+                 f"{count['broken']} ohne" if count["broken"] else "",
+                 f"{open_} ungeprüft" if open_ else ""]
+        summary = "alle ungeprüft" if open_ == len(close) else ", ".join(t for t in tally if t)
+        parts.append(f"Im Umkreis 1 km {len(close)} Pumpen: {summary}")
+    return {"text": f"Straßenpumpen {where} (Quellcode): " + ". ".join(parts)
+                    + ". Kein geprüftes Trinkwasser. Zustand melden: quellcode-berlin.netlify.app",
+            "sources": sources}
+
+
 # ---------------------------------------------------------------- routing
 
 ALLTAG_TOOLS = ("get_warnings", "get_transit_disruptions", "get_space_weather", "get_football", "get_air_quality",
-                "get_pollen", "get_holidays", "get_fuel_prices")
+                "get_pollen", "get_holidays", "get_fuel_prices", "get_water_pumps")
 
 WARN = re.compile(r"\b(unwetter\w*|warnung\w*|wetterwarnung\w*|amtliche warnung\w*|katastrophen\w*|nina|"
                   r"gewitterwarnung|sturmwarnung|glaettewarnung|hitzewarnung|frostwarnung|hochwasser\w*|"
@@ -691,6 +844,11 @@ ADVICE = re.compile(r"\b(was hilft|hilft|helfen|tipps?|mittel|medikament\w*|tabl
                     r"was tun|was kann ich)\b")
 HOLI = re.compile(r"\b(feiertag\w*|ferien|schulferien|herbstferien|winterferien|osterferien|sommerferien|"
                   r"pfingstferien|weihnachtsferien|brueckentag\w*|schulfrei)\b")
+PUMP = re.compile(r"\b(strassen ?brunnen\w*|strassen ?pumpe\w*|wasser ?pumpe\w*|hand ?pumpe\w*|schwengel ?pumpe\w*|"
+                  r"notbrunnen\w*|notwasser\w*|quellcode|trinkbrunnen\w*|trinkwasserbrunnen\w*|wasserspender|"
+                  r"(wo|naechste\w*|funktionier\w*|nahe|naehe|kaputt|laeuft|wasser)\b.{0,40}\b(pumpe|pumpen|brunnen)|"
+                  r"(pumpe|pumpen|brunnen)\b.{0,30}\b(wasser|naehe|naechste\w*|funktionier\w*|laeuft|kaputt))\b")
+FOUNTAIN = re.compile(r"trinkbrunnen|trinkwasserbrunnen|wasserspender|flasche (auf)?fuellen|wasser (zum )?trinken")
 FUEL = re.compile(r"\b(sprit\w*|benzin\w*|diesel\w*|tanken|tanke|tankstelle\w*|super ?e ?(5|10)|e10|e5)\b")
 
 
@@ -766,6 +924,12 @@ def alltag_request(question: str) -> tuple[str, dict] | None:
         return None
     if SPACE.search(folded):
         return "get_space_weather", {}
+    if PUMP.search(folded) and not re.search(r"\b(waerme|benzin|diesel|zapf|insulin|milch|aquarium|teich)", folded):
+        kind = "trinkbrunnen" if FOUNTAIN.search(folded) else ""
+        place = " ".join(w for w in place_in(question).split()
+                         if not re.search(r"pumpe|brunnen|wasser|quellcode|status|spender|funktion", fold(w)))
+        args = {"place": place} if place else {}
+        return "get_water_pumps", {**args, "kind": kind} if kind else args
     if POLL.search(folded) and not ADVICE.search(folded):
         return "get_pollen", {}
     if AIRQ.search(folded):
