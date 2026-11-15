@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiohttp
 import yaml
-from dab_control import effective_channel, load_settings
+from dab_control import effective_channel, load_settings, news_window
 
 ROOT = Path(__file__).resolve().parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
@@ -21,6 +21,28 @@ WELLE = str((ROOT / str(DAB.get("welle_cli_path", "welle.io/build/welle-cli"))).
 POST_URL = os.environ["DAB_INGEST_URL"]
 TOKEN = os.environ["INGEST_TOKEN"]
 LOG = logging.getLogger("dab-monitor")
+# welle-cli verliert bei abgebrochenen Stream-Verbindungen gelegentlich Dateideskriptoren. Ist das
+# Limit erreicht („accept failed: Too many open files“), nimmt es keine Verbindung mehr an und
+# bleibt so, bis es neu startet: Aufnahmen und Live-Radio enden dann mit ConnectTimeout.
+# Der Monitor startet welle-cli in diesem Fall selbst neu.
+FD_EXHAUSTED_LIMIT = 5        # so viele „Too many open files“ in Folge
+FAILED_CYCLES_LIMIT = 6       # oder so viele fehlgeschlagene Abfragen in Folge (~70 s)
+HEALTH = {"fd_errors": 0}
+CHANNEL_RECHECK = 30          # Sekunden; dazwischen gilt der zuletzt bestätigte Kanal
+
+FD_PREEMPTIVE = 800           # vorsorglich neu starten, bevor das Limit (meist 1024) erreicht ist
+
+
+def open_fds(pid):
+    try:
+        return len(os.listdir(f"/proc/{pid}/fd"))
+    except OSError:
+        return None
+
+
+def preemptive_restart(fds, now=None):
+    """Vorsorglicher Neustart nur außerhalb der Nachrichtenfenster (HH:59:30 bis HH:05:50)."""
+    return fds is not None and fds >= FD_PREEMPTIVE and not news_window(now)
 
 
 def snapshot(mux, journaline, last_signal):
@@ -90,6 +112,11 @@ async def log_welle(proc):
         return
     while line := await proc.stdout.readline():
         text = line.decode("utf-8", "replace").strip()
+        if "too many open files" in text.lower():
+            HEALTH["fd_errors"] += 1
+            if HEALTH["fd_errors"] in (1, FD_EXHAUSTED_LIMIT):
+                LOG.info("welle: %s", text[:320])
+            continue
         if any(
             token in text.lower()
             for token in (
@@ -106,15 +133,37 @@ async def log_welle(proc):
             LOG.info("welle: %s", text[:320])
 
 
+def welle_stuck(fd_errors, failed_cycles):
+    return fd_errors >= FD_EXHAUSTED_LIMIT or failed_cycles >= FAILED_CYCLES_LIMIT
+
+
+async def stop_welle(proc):
+    if proc is None or proc.returncode is not None:
+        return
+    proc.send_signal(signal.SIGINT)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=8)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
 async def follow_tuning(stop):
     """Local tuning remains responsive even while an Internet upload times out."""
     global CHANNEL
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+        checked = 0.0
         while not stop.is_set():
             try:
                 desired = effective_channel(load_settings())
-                async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
-                    current = (await response.text()).strip()
+                # Nicht jede Sekunde bei welle-cli nachfragen: Jede Anfrage kann dort eine
+                # Verbindung offen lassen. Nachgefragt wird bei einem Wechsel und alle 30 s.
+                if desired == CHANNEL and time.monotonic() - checked < CHANNEL_RECHECK:
+                    current = desired
+                else:
+                    async with session.get(f"http://127.0.0.1:{PORT}/channel") as response:
+                        current = (await response.text()).strip()
+                    checked = time.monotonic()
                 if current != desired:
                     async with session.post(f"http://127.0.0.1:{PORT}/channel", data=desired) as response:
                         response.raise_for_status()
@@ -143,9 +192,11 @@ async def main():
     proc = None
     last_signal = None
     was_active = False
+    failed_cycles = 0
     tuning = asyncio.create_task(follow_tuning(stop))
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         while not stop.is_set():
+            local_ok = False
             try:
                 if proc is None or proc.returncode is not None:
                     if proc is not None:
@@ -162,6 +213,8 @@ async def main():
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT,
                     )
+                    HEALTH["fd_errors"] = 0
+                    failed_cycles = 0
                     asyncio.create_task(log_welle(proc))
                     LOG.info("DAB receiver started on %s; HTTP access is loopback-only", CHANNEL)
                     await asyncio.sleep(3)
@@ -169,6 +222,10 @@ async def main():
                     if response.status != 200:
                         raise RuntimeError(f"welle-cli mux HTTP {response.status}")
                     mux = await response.json()
+                # Nur der lokale Empfänger zählt; ein Internet-Ausfall beim Hochladen ist kein Hänger.
+                local_ok = True
+                failed_cycles = 0
+                HEALTH["fd_errors"] = 0
                 journaline = {}
                 try:
                     async with session.get(f"http://127.0.0.1:{PORT}/journaline.json") as response:
@@ -232,18 +289,25 @@ async def main():
                 raise
             except Exception as exc:
                 LOG.warning("DAB monitor cycle failed: %s", type(exc).__name__)
+                if not local_ok:
+                    failed_cycles += 1
+            if proc and proc.returncode is None:
+                fds = open_fds(proc.pid)
+                if welle_stuck(HEALTH["fd_errors"], failed_cycles):
+                    LOG.warning(
+                        "welle-cli unresponsive (open-file errors=%d, failed cycles=%d, fds=%s); restarting decoder",
+                        HEALTH["fd_errors"], failed_cycles, fds,
+                    )
+                    await stop_welle(proc)
+                elif preemptive_restart(fds):
+                    LOG.warning("welle-cli holds %d open files (leaked connections); restarting decoder", fds)
+                    await stop_welle(proc)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=10)
             except TimeoutError:
                 pass
     await tuning
-    if proc and proc.returncode is None:
-        proc.send_signal(signal.SIGINT)
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=8)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
+    await stop_welle(proc)
 
 
 if __name__ == "__main__":
